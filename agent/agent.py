@@ -23,6 +23,7 @@ import psutil
 import requests
 
 import checks
+import inventory
 
 # ---------------------------------------------------------------- config
 
@@ -35,6 +36,8 @@ PORTS_INTERVAL = 60
 AUTH_INTERVAL = 30
 CHECKS_INTERVAL = 120
 USERS_INTERVAL = 60
+FIM_INTERVAL = 300
+PACKAGES_INTERVAL = 21600
 FLUSH_INTERVAL = 15
 
 MAX_BUFFER_ROWS = 10_000
@@ -370,7 +373,8 @@ def main():
     sess.enroll()
 
     next_run = {"heartbeat": 0.0, "ports": 0.0, "auth": 0.0,
-                "checks": 0.0, "users": 0.0, "flush": 0.0}
+                "checks": 0.0, "users": 0.0, "fim": 0.0,
+                "packages": 0.0, "flush": 0.0}
 
     while True:
         now = time.time()
@@ -398,6 +402,26 @@ def main():
             except Exception as e:
                 log.warning("user collection failed: %s", e)
             next_run["users"] = now + USERS_INTERVAL
+
+        if now >= next_run["fim"]:
+            try:
+                events, summary = inventory.collect_fim(buf)
+                buf.push("fim", {"events": events, "summary": summary})
+                if events:
+                    log.info("fim: %d change(s), %d critical",
+                             len(events), sum(1 for e in events if e["critical"]))
+            except Exception as e:
+                log.warning("fim collection failed: %s", e)
+            next_run["fim"] = now + FIM_INTERVAL
+
+        if now >= next_run["packages"]:
+            try:
+                pkgs = inventory.collect_packages()
+                if pkgs:
+                    buf.push("packages", {"packages": pkgs})
+            except Exception as e:
+                log.warning("package collection failed: %s", e)
+            next_run["packages"] = now + PACKAGES_INTERVAL
 
         if now >= next_run["flush"]:
             flush(buf, sess)
