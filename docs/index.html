@@ -153,14 +153,15 @@ const HEX = { healthy:'#0F7B6C', degraded:'#B07314', down:'#A93226', pending:'#7
 
 const PAGES = [
   ['overview','Overview'], ['nodes','Nodes'], ['alerts','Alerts'],
-  ['activity','Activity'], ['posture','Posture'], ['settings','Settings'],
+  ['activity','Activity'], ['posture','Posture'], ['vulns','Vulnerabilities'],
+  ['settings','Settings'],
 ];
 
 let state = {
   page:'overview', tab:'ports', filter:'all', query:'', alertFilter:'all',
   host:null, hostTab:'checks',
   hosts:[], metrics:{}, series:{}, alerts:[], ports:[], users:[], auth:[],
-  checks:[], recipients:[], rules:[], fim:[], tokens:[], history:[],
+  checks:[], recipients:[], rules:[], fim:[], tokens:[], history:[], vulns:[],
   hostDetail:{ checks:[], packages:[], vulns:[], users:[], ports:[], fim:[], history:[] },
 };
 
@@ -236,7 +237,8 @@ function trustChart(points, w=680, h=140) {
 }
 
 function trustBar(r) {
-  return [['exp',r.f_exposure],['auth',r.f_auth],['chn',r.f_churn],['pos',r.f_posture]]
+  return [['exp',r.f_exposure],['auth',r.f_auth],['chn',r.f_churn],
+          ['pos',r.f_posture],['int',r.f_integrity]]
     .map(([l,v])=>`<div class="flex-1" title="${l} ${(v??0).toFixed(2)}">
       <div class="h-[3px] bg-hairline"><div class="h-[3px]"
         style="width:${Math.round((v??0)*100)}%;background:${v>=.8?HEX.healthy:v>=.5?HEX.degraded:HEX.down}"></div></div>
@@ -268,7 +270,10 @@ function badges(){
   const down = state.hosts.filter(h=>h.status==='down').length;
   const failedMail = state.alerts.filter(a=>a.status==='failed'||(!a.acknowledged_at&&!a.resolved_at&&a.severity==='critical')).length;
   const highChecks = state.checks.filter(c=>c.severity==='high').length;
-  return { nodes:down, alerts:failedMail, posture:highChecks };
+  const severeVulns = state.vulns.filter(v=>v.severity==='critical'||v.severity==='high').length;
+  const critFiles = state.fim.filter(f=>f.critical).length;
+  return { nodes:down, alerts:failedMail, posture:highChecks,
+           vulns:severeVulns, activity:critFiles };
 }
 function renderNav(){
   const b=badges();
@@ -299,6 +304,9 @@ function pageOverview(){
   const failed=recent.filter(a=>a.status==='failed').length;
   const supp=recent.filter(a=>a.status==='suppressed').length;
   const queued=state.alerts.filter(a=>a.status==='pending'||a.status==='sending').length;
+  const fileChanges=h.reduce((a,r)=>a+(r.file_changes_24h||0),0);
+  const critFiles=h.reduce((a,r)=>a+(r.critical_file_changes_24h||0),0);
+  const severeVulns=h.reduce((a,r)=>a+(r.vulns_severe||0),0);
 
   const kpi=(label,val,colour,sub)=>`
     <div class="px-5 py-4">
@@ -312,7 +320,11 @@ function pageOverview(){
   h.filter(r=>r.status==='down').forEach(r=>attention.push(['critical',`${r.label} has stopped reporting`,`last seen ${ago(r.last_seen)} ago`]));
   h.filter(r=>r.needs_reverification&&r.status!=='down').forEach(r=>attention.push(['warning',`${r.label} is below the trust threshold`,`trust ${r.trust}`]));
   h.filter(r=>r.priv_changes_24h>0).forEach(r=>attention.push(['critical',`Privileged account change on ${r.label}`,`${r.priv_changes_24h} in 24h`]));
+  h.filter(r=>r.critical_file_changes_24h>0).forEach(r=>attention.push(['critical',
+    `Security-critical file changed on ${r.label}`,`${r.critical_file_changes_24h} in 24h`]));
   h.filter(r=>r.checks_failed_high>0).forEach(r=>attention.push(['warning',`${r.checks_failed_high} high-severity check(s) failing on ${r.label}`,'']));
+  h.filter(r=>r.vulns_severe>0).forEach(r=>attention.push(['warning',
+    `${r.vulns_severe} severe vulnerabilit${r.vulns_severe===1?'y':'ies'} on ${r.label}`,'critical or high']));
   h.filter(r=>r.recipient_count===0).forEach(r=>attention.push(['info',`${r.label} has no alert recipients`,'alerts would go nowhere']));
   if (failed) attention.push(['critical',`${failed} alert email(s) failed to send`,'open Alerts for the reason']);
 
@@ -320,12 +332,14 @@ function pageOverview(){
 
   return `
   <div class="space-y-6">
-    <dl class="bg-paper border border-rule grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 divide-x divide-hairline">
+    <dl class="bg-paper border border-rule grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 divide-x divide-hairline">
       ${kpi('Nodes',h.length,null,`${c.pending} pending`)}
       ${kpi('Healthy',c.healthy,HEX.healthy)}
       ${kpi('Degraded',c.degraded,c.degraded?HEX.degraded:null)}
       ${kpi('Down',c.down,c.down?HEX.down:null)}
       ${kpi('Mean trust',avg??'—',trustColour(avg))}
+      ${kpi('File changes 24h',fileChanges,critFiles?HEX.down:null,`${critFiles} critical`)}
+      ${kpi('Severe CVEs',severeVulns,severeVulns?HEX.down:HEX.healthy,`${h.reduce((a,r)=>a+(r.vulns_total||0),0)} total known`)}
       ${kpi('Mail 24h',sent,failed?HEX.down:HEX.healthy,`${failed} failed · ${queued} queued`)}
     </dl>
 
@@ -425,10 +439,12 @@ function pageNodes(){
 
 function flags(r){
   const out=[];
+  if(r.critical_file_changes_24h>0) out.push([`${r.critical_file_changes_24h} critical file change${r.critical_file_changes_24h>1?'s':''}`,'text-down']);
   if(r.priv_changes_24h>0) out.push([`${r.priv_changes_24h} privileged account change${r.priv_changes_24h>1?'s':''}`,'text-down']);
   if(r.failed_logins_1h>0) out.push([`${r.failed_logins_1h} failed sign-in${r.failed_logins_1h>1?'s':''} (1h)`,'text-down']);
   if(r.checks_failed>0) out.push([`${r.checks_failed} check${r.checks_failed>1?'s':''} failing${r.checks_failed_high?` · ${r.checks_failed_high} high`:''}`,
     r.checks_failed_high?'text-down':'text-degraded']);
+  if(r.vulns_severe>0) out.push([`${r.vulns_severe} severe CVE${r.vulns_severe>1?'s':''}`,'text-down']);
   if(!out.length) return '';
   return `<div class="border-t border-hairline px-4 py-1.5 space-y-0.5">
     ${out.map(([t,c])=>`<p class="font-mono text-[10px] ${c}">${t}</p>`).join('')}</div>`;
@@ -628,9 +644,10 @@ function pageAlerts(){
 }
 
 // ═══════════════════════════ page: activity
-const TABS=[['ports','Ports'],['users','Accounts'],['auth','Sign-ins']];
+const TABS=[['ports','Ports'],['users','Accounts'],['auth','Sign-ins'],['files','File changes']];
 function pageActivity(){
-  const counts={ports:state.ports.length,users:state.users.length,auth:state.auth.length};
+  const counts={ports:state.ports.length,users:state.users.length,
+                auth:state.auth.length,files:state.fim.length};
   const tabs=TABS.map(([k,l])=>`
     <button data-tab="${k}" role="tab" aria-selected="${state.tab===k}"
       class="font-mono text-[11px] uppercase tracking-[.14em] px-4 py-2.5 border border-b-0 -mb-px
@@ -638,7 +655,8 @@ function pageActivity(){
       ${l} <span class="text-muted">${counts[k]||0}</span></button>`).join('');
   return `<div><div class="flex items-center gap-1 border-b border-rule">${tabs}</div>
     <div class="bg-paper border border-rule border-t-0">${
-      state.tab==='ports'?tabPorts():state.tab==='users'?tabUsers():tabAuth()}</div></div>`;
+      state.tab==='ports'?tabPorts():state.tab==='users'?tabUsers():
+      state.tab==='auth'?tabAuth():tabFiles()}</div></div>`;
 }
 const line = cells => `<div class="flex items-center gap-3 px-5 py-2.5 rise">${cells}</div>`;
 const list = (rows,msg) => rows.length
@@ -674,6 +692,79 @@ function tabAuth(){
     <span class="font-mono text-[11px] text-muted truncate w-32 text-right shrink-0">${esc(r.agents?.hostname||'')}</span>
     <span class="font-mono text-[11px] text-muted tabular-nums w-10 text-right shrink-0">${ago(r.ts)}</span>`)),
     'No sign-in activity recorded.');
+}
+
+function tabFiles(){
+  const tone={added:'text-signal',modified:'text-degraded',deleted:'text-down'};
+  return list(state.fim.map(f=>`
+    <div class="px-5 py-2.5 rise">
+      <div class="flex items-center gap-3">
+        <span class="font-mono text-[10px] uppercase tracking-[.12em] w-16 shrink-0 ${tone[f.action]}">${esc(f.action)}</span>
+        <span class="font-mono text-sm truncate flex-1">${esc(f.path)}</span>
+        ${f.critical?'<span class="font-mono text-[10px] uppercase tracking-[.1em] text-down shrink-0">critical</span>':''}
+        <span class="font-mono text-[11px] text-muted truncate w-32 text-right shrink-0">${esc(nameOf(f.agent_id))}</span>
+        <span class="font-mono text-[11px] text-muted tabular-nums w-10 text-right shrink-0">${ago(f.ts)}</span>
+      </div>
+      <p class="font-mono text-[11px] text-muted mt-1 pl-[5rem] truncate">${esc(f.detail||'')}</p>
+    </div>`),
+    'No file changes across the fleet. Baselines are recorded silently at first scan.');
+}
+
+// ═══════════════════════════ page: vulnerabilities
+function pageVulns(){
+  if(!state.vulns.length) return card(empty(
+    'No vulnerabilities recorded yet. Package inventory is collected every 6 hours '
+    + 'and resolved against OSV every 10 minutes.'));
+
+  // Group by CVE so one row answers "which hosts does this affect".
+  const byVuln={};
+  state.vulns.forEach(v=>{
+    (byVuln[v.vuln_id] ||= { ...v, packages:new Set(), agents:new Set() });
+    byVuln[v.vuln_id].packages.add(`${v.name} ${v.version}`);
+    (v.agent_ids||[]).forEach(a=>byVuln[v.vuln_id].agents.add(a));
+  });
+  const ord={critical:0,high:1,medium:2,low:3,unknown:4};
+  const rows=Object.values(byVuln).sort((a,b)=>
+    ord[a.severity]-ord[b.severity] || b.agents.size-a.agents.size);
+
+  const tone={critical:'text-down',high:'text-down',medium:'text-degraded',
+              low:'text-muted',unknown:'text-muted'};
+  const c={critical:0,high:0,medium:0,low:0,unknown:0};
+  rows.forEach(r=>c[r.severity]!==undefined&&c[r.severity]++);
+
+  const kpi=(l,v,col)=>`<div class="px-5 py-4">
+    <dt class="font-mono text-[9px] tracking-[.18em] uppercase text-muted">${l}</dt>
+    <dd class="text-2xl font-semibold tabular-nums leading-none mt-1.5" style="color:${col||'#16202B'}">${v}</dd></div>`;
+
+  return `<div class="space-y-5">
+    <dl class="bg-paper border border-rule grid grid-cols-2 md:grid-cols-5 divide-x divide-hairline">
+      ${kpi('Critical',c.critical,c.critical?HEX.down:null)}
+      ${kpi('High',c.high,c.high?HEX.down:null)}
+      ${kpi('Medium',c.medium,c.medium?HEX.degraded:null)}
+      ${kpi('Low',c.low)}
+      ${kpi('Unrated',c.unknown)}
+    </dl>
+    <p class="text-sm text-muted max-w-2xl">
+      Resolved against OSV.dev. <span class="font-mono text-[11px]">Unrated</span> means OSV
+      carries no severity for that record — it is not counted toward a node's trust score,
+      deliberately, rather than being guessed at.
+    </p>
+    ${card(`<div class="divide-y divide-hairline max-h-[38rem] overflow-y-auto">${rows.map(v=>`
+      <div class="px-5 py-3 rise">
+        <div class="flex items-center gap-3">
+          <span class="font-mono text-[10px] uppercase tracking-[.12em] w-16 shrink-0 ${tone[v.severity]}">${esc(v.severity)}</span>
+          <span class="font-mono text-sm truncate w-56 shrink-0">${esc(v.vuln_id)}</span>
+          <span class="text-sm text-muted truncate flex-1">${esc(v.summary||'no summary')}</span>
+          <span class="font-mono text-[11px] shrink-0 ${v.agents.size?'text-down':'text-muted'}">${v.agents.size} node${v.agents.size===1?'':'s'}</span>
+        </div>
+        <div class="flex flex-wrap gap-x-4 mt-1 pl-[4.75rem]">
+          <span class="font-mono text-[11px] text-muted">${esc([...v.packages].slice(0,3).join(', '))}${v.packages.size>3?` +${v.packages.size-3}`:''}</span>
+          ${v.fixed_in?`<span class="font-mono text-[11px] text-healthy">fixed in ${esc(v.fixed_in)}</span>`
+                      :'<span class="font-mono text-[11px] text-degraded">no fix listed</span>'}
+          ${[...v.agents].length?`<span class="font-mono text-[11px] text-muted">${esc([...v.agents].map(nameOf).join(', '))}</span>`:''}
+        </div>
+      </div>`).join('')}</div>`)}
+  </div>`;
 }
 
 // ═══════════════════════════ page: posture
@@ -779,6 +870,7 @@ const TITLES = {
   alerts:['Alerts','What fired, and whether it was delivered'],
   activity:['Activity','Port, account and sign-in events'],
   posture:['Posture','Failing configuration checks by node'],
+  vulns:['Vulnerabilities','Known CVEs across installed packages'],
   settings:['Settings','Global recipients and alert rules'],
 };
 
@@ -806,7 +898,8 @@ function render(){
     state.page==='alerts'   ? pageAlerts()   :
     state.page==='activity' ? pageActivity() :
     state.page==='posture'  ? pagePosture()  :
-    state.page==='host'     ? pageHost()     : pageSettings();
+    state.page==='host'     ? pageHost()     :
+    state.page==='vulns'    ? pageVulns()    : pageSettings();
 
   bind();
 }
@@ -996,7 +1089,7 @@ async function loadHostDetail(id){
 async function refresh(){
   try{
     const since=new Date(Date.now()-20*60*1000).toISOString();
-    const [hosts,latest,hist,ports,auth,checks,users,alerts,recips,rules,tokens]=await Promise.all([
+    const [hosts,latest,hist,ports,auth,checks,users,alerts,recips,rules,tokens,fim,vulns,pkgs]=await Promise.all([
       sb.from('agent_overview').select('*').order('label'),
       sb.from('agent_latest_metrics').select('*'),
       sb.from('metrics').select('agent_id,ts,cpu_pct').gte('ts',since).order('ts'),
@@ -1012,13 +1105,27 @@ async function refresh(){
       sb.from('alert_recipients').select('id,email,agent_id').order('created_at'),
       sb.from('alert_rules').select('rule,severity,cooldown,enabled,description').order('rule'),
       sb.from('enroll_token_status').select('*').order('created_at',{ascending:false}).limit(20),
+      sb.from('fim_events').select('ts,path,action,critical,detail,agent_id')
+        .order('ts',{ascending:false}).limit(80),
+      // Vulnerabilities joined to the hosts running the affected package, so
+      // one row can answer "which nodes does this affect".
+      sb.from('package_vulns').select('name,version,vuln_id,severity,summary,fixed_in').limit(400),
+      sb.from('host_packages').select('agent_id,name,version').limit(4000),
     ]);
-    const bad=[hosts,latest,hist,ports,auth,checks,users,alerts,recips,rules,tokens].find(r=>r.error);
+    const bad=[hosts,latest,hist,ports,auth,checks,users,alerts,recips,rules,tokens,fim,vulns,pkgs].find(r=>r.error);
     if(bad) throw bad.error;
 
     state.hosts=hosts.data; state.ports=ports.data; state.auth=auth.data;
     state.checks=checks.data; state.users=users.data; state.alerts=alerts.data;
     state.recipients=recips.data; state.rules=rules.data; state.tokens=tokens.data||[];
+    state.fim=fim.data||[];
+
+    // Attach affected hosts to each finding. Done client-side because the
+    // join is small and it avoids another view.
+    const owners={};
+    (pkgs.data||[]).forEach(p=>(owners[p.name+'@'+p.version] ||= []).push(p.agent_id));
+    state.vulns=(vulns.data||[]).map(v=>({...v, agent_ids:owners[v.name+'@'+v.version]||[]}))
+                                .filter(v=>v.agent_ids.length);
     state.metrics={}; latest.data.forEach(m=>state.metrics[m.agent_id]=m);
     state.series={};  hist.data.forEach(m=>(state.series[m.agent_id] ||= []).push(m.cpu_pct??0));
 
