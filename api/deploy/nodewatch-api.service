@@ -1,0 +1,25 @@
+[Unit]
+Description=nodewatch ingest API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nodewatch
+WorkingDirectory=/opt/nodewatch-api
+EnvironmentFile=/etc/nodewatch/api.env
+ExecStart=/opt/nodewatch-api/venv/bin/uvicorn app:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# The service only needs to read its own directory.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/nodewatch-api
+
+[Install]
+WantedBy=multi-user.target

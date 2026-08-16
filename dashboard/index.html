@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nodewatch — fleet telemetry</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+<script>
+tailwind.config = {
+  theme: {
+    extend: {
+      colors: {
+        ground:  '#E4E7EB',
+        paper:   '#FFFFFF',
+        rule:    '#C9D0D8',
+        ink:     '#16202B',
+        muted:   '#5C6B7A',
+        healthy: '#0F7B6C',
+        degraded:'#B07314',
+        down:    '#A93226',
+        signal:  '#1F4BD8',
+      },
+      fontFamily: {
+        sans: ['"IBM Plex Sans"', 'system-ui', 'sans-serif'],
+        mono: ['"IBM Plex Mono"', 'ui-monospace', 'monospace'],
+      },
+    }
+  }
+}
+</script>
+
+<style>
+  body { background:
+      repeating-linear-gradient(0deg,  transparent 0 23px, rgba(22,32,43,.035) 23px 24px),
+      repeating-linear-gradient(90deg, transparent 0 23px, rgba(22,32,43,.035) 23px 24px),
+      #E4E7EB; }
+  .rise { animation: rise .28s ease-out both; }
+  @keyframes rise { from { opacity:0; transform:translateY(3px) } to { opacity:1; transform:none } }
+  .live::after { content:''; position:absolute; inset:0; border-radius:9999px;
+                 box-shadow:0 0 0 0 currentColor; animation:ping 2.4s ease-out infinite; }
+  @keyframes ping { 70%,100% { box-shadow:0 0 0 7px transparent } }
+  :focus-visible { outline:2px solid #1F4BD8; outline-offset:2px }
+  @media (prefers-reduced-motion: reduce) {
+    .rise, .live::after { animation: none !important }
+  }
+</style>
+</head>
+
+<body class="font-sans text-ink antialiased">
+
+<!-- ================= sign in ================= -->
+<div id="gate" class="min-h-screen flex items-center justify-center px-5">
+  <div class="w-full max-w-sm bg-paper border border-rule">
+    <div class="border-b border-rule px-6 py-5">
+      <p class="font-mono text-[10px] tracking-[.22em] text-muted uppercase">Fleet telemetry</p>
+      <h1 class="text-2xl font-semibold tracking-tight mt-1">nodewatch</h1>
+    </div>
+    <div class="px-6 py-6 space-y-4">
+      <p class="text-sm text-muted leading-relaxed">
+        Telemetry is protected by row-level security. Sign in to read it.
+      </p>
+      <div>
+        <label for="email" class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Email</label>
+        <input id="email" type="email" autocomplete="username"
+               class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+      </div>
+      <div>
+        <label for="pw" class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Password</label>
+        <input id="pw" type="password" autocomplete="current-password"
+               class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+      </div>
+      <button id="signin"
+              class="w-full bg-ink text-white py-2.5 text-sm font-medium hover:bg-signal transition-colors">
+        Sign in
+      </button>
+      <p id="gate-msg" class="text-sm text-down min-h-[1.25rem]"></p>
+    </div>
+  </div>
+</div>
+
+<!-- ================= console ================= -->
+<div id="console" class="hidden max-w-[1400px] mx-auto px-5 py-6">
+
+  <header class="flex flex-wrap items-end justify-between gap-4 border-b-2 border-ink pb-4">
+    <div>
+      <p class="font-mono text-[10px] tracking-[.22em] text-muted uppercase">Fleet telemetry</p>
+      <h1 class="text-3xl font-semibold tracking-tight leading-none mt-1">nodewatch</h1>
+    </div>
+    <div class="flex items-end gap-7">
+      <div id="tally" class="flex gap-7"></div>
+      <div class="text-right">
+        <p class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Refreshed</p>
+        <p id="clock" class="font-mono text-sm tabular-nums">—</p>
+      </div>
+      <button id="signout" class="font-mono text-[11px] uppercase tracking-[.14em] text-muted hover:text-signal underline underline-offset-4">
+        Sign out
+      </button>
+    </div>
+  </header>
+
+  <div class="grid lg:grid-cols-[1.15fr_1fr] gap-6 mt-6">
+
+    <!-- hosts -->
+    <section>
+      <h2 class="font-mono text-[10px] tracking-[.22em] uppercase text-muted mb-2">Hosts</h2>
+      <div id="hosts" class="space-y-3"></div>
+    </section>
+
+    <div class="space-y-6">
+      <!-- port changes -->
+      <section>
+        <h2 class="font-mono text-[10px] tracking-[.22em] uppercase text-muted mb-2">Listening port changes</h2>
+        <div id="ports" class="bg-paper border border-rule divide-y divide-rule max-h-[19rem] overflow-y-auto"></div>
+      </section>
+
+      <!-- auth -->
+      <section>
+        <h2 class="font-mono text-[10px] tracking-[.22em] uppercase text-muted mb-2">Authentication</h2>
+        <div id="auth" class="bg-paper border border-rule divide-y divide-rule max-h-[19rem] overflow-y-auto"></div>
+      </section>
+    </div>
+  </div>
+
+  <p id="err" class="mt-5 font-mono text-xs text-down"></p>
+</div>
+
+<script>
+// ---------------------------------------------------------------- config
+const SUPABASE_URL = "https://jcprvuqhnjtgskjuoded.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpjcHJ2dXFobmp0Z3NranVvZGVkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY4MzEzNjMsImV4cCI6MjEwMjQwNzM2M30.7PH62L3s5SLTHXBhs-yvdcjXs_QiT2ILg1H6ZJpfefk";
+const POLL_MS = 10000;
+const TRACE_POINTS = 40;
+
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const $ = id => document.getElementById(id);
+const STATUS = { healthy:'healthy', degraded:'degraded', down:'down' };
+
+// ---------------------------------------------------------------- auth
+$('signin').onclick = async () => {
+  $('gate-msg').textContent = '';
+  const { error } = await sb.auth.signInWithPassword({
+    email: $('email').value.trim(), password: $('pw').value
+  });
+  if (error) { $('gate-msg').textContent = error.message; return; }
+  enter();
+};
+$('pw').addEventListener('keydown', e => { if (e.key === 'Enter') $('signin').click(); });
+$('signout').onclick = async () => { await sb.auth.signOut(); location.reload(); };
+
+let timer = null;
+function enter() {
+  $('gate').classList.add('hidden');
+  $('console').classList.remove('hidden');
+  refresh();
+  timer = setInterval(refresh, POLL_MS);
+}
+sb.auth.getSession().then(({ data }) => { if (data.session) enter(); });
+
+// ---------------------------------------------------------------- helpers
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+function ago(iso) {
+  const s = Math.max(0, (Date.now() - new Date(iso)) / 1000);
+  if (s < 60) return Math.floor(s) + 's';
+  if (s < 3600) return Math.floor(s / 60) + 'm';
+  if (s < 86400) return Math.floor(s / 3600) + 'h';
+  return Math.floor(s / 86400) + 'd';
+}
+
+function uptime(sec) {
+  if (sec == null) return '—';
+  const d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600);
+  return d ? `${d}d ${h}h` : `${h}h ${Math.floor(sec % 3600 / 60)}m`;
+}
+
+// Chart-recorder trace: one tick per heartbeat, height = CPU.
+// Gaps in the trace are the point — a missing tick is a missed heartbeat.
+function trace(samples, colour) {
+  const w = 3, gap = 1, h = 26;
+  const pts = samples.slice(-TRACE_POINTS);
+  const pad = TRACE_POINTS - pts.length;
+  let bars = '';
+  pts.forEach((v, i) => {
+    const bh = Math.max(1.5, Math.min(h, (v / 100) * h));
+    bars += `<rect x="${(pad + i) * (w + gap)}" y="${h - bh}" width="${w}" height="${bh}" fill="${colour}" opacity=".85"/>`;
+  });
+  const total = TRACE_POINTS * (w + gap);
+  return `<svg viewBox="0 0 ${total} ${h}" preserveAspectRatio="none"
+               class="w-full h-[26px]" role="img" aria-label="Recent CPU heartbeats">
+            <line x1="0" y1="${h - 0.5}" x2="${total}" y2="${h - 0.5}" stroke="#C9D0D8" stroke-width="1"/>
+            ${bars}
+          </svg>`;
+}
+
+// ---------------------------------------------------------------- render
+function renderTally(rows) {
+  const c = { healthy:0, degraded:0, down:0 };
+  rows.forEach(r => c[r.status] !== undefined && c[r.status]++);
+  $('tally').innerHTML = ['healthy','degraded','down'].map(k => `
+    <div>
+      <p class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">${k}</p>
+      <p class="text-2xl font-semibold tabular-nums text-${k} leading-none mt-1">${c[k]}</p>
+    </div>`).join('');
+}
+
+function renderHosts(rows, latest, series) {
+  if (!rows.length) {
+    $('hosts').innerHTML = `<div class="bg-paper border border-rule px-5 py-8 text-sm text-muted">
+      No hosts have enrolled yet. Start the agent on an instance and it will appear here within a minute.
+    </div>`;
+    return;
+  }
+  const hex = { healthy:'#0F7B6C', degraded:'#B07314', down:'#A93226' };
+  $('hosts').innerHTML = rows.map(r => {
+    const m = latest[r.id] || {};
+    const st = STATUS[r.status] ? r.status : 'down';
+    return `
+    <article class="bg-paper border border-rule rise">
+      <div class="flex items-start justify-between gap-4 px-5 pt-4">
+        <div class="min-w-0">
+          <div class="flex items-center gap-2">
+            <span class="relative inline-block w-2 h-2 rounded-full ${st==='healthy'?'live':''}"
+                  style="background:${hex[st]};color:${hex[st]}"></span>
+            <h3 class="font-semibold tracking-tight truncate">${esc(r.hostname || r.instance_id)}</h3>
+          </div>
+          <p class="font-mono text-[11px] text-muted mt-1 truncate">
+            ${esc(r.instance_id)} · ${esc(r.region || '—')} · ${esc(r.os || '—')}
+          </p>
+        </div>
+        <div class="text-right shrink-0">
+          <p class="font-mono text-[10px] tracking-[.16em] uppercase" style="color:${hex[st]}">${st}</p>
+          <p class="font-mono text-[11px] text-muted tabular-nums mt-0.5">seen ${ago(r.last_seen)} ago</p>
+        </div>
+      </div>
+
+      <div class="px-5 pt-3">${trace(series[r.id] || [], hex[st])}</div>
+
+      <dl class="grid grid-cols-5 border-t border-rule mt-3 divide-x divide-rule">
+        ${[
+          ['cpu',   m.cpu_pct  != null ? m.cpu_pct.toFixed(0)+'%' : '—'],
+          ['mem',   m.mem_pct  != null ? m.mem_pct.toFixed(0)+'%' : '—'],
+          ['disk',  m.disk_pct != null ? m.disk_pct.toFixed(0)+'%' : '—'],
+          ['uptime',uptime(m.uptime_s)],
+          ['open',  r.external_ports ?? 0],
+        ].map(([k,v]) => `
+          <div class="px-3 py-2">
+            <dt class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">${k}</dt>
+            <dd class="font-mono text-sm tabular-nums mt-0.5">${v}</dd>
+          </div>`).join('')}
+      </dl>
+
+      ${r.failed_logins_1h > 0 ? `
+      <p class="border-t border-rule px-5 py-2 font-mono text-[11px] text-down">
+        ${r.failed_logins_1h} failed sign-in${r.failed_logins_1h>1?'s':''} in the last hour
+      </p>` : ''}
+    </article>`;
+  }).join('');
+}
+
+function renderPorts(rows) {
+  if (!rows.length) {
+    $('ports').innerHTML = `<p class="px-4 py-6 text-sm text-muted">
+      No changes recorded. Open a listener on a host — <span class="font-mono">python3 -m http.server 8080</span> — and it appears here within a minute.</p>`;
+    return;
+  }
+  $('ports').innerHTML = rows.map(r => `
+    <div class="flex items-center gap-3 px-4 py-2.5 rise">
+      <span class="font-mono text-[10px] uppercase tracking-[.14em] w-14 shrink-0
+                   ${r.action === 'opened' ? 'text-signal' : 'text-muted'}">${r.action}</span>
+      <span class="font-mono text-sm tabular-nums w-16 shrink-0">${r.port}/${esc(r.proto)}</span>
+      <span class="font-mono text-xs text-muted truncate flex-1">
+        ${esc(r.process || 'unknown')} · ${esc(r.bind_addr)} · ${esc(r.agents?.hostname || '')}
+      </span>
+      ${r.external ? '<span class="font-mono text-[10px] uppercase tracking-[.12em] text-down shrink-0">external</span>' : ''}
+      <span class="font-mono text-[11px] text-muted tabular-nums shrink-0">${ago(r.ts)}</span>
+    </div>`).join('');
+}
+
+function renderAuth(rows) {
+  if (!rows.length) {
+    $('auth').innerHTML = `<p class="px-4 py-6 text-sm text-muted">
+      No sign-in activity recorded yet. SSH to a host and it appears here within a minute.</p>`;
+    return;
+  }
+  const tone = { login_failed:'text-down', login_success:'text-healthy' };
+  $('auth').innerHTML = rows.map(r => `
+    <div class="flex items-center gap-3 px-4 py-2.5 rise">
+      <span class="font-mono text-[10px] uppercase tracking-[.12em] w-24 shrink-0 ${tone[r.kind] || 'text-muted'}">
+        ${esc(r.kind.replace('_',' '))}
+      </span>
+      <span class="font-mono text-sm truncate w-24 shrink-0">${esc(r.username || '—')}</span>
+      <span class="font-mono text-xs text-muted tabular-nums truncate flex-1">${esc(r.source_ip || 'local')}</span>
+      <span class="font-mono text-xs text-muted truncate hidden sm:block">${esc(r.agents?.hostname || '')}</span>
+      <span class="font-mono text-[11px] text-muted tabular-nums shrink-0">${ago(r.ts)}</span>
+    </div>`).join('');
+}
+
+// ---------------------------------------------------------------- poll
+async function refresh() {
+  try {
+    const since = new Date(Date.now() - 20 * 60 * 1000).toISOString();
+    const [health, latest, hist, ports, auth] = await Promise.all([
+      sb.from('agent_health').select('*').order('hostname'),
+      sb.from('agent_latest_metrics').select('*'),
+      sb.from('metrics').select('agent_id,ts,cpu_pct').gte('ts', since).order('ts'),
+      sb.from('port_events').select('ts,port,proto,bind_addr,external,process,action,agents(hostname)')
+        .order('ts', { ascending:false }).limit(50),
+      sb.from('auth_events').select('ts,kind,username,source_ip,agents(hostname)')
+        .order('ts', { ascending:false }).limit(50),
+    ]);
+
+    const bad = [health, latest, hist, ports, auth].find(r => r.error);
+    if (bad) throw bad.error;
+
+    const byAgent = {};
+    latest.data.forEach(m => byAgent[m.agent_id] = m);
+
+    const series = {};
+    hist.data.forEach(m => (series[m.agent_id] ||= []).push(m.cpu_pct ?? 0));
+
+    renderTally(health.data);
+    renderHosts(health.data, byAgent, series);
+    renderPorts(ports.data);
+    renderAuth(auth.data);
+
+    $('clock').textContent = new Date().toLocaleTimeString([], { hour12:false });
+    $('err').textContent = '';
+  } catch (e) {
+    $('err').textContent = 'Could not load telemetry: ' + (e.message || e);
+  }
+}
+</script>
+</body>
+</html>
