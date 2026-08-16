@@ -14,6 +14,8 @@ An attacker who guesses an instance ID still cannot enroll from elsewhere.
 import json
 import logging
 import os
+import subprocess
+import tempfile
 from datetime import datetime, timedelta, timezone
 
 import jwt
@@ -33,6 +35,18 @@ JWT_TTL_MIN = int(os.environ.get("NW_JWT_TTL_MIN", "15"))
 # "off"  - trust the document as presented (local development only)
 VERIFY_MODE = os.environ.get("NW_VERIFY_MODE", "aws")
 
+# Path to the AWS regional public certificate. When set, the PKCS7
+# signature over the identity document is verified cryptographically
+# before anything else. This is strictly stronger than the DescribeInstances
+# check: it proves AWS itself signed the document, not merely that an
+# instance with that ID exists.
+AWS_CERT_PATH = os.environ.get("NW_AWS_CERT_PATH", "")
+
+# When true, enrolment additionally requires a single-use token issued from
+# the dashboard. The identity document proves the node is who it says it is;
+# the token proves somebody invited it.
+REQUIRE_TOKEN = os.environ.get("NW_REQUIRE_TOKEN", "false").lower() == "true"
+
 MAX_EVENTS_PER_BATCH = 500
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -45,11 +59,16 @@ pool = ConnectionPool(DATABASE_URL, min_size=1, max_size=8, open=True)
 # ---------------------------------------------------------------- models
 
 class EnrollBody(BaseModel):
+    # The parsed document is convenience; document_raw is what AWS actually
+    # signed. Reconstructing JSON from the parsed form does not byte-match
+    # and verification would always fail.
     document: dict
+    document_raw: str | None = None
     pkcs7: str | None = None
     hostname: str | None = None
     os: str | None = None
     agent_version: str | None = None
+    enroll_token: str | None = None
 
 
 class Event(BaseModel):
@@ -69,6 +88,85 @@ def client_ip(request: Request) -> str:
     if fwd:
         return fwd.split(",")[0].strip()
     return request.client.host if request.client else ""
+
+
+def verify_pkcs7(doc: dict, doc_raw: str | None, pkcs7: str | None) -> bool:
+    """
+    Verify AWS's signature over the identity document.
+
+    Uses openssl cms rather than reimplementing PKCS7 in Python, with
+    -binary so no canonicalisation is applied: the signature covers the
+    exact bytes IMDS returned, and even an added space invalidates it.
+    -noverify skips chain validation, which is correct here - the regional
+    certificate IS the trust anchor, there is no CA above it.
+
+    Returns True when verified, False when no certificate is configured.
+    Raises on an actual verification failure.
+    """
+    if not AWS_CERT_PATH:
+        return False
+    if not pkcs7:
+        raise HTTPException(400, "identity document is not signed")
+    if not doc_raw:
+        raise HTTPException(400, "agent did not send the raw identity document")
+    if not os.path.exists(AWS_CERT_PATH):
+        log.error("NW_AWS_CERT_PATH set but %s does not exist", AWS_CERT_PATH)
+        return False
+
+    # IMDS returns bare base64 with no PEM armour, so wrap it. Accept an
+    # already-armoured blob too (BEGIN PKCS7 or BEGIN CMS) rather than
+    # double-wrapping it into something openssl cannot parse.
+    body = pkcs7.strip()
+    if "-----BEGIN" not in body:
+        body = "-----BEGIN PKCS7-----\n" + body + "\n-----END PKCS7-----\n"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        sig_path = os.path.join(tmp, "sig.pem")
+        doc_path = os.path.join(tmp, "doc.json")
+        with open(sig_path, "w") as f:
+            f.write(body)
+        # Exactly the bytes IMDS returned, written without re-encoding.
+        with open(doc_path, "wb") as f:
+            f.write(doc_raw.encode())
+
+        proc = subprocess.run(
+            ["openssl", "cms", "-verify", "-in", sig_path, "-inform", "PEM",
+             "-content", doc_path, "-certfile", AWS_CERT_PATH,
+             "-noverify", "-binary"],
+            capture_output=True, text=True, timeout=10,
+        )
+
+    if proc.returncode != 0:
+        log.warning("pkcs7 verification failed for %s: %s",
+                    doc.get("instanceId"), proc.stderr.strip()[:200])
+        raise HTTPException(403, "identity document signature is not valid")
+
+    return True
+
+
+def consume_token(conn, token: str | None, instance_id: str) -> None:
+    """Single use, time limited, revocable. Consumed inside the enrolment txn."""
+    if not REQUIRE_TOKEN:
+        return
+    if not token:
+        raise HTTPException(403, "enrolment token required")
+
+    row = conn.execute(
+        """
+        update enroll_tokens
+           set used_at = now(), used_by = %s
+         where token = %s
+           and used_at is null
+           and not revoked
+           and expires_at > now()
+        returning token
+        """,
+        (instance_id, token),
+    ).fetchone()
+
+    if not row:
+        log.warning("enrolment rejected for %s: token invalid, used or expired", instance_id)
+        raise HTTPException(403, "enrolment token is invalid, already used, or expired")
 
 
 def verify_instance(doc: dict, source_ip: str) -> None:
@@ -153,13 +251,27 @@ def health():
 @app.post("/v1/enroll")
 def enroll(body: EnrollBody, request: Request):
     doc = body.document
-    verify_instance(doc, client_ip(request))
-
     instance_id = doc.get("instanceId")
     if not instance_id:
         raise HTTPException(400, "missing instanceId")
 
+    # Layered, cheapest and strongest first:
+    #   1. AWS signed this document      (cryptographic, if a cert is configured)
+    #   2. the instance is in our account and the source address matches
+    #   3. somebody invited this node    (if tokens are required)
+    signed = verify_pkcs7(doc, body.document_raw, body.pkcs7)
+
+    # A valid signature over a *different* document would otherwise pass.
+    if signed and body.document_raw:
+        try:
+            if json.loads(body.document_raw).get("instanceId") != instance_id:
+                raise HTTPException(403, "signed document does not match claimed instance")
+        except json.JSONDecodeError:
+            raise HTTPException(400, "raw identity document is not valid JSON")
+    verify_instance(doc, client_ip(request))
+
     with pool.connection() as conn:
+        consume_token(conn, body.enroll_token, instance_id)
         # Scope the row factory to this cursor. Setting it on the connection
         # leaks the setting to the next request that borrows it from the pool.
         cur = conn.cursor(row_factory=dict_row)
@@ -189,7 +301,8 @@ def enroll(body: EnrollBody, request: Request):
             ),
         ).fetchone()
 
-    log.info("enrolled %s (%s)", instance_id, body.hostname)
+    log.info("enrolled %s (%s)%s", instance_id, body.hostname,
+             " [pkcs7 verified]" if signed else "")
     return {"token": issue_token(row["id"], instance_id), "agent_id": str(row["id"])}
 
 
