@@ -196,7 +196,7 @@ def enroll(body: EnrollBody, request: Request):
 @app.post("/v1/ingest")
 def ingest(body: IngestBody, authorization: str | None = Header(default=None)):
     agent_id = agent_from_token(authorization)
-    counts = {"heartbeat": 0, "auth": 0, "ports": 0, "port_changes": 0}
+    counts = {"heartbeat": 0, "auth": 0, "ports": 0, "port_changes": 0, "checks": 0, "users": 0, "user_changes": 0}
 
     with pool.connection() as conn:
         for ev in body.events:
@@ -237,6 +237,17 @@ def ingest(body: IngestBody, authorization: str | None = Header(default=None)):
                     conn, agent_id, ts, ev.data.get("listening", [])
                 )
                 counts["ports"] += 1
+
+            elif ev.kind == "users":
+                counts["users"] += 1
+                counts["user_changes"] += diff_users(
+                    conn, agent_id, ts, ev.data.get("accounts", [])
+                )
+
+            elif ev.kind == "checks":
+                counts["checks"] += sync_checks(
+                    conn, agent_id, ts, ev.data.get("results", [])
+                )
 
         # last_seen is the single source of truth for health. Update it once
         # per batch, from the server clock, never from agent-reported time.
@@ -310,6 +321,141 @@ def diff_ports(conn, agent_id: str, ts: datetime, listening: list) -> int:
                where agent_id = %s and port = %s and proto = %s and bind_addr = %s""",
             (agent_id, port, proto, bind),
         )
+        changes += 1
+
+    return changes
+
+
+def sync_checks(conn, agent_id: str, ts: datetime, results: list) -> int:
+    """
+    Upsert the posture snapshot. last_changed only moves when the status
+    actually flips, so "this started failing 10 minutes ago" stays
+    answerable across repeated identical snapshots.
+    """
+    if not results:
+        return 0
+
+    seen = []
+    for c in results:
+        cid = c.get("check_id")
+        if not cid:
+            continue
+        seen.append(cid)
+        conn.execute(
+            """
+            insert into host_checks (agent_id, check_id, title, category,
+                                     severity, status, detail, last_seen)
+            values (%s, %s, %s, %s, %s, %s, %s, %s)
+            on conflict (agent_id, check_id) do update set
+                title        = excluded.title,
+                category     = excluded.category,
+                severity     = excluded.severity,
+                detail       = excluded.detail,
+                last_seen    = excluded.last_seen,
+                last_changed = case
+                                 when host_checks.status <> excluded.status
+                                 then excluded.last_seen
+                                 else host_checks.last_changed
+                               end,
+                status       = excluded.status
+            """,
+            (agent_id, cid, c.get("title", cid), c.get("category", "other"),
+             c.get("severity", "low"), c.get("status", "error"),
+             c.get("detail"), ts),
+        )
+
+    # Retire checks the agent no longer reports, e.g. after an upgrade
+    # removes one. Leaving them would freeze a stale failure into the score.
+    conn.execute(
+        "delete from host_checks where agent_id = %s and check_id <> all(%s)",
+        (agent_id, seen),
+    )
+    return len(seen)
+
+
+# Fields whose change is worth reporting. Anything else (home directory
+# tidy-ups, gid renumbering by a package) would be noise.
+TRACKED_USER_FIELDS = ["uid", "shell", "sudoer", "can_login", "password", "groups"]
+
+
+def diff_users(conn, agent_id: str, ts: datetime, accounts: list) -> int:
+    """Derive added / removed / modified account events from a snapshot."""
+    if not accounts:
+        return 0
+
+    snap = {a["username"]: a for a in accounts if a.get("username")}
+
+    known = {
+        r[0]: {"uid": r[1], "shell": r[2], "sudoer": r[3],
+               "can_login": r[4], "password": r[5], "groups": list(r[6] or [])}
+        for r in conn.execute(
+            """select username, uid, shell, sudoer, can_login, password, groups
+                 from user_state where agent_id = %s""", (agent_id,)
+        ).fetchall()
+    }
+
+    changes = 0
+    # First snapshot for this agent establishes the baseline. Emitting an
+    # "added" event for every pre-existing system account would be noise,
+    # and would wrongly depress the churn factor right after enrolment.
+    seeding = not known
+
+    for name, a in snap.items():
+        prev = known.get(name)
+        if prev is None:
+            if not seeding:
+                conn.execute(
+                    """insert into user_events (agent_id, ts, username, action, uid, sudoer, detail)
+                       values (%s, %s, %s, 'added', %s, %s, %s)""",
+                    (agent_id, ts, name, a.get("uid"), a.get("sudoer", False),
+                     f"uid {a.get('uid')}, shell {a.get('shell')}, "
+                     f"{'sudoer' if a.get('sudoer') else 'unprivileged'}, "
+                     f"password {a.get('password')}"),
+                )
+                changes += 1
+        else:
+            diffs = []
+            for k in TRACKED_USER_FIELDS:
+                old, new = prev.get(k), a.get(k)
+                if k == "groups":
+                    old, new = sorted(old or []), sorted(new or [])
+                if old != new:
+                    diffs.append(f"{k}: {old} -> {new}")
+            if diffs:
+                conn.execute(
+                    """insert into user_events (agent_id, ts, username, action, uid, sudoer, detail)
+                       values (%s, %s, %s, 'modified', %s, %s, %s)""",
+                    (agent_id, ts, name, a.get("uid"), a.get("sudoer", False),
+                     "; ".join(diffs)[:400]),
+                )
+                changes += 1
+
+        conn.execute(
+            """
+            insert into user_state (agent_id, username, uid, gid, shell, home,
+                                    groups, sudoer, can_login, password, last_seen)
+            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            on conflict (agent_id, username) do update set
+                uid = excluded.uid, gid = excluded.gid, shell = excluded.shell,
+                home = excluded.home, groups = excluded.groups,
+                sudoer = excluded.sudoer, can_login = excluded.can_login,
+                password = excluded.password, last_seen = excluded.last_seen
+            """,
+            (agent_id, name, a.get("uid"), a.get("gid"), a.get("shell"),
+             a.get("home"), a.get("groups", []), a.get("sudoer", False),
+             a.get("can_login", False), a.get("password"), ts),
+        )
+
+    for name in set(known) - set(snap):
+        prev = known[name]
+        conn.execute(
+            """insert into user_events (agent_id, ts, username, action, uid, sudoer, detail)
+               values (%s, %s, %s, 'removed', %s, %s, %s)""",
+            (agent_id, ts, name, prev.get("uid"), prev.get("sudoer", False),
+             f"was uid {prev.get('uid')}, shell {prev.get('shell')}"),
+        )
+        conn.execute("delete from user_state where agent_id = %s and username = %s",
+                     (agent_id, name))
         changes += 1
 
     return changes
