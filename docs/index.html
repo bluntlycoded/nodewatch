@@ -158,8 +158,10 @@ const PAGES = [
 
 let state = {
   page:'overview', tab:'ports', filter:'all', query:'', alertFilter:'all',
+  host:null, hostTab:'checks',
   hosts:[], metrics:{}, series:{}, alerts:[], ports:[], users:[], auth:[],
-  checks:[], recipients:[], rules:[],
+  checks:[], recipients:[], rules:[], fim:[], tokens:[], history:[],
+  hostDetail:{ checks:[], packages:[], vulns:[], users:[], ports:[], fim:[], history:[] },
 };
 
 // ═══════════════════════════ helpers
@@ -198,6 +200,41 @@ function trace(samples, colour) {
     aria-label="Recent heartbeats"><line x1="0" y1="${h-.5}" x2="${total}" y2="${h-.5}" stroke="#DFE4E9"/>${bars}</svg>`;
 }
 
+// Trust over time. The decay model is invisible in a single number; the
+// line is what shows a host sliding rather than sitting.
+function trustChart(points, w=680, h=140) {
+  if (!points.length) return `<p class="px-5 py-10 text-center text-sm text-muted">
+    No trust history yet. Samples are taken every 5 minutes.</p>`;
+  const pad={l:34,r:12,t:12,b:22};
+  const iw=w-pad.l-pad.r, ih=h-pad.t-pad.b;
+  const t0=new Date(points[0].ts).getTime();
+  const t1=new Date(points[points.length-1].ts).getTime();
+  const span=Math.max(1,t1-t0);
+  const x=p=>pad.l+((new Date(p.ts).getTime()-t0)/span)*iw;
+  const y=v=>pad.t+ih-((v??0)/100)*ih;
+  const path=points.map((p,i)=>`${i?'L':'M'}${x(p).toFixed(1)},${y(p.trust).toFixed(1)}`).join('');
+  const area=`M${x(points[0]).toFixed(1)},${pad.t+ih} `+
+    points.map(p=>`L${x(p).toFixed(1)},${y(p.trust).toFixed(1)}`).join('')+
+    ` L${x(points[points.length-1]).toFixed(1)},${pad.t+ih} Z`;
+  const grid=[0,25,50,75,100].map(v=>`
+    <line x1="${pad.l}" y1="${y(v)}" x2="${w-pad.r}" y2="${y(v)}" stroke="#DFE4E9"/>
+    <text x="${pad.l-6}" y="${y(v)+3}" text-anchor="end"
+      font-family="IBM Plex Mono,monospace" font-size="8" fill="#5C6B7A">${v}</text>`).join('');
+  const last=points[points.length-1];
+  return `<svg viewBox="0 0 ${w} ${h}" class="w-full" role="img" aria-label="Trust score over time">
+    ${grid}
+    <line x1="${pad.l}" y1="${y(70)}" x2="${w-pad.r}" y2="${y(70)}"
+          stroke="#A93226" stroke-width="1" stroke-dasharray="3 3" opacity=".55"/>
+    <text x="${w-pad.r}" y="${y(70)-4}" text-anchor="end"
+      font-family="IBM Plex Mono,monospace" font-size="8" fill="#A93226">re-verify below 70</text>
+    <path d="${area}" fill="${trustColour(last.trust)}" opacity=".10"/>
+    <path d="${path}" fill="none" stroke="${trustColour(last.trust)}" stroke-width="1.6"/>
+    <circle cx="${x(last).toFixed(1)}" cy="${y(last.trust).toFixed(1)}" r="2.6" fill="${trustColour(last.trust)}"/>
+    <text x="${pad.l}" y="${h-6}" font-family="IBM Plex Mono,monospace" font-size="8" fill="#5C6B7A">${ago(points[0].ts)} ago</text>
+    <text x="${w-pad.r}" y="${h-6}" text-anchor="end" font-family="IBM Plex Mono,monospace" font-size="8" fill="#5C6B7A">now</text>
+  </svg>`;
+}
+
 function trustBar(r) {
   return [['exp',r.f_exposure],['auth',r.f_auth],['chn',r.f_churn],['pos',r.f_posture]]
     .map(([l,v])=>`<div class="flex-1" title="${l} ${(v??0).toFixed(2)}">
@@ -220,7 +257,8 @@ function enter(){
   $('gate').classList.add('hidden');
   $('app').classList.remove('hidden');
   const h=(location.hash||'').replace('#/','');
-  if (PAGES.some(([k])=>k===h)) state.page=h;
+  if (h.startsWith('host/')) { state.page='host'; state.host=h.slice(5); }
+  else if (PAGES.some(([k])=>k===h)) state.page=h;
   refresh(); setInterval(refresh, POLL_MS);
 }
 sb.auth.getSession().then(({data})=>{ if(data.session) enter(); });
@@ -228,7 +266,7 @@ sb.auth.getSession().then(({data})=>{ if(data.session) enter(); });
 // ═══════════════════════════ nav
 function badges(){
   const down = state.hosts.filter(h=>h.status==='down').length;
-  const failedMail = state.alerts.filter(a=>a.status==='failed').length;
+  const failedMail = state.alerts.filter(a=>a.status==='failed'||(!a.acknowledged_at&&!a.resolved_at&&a.severity==='critical')).length;
   const highChecks = state.checks.filter(c=>c.severity==='high').length;
   return { nodes:down, alerts:failedMail, posture:highChecks };
 }
@@ -396,14 +434,153 @@ function flags(r){
     ${out.map(([t,c])=>`<p class="font-mono text-[10px] ${c}">${t}</p>`).join('')}</div>`;
 }
 
+// ═══════════════════════════ page: host detail
+const HOST_TABS = [['checks','Posture'],['packages','Packages'],['fim','File changes'],
+                   ['users','Accounts'],['ports','Ports'],['history','Trust history']];
+
+function pageHost(){
+  const r = state.hosts.find(h=>h.id===state.host);
+  if(!r) return card(empty('That node no longer exists.'));
+  const d = state.hostDetail, m = state.metrics[r.id]||{};
+  const st = HEX[r.status]?r.status:'down';
+
+  const stat=(label,val,colour)=>`
+    <div class="px-4 py-3">
+      <dt class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">${label}</dt>
+      <dd class="font-mono text-base tabular-nums mt-1" style="color:${colour||'#16202B'}">${val}</dd>
+    </div>`;
+
+  const counts={checks:d.checks.length,packages:d.packages.length,fim:d.fim.length,
+                users:d.users.length,ports:d.ports.length,history:d.history.length};
+  const tabs=HOST_TABS.map(([k,l])=>`
+    <button data-hosttab="${k}" class="font-mono text-[11px] uppercase tracking-[.14em] px-4 py-2.5 border border-b-0 -mb-px
+      ${state.hostTab===k?'bg-paper border-rule text-ink':'border-transparent text-muted hover:text-ink'}">
+      ${l} <span class="text-muted">${counts[k]||0}</span></button>`).join('');
+
+  return `
+  <div class="space-y-5">
+    <div class="flex items-center gap-3">
+      <button data-goto="nodes" class="font-mono text-[11px] uppercase tracking-[.14em] text-signal hover:underline">&larr; Nodes</button>
+      <span class="font-mono text-[11px] text-muted">${esc(r.instance_id)}</span>
+      ${r.muted?'<span class="font-mono text-[10px] uppercase tracking-[.12em] text-muted border border-rule px-1.5">muted</span>':''}
+      <span class="flex-1"></span>
+      <button data-agent="${r.id}" class="font-mono text-[11px] uppercase tracking-[.14em] border border-ink px-3 py-1.5 hover:bg-ink hover:text-white transition-colors">Settings</button>
+    </div>
+
+    <div class="grid lg:grid-cols-[300px_1fr] gap-5">
+      ${card(`
+        <div class="px-5 py-4 border-b border-rule">
+          <div class="flex items-center gap-2">
+            <span class="relative inline-block w-2 h-2 rounded-full ${st==='healthy'?'live':''}"
+                  style="background:${HEX[st]};color:${HEX[st]}"></span>
+            <h3 class="text-lg font-semibold tracking-tight truncate">${esc(r.label)}</h3>
+          </div>
+          <p class="font-mono text-[11px] text-muted mt-1">${esc(r.os||'—')}</p>
+          ${r.notes?`<p class="text-[12px] text-muted mt-2">${esc(r.notes)}</p>`:''}
+        </div>
+        <div class="px-5 py-4 text-center border-b border-rule">
+          <p class="text-5xl font-semibold tabular-nums leading-none" style="color:${trustColour(r.trust)}">${r.trust??'—'}</p>
+          <p class="font-mono text-[10px] tracking-[.18em] uppercase text-muted mt-1.5">trust</p>
+          ${r.needs_reverification?'<p class="font-mono text-[10px] text-down mt-2">below re-verification threshold</p>':''}
+        </div>
+        <div class="px-5 py-3 border-b border-rule flex gap-1.5">${trustBar(r)}</div>
+        <dl class="grid grid-cols-2 divide-x divide-y divide-hairline">
+          ${stat('cpu', m.cpu_pct!=null?m.cpu_pct.toFixed(0)+'%':'—')}
+          ${stat('memory', m.mem_pct!=null?m.mem_pct.toFixed(0)+'%':'—')}
+          ${stat('disk', m.disk_pct!=null?m.disk_pct.toFixed(0)+'%':'—')}
+          ${stat('uptime', uptime(m.uptime_s))}
+          ${stat('ext ports', r.external_ports??0, r.external_ports>1?HEX.degraded:null)}
+          ${stat('failed logins 1h', r.failed_logins_1h??0, r.failed_logins_1h?HEX.down:null)}
+          ${stat('files watched', r.files_watched??'—')}
+          ${stat('packages', r.package_count??'—')}
+          ${stat('severe CVEs', r.vulns_severe??0, r.vulns_severe?HEX.down:null)}
+          ${stat('recipients', r.recipient_count??0, r.recipient_count?null:HEX.down)}
+        </dl>
+        <div class="px-5 py-2.5 border-t border-rule">
+          <p class="font-mono text-[10px] text-muted">agent ${esc(r.agent_version||'—')} · seen ${ago(r.last_seen)} ago</p>
+        </div>`)}
+
+      <div>
+        ${card(sectionHead('Trust over 24 hours') + `<div class="px-4 py-3">${trustChart(d.history)}</div>`)}
+        <div class="flex items-center gap-1 border-b border-rule mt-5">${tabs}</div>
+        <div class="bg-paper border border-rule border-t-0">${hostPane(d)}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function hostPane(d){
+  const t=state.hostTab;
+  if(t==='checks'){
+    const tone={high:'text-down',medium:'text-degraded',low:'text-muted'};
+    const ord={high:0,medium:1,low:2};
+    const rows=[...d.checks].sort((a,b)=>(a.status===b.status?0:a.status==='fail'?-1:1)||ord[a.severity]-ord[b.severity]);
+    return list(rows.map(c=>`<div class="px-5 py-2.5 rise">
+      <div class="flex items-center gap-3">
+        <span class="font-mono text-[10px] uppercase tracking-[.12em] w-14 shrink-0
+          ${c.status==='pass'?'text-healthy':c.status==='error'?'text-muted':tone[c.severity]}">${c.status==='pass'?'pass':c.severity}</span>
+        <span class="text-sm truncate flex-1 ${c.status==='pass'?'text-muted':''}">${esc(c.title)}</span>
+        <span class="font-mono text-[10px] text-muted shrink-0">${esc(c.check_id)}</span>
+      </div>
+      <p class="font-mono text-[11px] text-muted mt-1 pl-[4.25rem] truncate">${esc(c.detail||'')}</p></div>`),
+      'No posture checks recorded yet.');
+  }
+  if(t==='packages'){
+    const vulnBy={}; d.vulns.forEach(v=>(vulnBy[v.name] ||= []).push(v));
+    const rows=[...d.packages].sort((a,b)=>(vulnBy[b.name]?1:0)-(vulnBy[a.name]?1:0)||a.name.localeCompare(b.name));
+    return list(rows.map(p=>{
+      const vs=vulnBy[p.name]||[];
+      const sev=vs.some(v=>v.severity==='critical')?'critical':vs.some(v=>v.severity==='high')?'high':vs.length?'other':null;
+      return line(`
+        <span class="font-mono text-sm w-52 truncate shrink-0">${esc(p.name)}</span>
+        <span class="font-mono text-[11px] text-muted truncate flex-1">${esc(p.version)}</span>
+        ${sev?`<span class="font-mono text-[10px] uppercase tracking-[.1em] shrink-0
+          ${sev==='critical'||sev==='high'?'text-down':'text-degraded'}">${vs.length} ${sev==='other'?'known':sev}</span>`:''}`);
+    }), 'No package inventory yet. Collected every 6 hours.');
+  }
+  if(t==='fim'){
+    const tone={added:'text-signal',modified:'text-degraded',deleted:'text-down'};
+    return list(d.fim.map(f=>`<div class="px-5 py-2.5 rise">
+      <div class="flex items-center gap-3">
+        <span class="font-mono text-[10px] uppercase tracking-[.12em] w-16 shrink-0 ${tone[f.action]}">${esc(f.action)}</span>
+        <span class="font-mono text-sm truncate flex-1">${esc(f.path)}</span>
+        ${f.critical?'<span class="font-mono text-[10px] uppercase tracking-[.1em] text-down shrink-0">critical</span>':''}
+        <span class="font-mono text-[11px] text-muted tabular-nums w-10 text-right shrink-0">${ago(f.ts)}</span>
+      </div>
+      <p class="font-mono text-[11px] text-muted mt-1 pl-[5rem] truncate">${esc(f.detail||'')}${f.sha256?` · ${esc(f.sha256.slice(0,16))}`:''}</p></div>`),
+      'No file changes detected. The baseline is recorded silently at first scan.');
+  }
+  if(t==='users'){
+    return list(d.users.map(u=>line(`
+      <span class="font-mono text-sm w-40 truncate shrink-0">${esc(u.username)}</span>
+      <span class="font-mono text-[11px] text-muted w-16 tabular-nums shrink-0">uid ${u.uid??'—'}</span>
+      ${u.sudoer?'<span class="font-mono text-[10px] uppercase tracking-[.1em] text-down shrink-0">sudo</span>':''}
+      ${u.can_login?'<span class="font-mono text-[10px] uppercase tracking-[.1em] text-signal shrink-0">login</span>':''}
+      <span class="font-mono text-[11px] text-muted truncate flex-1 text-right">${esc(u.shell||'')}</span>
+      <span class="font-mono text-[10px] text-muted w-16 text-right shrink-0">pw ${esc(u.password||'?')}</span>`)),
+      'No account inventory yet.');
+  }
+  if(t==='ports'){
+    return list(d.ports.map(p=>line(`
+      <span class="font-mono text-sm tabular-nums w-20 shrink-0">${p.port}/${esc(p.proto)}</span>
+      <span class="font-mono text-[11px] text-muted w-32 truncate shrink-0">${esc(p.bind_addr)}</span>
+      <span class="font-mono text-[11px] text-muted truncate flex-1">${esc(p.process||'unknown')}</span>
+      ${p.external?'<span class="font-mono text-[10px] uppercase tracking-[.1em] text-down shrink-0">external</span>':''}
+      <span class="font-mono text-[11px] text-muted tabular-nums w-16 text-right shrink-0">${ago(p.first_seen)}</span>`)),
+      'No listening ports recorded.');
+  }
+  return `<div class="px-4 py-3">${trustChart(d.history, 680, 200)}</div>`;
+}
+
 // ═══════════════════════════ page: alerts
 function pageAlerts(){
   const f=state.alertFilter;
-  const rows=state.alerts.filter(a=>f==='all'||a.status===f);
+  const rows=state.alerts.filter(a=>f==='all'?true:f==='open'?(!a.acknowledged_at&&!a.resolved_at):a.status===f);
   const counts={all:state.alerts.length};
-  ['sent','failed','suppressed','pending'].forEach(s=>counts[s]=state.alerts.filter(a=>a.status===s).length);
+  counts.open=state.alerts.filter(a=>!a.acknowledged_at&&!a.resolved_at).length;
+  ['sent','failed','suppressed'].forEach(s=>counts[s]=state.alerts.filter(a=>a.status===s).length);
 
-  const chips=['all','sent','failed','suppressed','pending'].map(s=>`
+  const chips=['all','open','sent','failed','suppressed'].map(s=>`
     <button data-alertchip="${s}" class="font-mono text-[10px] uppercase tracking-[.12em] px-2.5 py-1.5 border border-rule -ml-px
       ${f===s?'bg-ink text-white border-ink':'bg-paper text-muted hover:text-ink'}">${s} ${counts[s]||0}</button>`).join('');
 
@@ -436,6 +613,14 @@ function pageAlerts(){
           ${a.error && !String(a.error).startsWith('resend:')
             ? `<span class="font-mono text-[10px] text-down truncate">${esc(a.error)}</span>` : ''}
           ${a.sent_at ? `<span class="font-mono text-[10px] text-healthy">delivered ${ago(a.sent_at)} ago</span>`:''}
+          <span class="flex-1"></span>
+          ${a.resolved_at
+            ? `<span class="font-mono text-[10px] text-healthy">resolved ${ago(a.resolved_at)} ago</span>`
+            : a.acknowledged_at
+              ? `<span class="font-mono text-[10px] text-muted">acked ${ago(a.acknowledged_at)} ago</span>
+                 <button data-resolve="${a.id}" class="font-mono text-[10px] uppercase tracking-[.1em] text-signal hover:underline">Resolve</button>`
+              : `<button data-ack="${a.id}" class="font-mono text-[10px] uppercase tracking-[.1em] text-signal hover:underline">Acknowledge</button>
+                 <button data-resolve="${a.id}" class="font-mono text-[10px] uppercase tracking-[.1em] text-muted hover:text-signal hover:underline">Resolve</button>`}
         </div>
       </div>`).join('')}</div>`
     : empty(f==='all'?'No alerts yet.':`No ${f} alerts.`))}
@@ -553,6 +738,23 @@ function pageSettings(){
             ${r.cooldown==='00:00:00'?'no cooldown':'cooldown '+esc(r.cooldown)}</span>
         </div>`).join('')}</div>`)}
 
+    ${card(sectionHead('Enrolment tokens',
+      `<button id="s-newtoken" class="font-mono text-[10px] uppercase tracking-[.12em] text-signal hover:underline">Issue token</button>`)
+      + `<div class="px-5 py-4 space-y-3">
+        <p class="text-sm text-muted">Single use, expires in 24 hours. Pass it to a new node as
+          <span class="font-mono text-[11px]">NW_ENROLL_TOKEN</span>. Only enforced when the API runs with
+          <span class="font-mono text-[11px]">NW_REQUIRE_TOKEN=true</span>.</p>
+        ${state.tokens.length?`<div class="border border-rule divide-y divide-hairline">${state.tokens.map(t=>`
+          <div class="flex items-center gap-3 px-3 py-2">
+            <span class="font-mono text-xs truncate flex-1">${esc(t.status==='open'?t.token:t.token.slice(0,12)+'…')}</span>
+            <span class="font-mono text-[11px] text-muted truncate w-32">${esc(t.label||'')}</span>
+            <span class="font-mono text-[10px] uppercase tracking-[.12em] w-16 text-right
+              ${t.status==='open'?'text-healthy':t.status==='used'?'text-muted':'text-degraded'}">${esc(t.status)}</span>
+            ${t.status==='open'?`<button data-revoke="${esc(t.token)}" class="font-mono text-[10px] text-down hover:underline">Revoke</button>`:''}
+          </div>`).join('')}</div>`:'<p class="text-sm text-muted">No tokens issued.</p>'}
+        <p id="s-tokmsg" class="text-sm text-down min-h-[1.25rem]"></p>
+      </div>`)}
+
     ${card(sectionHead('Schedule')
       + `<div class="px-5 py-4 font-mono text-[12px] text-muted space-y-1">
         <p>Critical alerts are queued the moment the event lands and sent within a minute.</p>
@@ -563,7 +765,15 @@ function pageSettings(){
 }
 
 // ═══════════════════════════ router
+function openHost(id){
+  state.host=id; state.page='host'; state.hostTab='checks';
+  location.hash='#/host/'+id;
+  loadHostDetail(id).then(render);
+  render();
+}
+
 const TITLES = {
+  host:['Node','Everything collected from this host'],
   overview:['Overview','Fleet state at a glance'],
   nodes:['Nodes','Rename, mute, and set recipients'],
   alerts:['Alerts','What fired, and whether it was delivered'],
@@ -574,10 +784,15 @@ const TITLES = {
 
 function render(){
   renderNav();
-  const [title,sub]=TITLES[state.page];
+  const [title,sub]=TITLES[state.page]||TITLES.overview;
   $('page-title').textContent=title;
   $('page-sub').textContent=sub;
 
+  if (state.page==='host') {
+    const r=state.hosts.find(h=>h.id===state.host);
+    $('page-title').textContent = r ? r.label : 'Node';
+    $('page-sub').textContent = r ? r.instance_id : '';
+  }
   $('page-actions').innerHTML = state.page==='nodes' ? `
     <input id="search" value="${esc(state.query)}" placeholder="Filter by name or instance"
       class="border border-rule bg-paper px-3 py-1.5 font-mono text-xs w-52 focus:border-signal outline-none">
@@ -590,7 +805,8 @@ function render(){
     state.page==='nodes'    ? pageNodes()    :
     state.page==='alerts'   ? pageAlerts()   :
     state.page==='activity' ? pageActivity() :
-    state.page==='posture'  ? pagePosture()  : pageSettings();
+    state.page==='posture'  ? pagePosture()  :
+    state.page==='host'     ? pageHost()     : pageSettings();
 
   bind();
 }
@@ -601,8 +817,11 @@ function bind(){
 
   document.querySelectorAll('[data-agent]').forEach(el => {
     const row=state.hosts.find(x=>x.id===el.dataset.agent);
-    el.onclick=()=>openModal(row);
-    el.onkeydown=e=>{ if(e.key==='Enter'||e.key===' '){e.preventDefault();openModal(row);} };
+    // On the fleet grid a card opens the node; on the detail page the
+    // button opens settings for the node already being viewed.
+    const act = state.page==='host' ? ()=>openModal(row) : ()=>openHost(row.id);
+    el.onclick=act;
+    el.onkeydown=e=>{ if(e.key==='Enter'||e.key===' '){e.preventDefault();act();} };
   });
 
   document.querySelectorAll('[data-tab]').forEach(el =>
@@ -641,6 +860,31 @@ function bind(){
     };
     $('s-newmail').addEventListener('keydown',e=>{ if(e.key==='Enter') $('s-addmail').click(); });
   }
+
+  document.querySelectorAll('[data-hosttab]').forEach(el =>
+    el.onclick=()=>{ state.hostTab=el.dataset.hosttab; render(); });
+
+  document.querySelectorAll('[data-ack]').forEach(el =>
+    el.onclick=async e=>{ e.stopPropagation();
+      await sb.from('alert_log').update({ acknowledged_at:new Date().toISOString(),
+        acknowledged_by:(await sb.auth.getUser()).data.user?.email||'dashboard' })
+        .eq('id',el.dataset.ack); refresh(); });
+
+  document.querySelectorAll('[data-resolve]').forEach(el =>
+    el.onclick=async e=>{ e.stopPropagation();
+      const nowIso=new Date().toISOString();
+      await sb.from('alert_log').update({ resolved_at:nowIso, acknowledged_at:nowIso })
+        .eq('id',el.dataset.resolve); refresh(); });
+
+  document.querySelectorAll('[data-revoke]').forEach(el =>
+    el.onclick=async()=>{ await sb.from('enroll_tokens').update({revoked:true})
+      .eq('token',el.dataset.revoke); refresh(); });
+
+  if ($('s-newtoken')) $('s-newtoken').onclick=async()=>{
+    const { error } = await sb.rpc('new_enroll_token', { p_label:'issued from dashboard', p_hours:24 });
+    if (error && $('s-tokmsg')) $('s-tokmsg').textContent = error.message;
+    refresh();
+  };
 
   document.querySelectorAll('[data-rule]').forEach(el =>
     el.onchange=async()=>{ await sb.from('alert_rules').update({enabled:el.checked}).eq('rule',el.dataset.rule); refresh(); });
@@ -723,11 +967,36 @@ modal().addEventListener('click',e=>{ if(e.target===modal()) closeModal(); });
 document.addEventListener('keydown',e=>{
   if(e.key==='Escape'&&!modal().classList.contains('hidden')) closeModal(); });
 
+// ═══════════════════════════ host detail loader
+async function loadHostDetail(id){
+  const since=new Date(Date.now()-24*3600*1000).toISOString();
+  try{
+    const [checks,pkgs,users,ports,fim,hist]=await Promise.all([
+      sb.from('host_checks').select('check_id,title,category,severity,status,detail').eq('agent_id',id),
+      sb.from('host_packages').select('name,version,arch').eq('agent_id',id).order('name').limit(1200),
+      sb.from('user_state').select('username,uid,shell,sudoer,can_login,password,groups').eq('agent_id',id).order('uid'),
+      sb.from('port_state').select('port,proto,bind_addr,external,process,first_seen').eq('agent_id',id).order('port'),
+      sb.from('fim_events').select('ts,path,action,critical,sha256,detail').eq('agent_id',id)
+        .order('ts',{ascending:false}).limit(80),
+      sb.from('trust_history').select('ts,trust,f_recency,f_exposure,f_auth,f_churn,f_posture,f_integrity')
+        .eq('agent_id',id).gte('ts',since).order('ts'),
+    ]);
+    const names=(pkgs.data||[]).map(p=>p.name);
+    let vulns={data:[]};
+    if(names.length){
+      vulns=await sb.from('package_vulns').select('name,version,vuln_id,severity,summary,fixed_in')
+        .in('name',names.slice(0,400));
+    }
+    state.hostDetail={ checks:checks.data||[], packages:pkgs.data||[], users:users.data||[],
+      ports:ports.data||[], fim:fim.data||[], history:hist.data||[], vulns:vulns.data||[] };
+  }catch(e){ $('err').textContent='Could not load node detail: '+(e.message||e); }
+}
+
 // ═══════════════════════════ poll
 async function refresh(){
   try{
     const since=new Date(Date.now()-20*60*1000).toISOString();
-    const [hosts,latest,hist,ports,auth,checks,users,alerts,recips,rules]=await Promise.all([
+    const [hosts,latest,hist,ports,auth,checks,users,alerts,recips,rules,tokens]=await Promise.all([
       sb.from('agent_overview').select('*').order('label'),
       sb.from('agent_latest_metrics').select('*'),
       sb.from('metrics').select('agent_id,ts,cpu_pct').gte('ts',since).order('ts'),
@@ -738,20 +1007,22 @@ async function refresh(){
       sb.from('host_checks').select('agent_id,check_id,title,severity,status,detail').eq('status','fail').limit(120),
       sb.from('user_events').select('ts,username,action,uid,sudoer,detail,agents(hostname)')
         .order('ts',{ascending:false}).limit(60),
-      sb.from('alert_log').select('id,agent_id,rule,severity,status,subject,recipients,error,created_at,sent_at')
+      sb.from('alert_log').select('id,agent_id,rule,severity,status,subject,recipients,error,created_at,sent_at,acknowledged_at,resolved_at')
         .order('id',{ascending:false}).limit(100),
       sb.from('alert_recipients').select('id,email,agent_id').order('created_at'),
       sb.from('alert_rules').select('rule,severity,cooldown,enabled,description').order('rule'),
+      sb.from('enroll_token_status').select('*').order('created_at',{ascending:false}).limit(20),
     ]);
-    const bad=[hosts,latest,hist,ports,auth,checks,users,alerts,recips,rules].find(r=>r.error);
+    const bad=[hosts,latest,hist,ports,auth,checks,users,alerts,recips,rules,tokens].find(r=>r.error);
     if(bad) throw bad.error;
 
     state.hosts=hosts.data; state.ports=ports.data; state.auth=auth.data;
     state.checks=checks.data; state.users=users.data; state.alerts=alerts.data;
-    state.recipients=recips.data; state.rules=rules.data;
+    state.recipients=recips.data; state.rules=rules.data; state.tokens=tokens.data||[];
     state.metrics={}; latest.data.forEach(m=>state.metrics[m.agent_id]=m);
     state.series={};  hist.data.forEach(m=>(state.series[m.agent_id] ||= []).push(m.cpu_pct??0));
 
+    if (state.page==='host' && state.host) await loadHostDetail(state.host);
     render();
     $('clock').textContent=new Date().toLocaleTimeString([],{hour12:false});
     $('err').textContent='';
