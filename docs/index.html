@@ -189,7 +189,7 @@ function trace(samples, colour) {
   const pad = TRACE_POINTS - pts.length;
   let bars = '';
   pts.forEach((v, i) => {
-    const bh = Math.max(1.5, Math.min(h, (v / 100) * h));
+    const bh = Math.max(5, Math.min(h, 5 + (v / 100) * (h - 5)));
     bars += `<rect x="${(pad + i) * (w + gap)}" y="${h - bh}" width="${w}" height="${bh}" fill="${colour}" opacity=".85"/>`;
   });
   const total = TRACE_POINTS * (w + gap);
@@ -201,6 +201,26 @@ function trace(samples, colour) {
 }
 
 // ---------------------------------------------------------------- render
+
+// Component breakdown. The score is only useful if you can see which
+// factor pulled it down, so each segment is drawn at its own weight.
+function trustBar(r) {
+  const parts = [
+    ['recency',  r.f_recency,  0.00],
+    ['exposure', r.f_exposure, 0.30],
+    ['auth',     r.f_auth,     0.45],
+    ['churn',    r.f_churn,    0.25],
+  ];
+  return parts.slice(1).map(([label, v]) => `
+    <div class="flex-1" title="${label}: ${(v ?? 0).toFixed(2)}">
+      <div class="h-1 bg-rule">
+        <div class="h-1" style="width:${Math.round((v ?? 0)*100)}%;
+             background:${v >= .8 ? '#0F7B6C' : v >= .5 ? '#B07314' : '#A93226'}"></div>
+      </div>
+      <p class="font-mono text-[9px] tracking-[.1em] uppercase text-muted mt-1">${label}</p>
+    </div>`).join('');
+}
+
 function renderTally(rows) {
   const c = { healthy:0, degraded:0, down:0 };
   rows.forEach(r => c[r.status] !== undefined && c[r.status]++);
@@ -238,10 +258,20 @@ function renderHosts(rows, latest, series) {
         <div class="text-right shrink-0">
           <p class="font-mono text-[10px] tracking-[.16em] uppercase" style="color:${hex[st]}">${st}</p>
           <p class="font-mono text-[11px] text-muted tabular-nums mt-0.5">seen ${ago(r.last_seen)} ago</p>
+          <p class="text-3xl font-semibold tabular-nums leading-none mt-2"
+             style="color:${r.trust >= 70 ? '#0F7B6C' : r.trust >= 40 ? '#B07314' : '#A93226'}">${r.trust ?? '—'}</p>
+          <p class="font-mono text-[9px] tracking-[.18em] uppercase text-muted">trust</p>
         </div>
       </div>
 
       <div class="px-5 pt-3">${trace(series[r.id] || [], hex[st])}</div>
+
+      <div class="px-5 pt-3 flex gap-2">${trustBar(r)}</div>
+
+      ${r.needs_reverification ? `
+      <p class="mt-3 border-t border-rule px-5 py-2 font-mono text-[11px] text-down">
+        Trust below threshold — re-verify this host before granting access
+      </p>` : ''}
 
       <dl class="grid grid-cols-5 border-t border-rule mt-3 divide-x divide-rule">
         ${[
@@ -308,7 +338,7 @@ async function refresh() {
   try {
     const since = new Date(Date.now() - 20 * 60 * 1000).toISOString();
     const [health, latest, hist, ports, auth] = await Promise.all([
-      sb.from('agent_health').select('*').order('hostname'),
+      sb.from('agent_trust').select('*').order('hostname'),
       sb.from('agent_latest_metrics').select('*'),
       sb.from('metrics').select('agent_id,ts,cpu_pct').gte('ts', since).order('ts'),
       sb.from('port_events').select('ts,port,proto,bind_addr,external,process,action,agents(hostname)')
