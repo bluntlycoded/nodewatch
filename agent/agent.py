@@ -22,6 +22,8 @@ from pathlib import Path
 import psutil
 import requests
 
+import checks
+
 # ---------------------------------------------------------------- config
 
 INGEST_URL = os.environ.get("NW_INGEST_URL", "http://100.64.0.1:8000").rstrip("/")
@@ -31,6 +33,8 @@ DB_PATH = STATE_DIR / "buffer.db"
 HEARTBEAT_INTERVAL = 15
 PORTS_INTERVAL = 60
 AUTH_INTERVAL = 30
+CHECKS_INTERVAL = 120
+USERS_INTERVAL = 60
 FLUSH_INTERVAL = 15
 
 MAX_BUFFER_ROWS = 10_000
@@ -365,7 +369,8 @@ def main():
     sess = Session()
     sess.enroll()
 
-    next_run = {"heartbeat": 0.0, "ports": 0.0, "auth": 0.0, "flush": 0.0}
+    next_run = {"heartbeat": 0.0, "ports": 0.0, "auth": 0.0,
+                "checks": 0.0, "users": 0.0, "flush": 0.0}
 
     while True:
         now = time.time()
@@ -382,6 +387,17 @@ def main():
             for ev in collect_auth_events(buf):
                 buf.push("auth", ev)
             next_run["auth"] = now + AUTH_INTERVAL
+
+        if now >= next_run["checks"]:
+            buf.push("checks", {"results": checks.collect_checks()})
+            next_run["checks"] = now + CHECKS_INTERVAL
+
+        if now >= next_run["users"]:
+            try:
+                buf.push("users", {"accounts": checks.collect_users()})
+            except Exception as e:
+                log.warning("user collection failed: %s", e)
+            next_run["users"] = now + USERS_INTERVAL
 
         if now >= next_run["flush"]:
             flush(buf, sess)
