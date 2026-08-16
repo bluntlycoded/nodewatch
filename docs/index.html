@@ -11,13 +11,37 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
 tailwind.config = { theme: { extend: {
-  colors: { ground:'#E4E7EB', paper:'#FFFFFF', rule:'#C9D0D8', hairline:'#DFE4E9',
-            ink:'#16202B', muted:'#5C6B7A', healthy:'#0F7B6C', degraded:'#B07314',
-            down:'#A93226', pending:'#7A8896', signal:'#1F4BD8' },
+  colors: { ground:'var(--c-ground)', paper:'var(--c-paper)', rule:'var(--c-rule)',
+            hairline:'var(--c-hairline)', ink:'var(--c-ink)', muted:'var(--c-muted)',
+            healthy:'var(--c-healthy)', degraded:'var(--c-degraded)',
+            down:'var(--c-down)', pending:'var(--c-pending)', signal:'var(--c-signal)' },
   fontFamily: { sans:['"IBM Plex Sans"','system-ui','sans-serif'],
                 mono:['"IBM Plex Mono"','ui-monospace','monospace'] } } } }
 </script>
 <style>
+  :root {
+    --c-ground:#E4E7EB; --c-paper:#FFFFFF; --c-rule:#C9D0D8; --c-hairline:#DFE4E9;
+    --c-ink:#16202B; --c-muted:#5C6B7A; --c-healthy:#0F7B6C; --c-degraded:#B07314;
+    --c-down:#A93226; --c-pending:#7A8896; --c-signal:#1F4BD8;
+    --grid: rgba(22,32,43,.028);
+  }
+  /* Not an inversion: the instrument palette is re-mixed for a dark ground so
+     status colours keep their separation instead of glowing. */
+  [data-theme="dark"] {
+    --c-ground:#0E141A; --c-paper:#171F28; --c-rule:#2B3641; --c-hairline:#222B35;
+    --c-ink:#DFE6ED; --c-muted:#8593A2; --c-healthy:#3FB39B; --c-degraded:#D6A247;
+    --c-down:#E1685C; --c-pending:#7E8C9A; --c-signal:#7C9CFF;
+    --grid: rgba(223,230,237,.035);
+  }
+  body {
+    background:
+      repeating-linear-gradient(0deg,  transparent 0 27px, var(--grid) 27px 28px),
+      repeating-linear-gradient(90deg, transparent 0 27px, var(--grid) 27px 28px),
+      var(--c-ground);
+    color: var(--c-ink);
+  }
+  input, select { background: var(--c-paper); color: var(--c-ink) }
+  input::placeholder { color: var(--c-muted); opacity:.75 }
   .rise { animation: rise .22s ease-out both }
   @keyframes rise { from{opacity:0;transform:translateY(3px)} to{opacity:1;transform:none} }
   .live::after { content:''; position:absolute; inset:0; border-radius:9999px;
@@ -25,12 +49,21 @@ tailwind.config = { theme: { extend: {
   @keyframes ping { 70%,100%{box-shadow:0 0 0 6px transparent} }
   :focus-visible { outline:2px solid #1F4BD8; outline-offset:2px }
   ::-webkit-scrollbar { width:10px;height:10px }
-  ::-webkit-scrollbar-thumb { background:#C9D0D8 }
+  ::-webkit-scrollbar-thumb { background:var(--c-rule) }
   ::-webkit-scrollbar-track { background:transparent }
   @media (prefers-reduced-motion:reduce){ .rise,.live::after{animation:none!important} }
 </style>
+<script>
+  // Runs before paint. Falls back to in-memory if storage is unavailable.
+  (function(){
+    var t='light';
+    try { t = localStorage.getItem('nw-theme')
+              || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'); } catch(e){}
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
 </head>
-<body class="font-sans text-ink antialiased bg-ground">
+<body class="font-sans antialiased">
 
 <!-- ════════════════════ sign in ════════════════════ -->
 <div id="gate" class="min-h-screen flex items-center justify-center px-5">
@@ -51,23 +84,35 @@ tailwind.config = { theme: { extend: {
         <input id="pw" type="password" autocomplete="current-password"
                class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
       </div>
-      <button id="signin" class="w-full bg-ink text-white py-2.5 text-sm font-medium hover:bg-signal transition-colors">Sign in</button>
+      <button id="signin" class="w-full bg-ink text-paper py-2.5 text-sm font-medium hover:bg-signal transition-colors">Sign in</button>
       <p id="gate-msg" class="text-sm text-down min-h-[1.25rem]"></p>
     </div>
   </div>
 </div>
 
 <!-- ════════════════════ app ════════════════════ -->
-<div id="app" class="hidden min-h-screen flex">
+<div id="app" class="hidden min-h-screen lg:flex">
 
-  <!-- nav rail -->
-  <aside class="w-52 shrink-0 bg-paper border-r border-rule flex flex-col sticky top-0 h-screen">
-    <div class="px-5 py-5 border-b border-rule">
-      <h1 class="text-xl font-semibold tracking-tight leading-none">nodewatch</h1>
-      <p class="font-mono text-[9px] tracking-[.2em] uppercase text-muted mt-1">fleet telemetry</p>
+  <!-- nav rail: fixed drawer under lg, static column at lg and up -->
+  <div id="scrim" class="hidden lg:hidden fixed inset-0 bg-ink/50 z-30"></div>
+  <aside id="rail"
+    class="fixed lg:sticky top-0 left-0 z-40 h-screen w-56 shrink-0 bg-paper border-r border-rule
+           flex flex-col -translate-x-full lg:translate-x-0 transition-transform duration-200">
+    <div class="px-5 py-5 border-b border-rule flex items-start justify-between">
+      <div>
+        <h1 class="text-xl font-semibold tracking-tight leading-none">nodewatch</h1>
+        <p class="font-mono text-[9px] tracking-[.2em] uppercase text-muted mt-1">fleet telemetry</p>
+      </div>
+      <button id="railclose" class="lg:hidden font-mono text-xs text-muted hover:text-ink px-1" aria-label="Close menu">✕</button>
     </div>
-    <nav id="nav" class="flex-1 py-2"></nav>
-    <div class="border-t border-rule px-5 py-3 space-y-1">
+    <nav id="nav" class="flex-1 py-2 overflow-y-auto"></nav>
+    <div class="border-t border-rule px-5 py-3 space-y-2">
+      <button id="theme" class="w-full flex items-center justify-between font-mono text-[10px] uppercase tracking-[.14em] text-muted hover:text-ink">
+        <span id="theme-label">Dark mode</span>
+        <span id="theme-dot" class="w-8 h-4 border border-rule relative inline-block">
+          <span id="theme-knob" class="absolute top-0.5 left-0.5 w-3 h-3 bg-muted transition-all"></span>
+        </span>
+      </button>
       <p class="font-mono text-[10px] text-muted tabular-nums">updated <span id="clock">—</span></p>
       <button id="signout" class="font-mono text-[10px] uppercase tracking-[.14em] text-muted hover:text-signal">Sign out</button>
     </div>
@@ -76,16 +121,19 @@ tailwind.config = { theme: { extend: {
   <!-- page -->
   <main class="flex-1 min-w-0">
     <header class="sticky top-0 z-20 bg-ground/95 backdrop-blur border-b border-rule">
-      <div class="px-8 h-16 flex items-center justify-between gap-4">
-        <div>
-          <h2 id="page-title" class="text-xl font-semibold tracking-tight leading-none">Overview</h2>
-          <p id="page-sub" class="font-mono text-[10px] text-muted mt-1"></p>
+      <div class="px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-3">
+        <div class="flex items-center gap-3 min-w-0">
+          <button id="railopen" class="lg:hidden font-mono text-lg leading-none px-1 -ml-1" aria-label="Open menu">☰</button>
+          <div class="min-w-0">
+          <h2 id="page-title" class="text-lg sm:text-xl font-semibold tracking-tight leading-none truncate">Servers</h2>
+          <p id="page-sub" class="font-mono text-[10px] text-muted mt-1 truncate"></p>
+          </div>
         </div>
-        <div id="page-actions" class="flex items-center gap-2"></div>
+        <div id="page-actions" class="flex items-center gap-2 shrink-0"></div>
       </div>
     </header>
-    <div id="page" class="px-8 py-6"></div>
-    <p id="err" class="px-8 pb-6 font-mono text-xs text-down"></p>
+    <div id="page" class="px-4 sm:px-6 lg:px-8 py-5 sm:py-6"></div>
+    <p id="err" class="px-4 sm:px-6 lg:px-8 pb-6 font-mono text-xs text-down"></p>
   </main>
 </div>
 
@@ -129,12 +177,12 @@ tailwind.config = { theme: { extend: {
         <div class="flex gap-2 mt-2">
           <input id="m-newmail" type="email" placeholder="name@example.com"
                  class="flex-1 border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
-          <button id="m-addmail" class="bg-ink text-white px-4 text-sm hover:bg-signal transition-colors">Add</button>
+          <button id="m-addmail" class="bg-ink text-paper px-4 text-sm hover:bg-signal transition-colors">Add</button>
         </div>
       </div>
       <p id="m-msg" class="text-sm text-down min-h-[1.25rem]"></p>
       <div class="flex gap-2 pt-1">
-        <button id="m-save" class="flex-1 bg-ink text-white py-2.5 text-sm font-medium hover:bg-signal transition-colors">Save</button>
+        <button id="m-save" class="flex-1 bg-ink text-paper py-2.5 text-sm font-medium hover:bg-signal transition-colors">Save</button>
         <button id="m-cancel" class="px-5 border border-rule text-sm hover:border-ink transition-colors">Cancel</button>
       </div>
     </div>
@@ -149,16 +197,21 @@ const POLL_MS = 10000, TRACE_POINTS = 44;
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const $ = id => document.getElementById(id);
-const HEX = { healthy:'#0F7B6C', degraded:'#B07314', down:'#A93226', pending:'#7A8896' };
+// Read from CSS variables so status colours re-mix with the theme rather
+// than staying pinned to the light palette.
+function themeColour(name){
+  return getComputedStyle(document.documentElement)
+           .getPropertyValue('--c-' + name).trim() || '#5C6B7A';
+}
+const HEX = new Proxy({}, { get: (_, k) => themeColour(String(k)) });
 
 const PAGES = [
-  ['overview','Overview'], ['nodes','Nodes'], ['alerts','Alerts'],
-  ['activity','Activity'], ['posture','Posture'], ['vulns','Vulnerabilities'],
-  ['settings','Settings'],
+  ['servers','Servers'], ['alerts','Alerts'], ['activity','Activity'],
+  ['posture','Posture'], ['vulns','Vulnerabilities'], ['settings','Settings'],
 ];
 
 let state = {
-  page:'overview', tab:'ports', filter:'all', query:'', alertFilter:'all',
+  page:'servers', tab:'ports', filter:'all', query:'', alertFilter:'all',
   host:null, hostTab:'checks',
   hosts:[], metrics:{}, series:{}, alerts:[], ports:[], users:[], auth:[],
   checks:[], recipients:[], rules:[], fim:[], tokens:[], history:[], vulns:[],
@@ -182,7 +235,8 @@ function uptime(sec){
   const d=Math.floor(sec/86400), h=Math.floor(sec%86400/3600);
   return d?`${d}d ${h}h`:`${h}h ${Math.floor(sec%3600/60)}m`;
 }
-const trustColour = t => t==null?HEX.pending : t>=70?HEX.healthy : t>=40?HEX.degraded : HEX.down;
+const trustColour = t => t==null?themeColour('pending') : t>=70?themeColour('healthy')
+  : t>=40?themeColour('degraded') : themeColour('down');
 const nameOf = id => (state.hosts.find(h=>h.id===id)||{}).label || '—';
 const empty = t => `<p class="px-5 py-12 text-center text-sm text-muted">${t}</p>`;
 const card = inner => `<div class="bg-paper border border-rule">${inner}</div>`;
@@ -198,7 +252,7 @@ function trace(samples, colour) {
     return `<rect x="${(pad+i)*(w+gap)}" y="${h-bh}" width="${w}" height="${bh}" fill="${colour}" opacity=".85"/>`;
   }).join('');
   return `<svg viewBox="0 0 ${total} ${h}" preserveAspectRatio="none" class="w-full h-[24px]" role="img"
-    aria-label="Recent heartbeats"><line x1="0" y1="${h-.5}" x2="${total}" y2="${h-.5}" stroke="#DFE4E9"/>${bars}</svg>`;
+    aria-label="Recent heartbeats"><line x1="0" y1="${h-.5}" x2="${total}" y2="${h-.5}" stroke="${themeColour('hairline')}"/>${bars}</svg>`;
 }
 
 // Trust over time. The decay model is invisible in a single number; the
@@ -218,21 +272,21 @@ function trustChart(points, w=680, h=140) {
     points.map(p=>`L${x(p).toFixed(1)},${y(p.trust).toFixed(1)}`).join('')+
     ` L${x(points[points.length-1]).toFixed(1)},${pad.t+ih} Z`;
   const grid=[0,25,50,75,100].map(v=>`
-    <line x1="${pad.l}" y1="${y(v)}" x2="${w-pad.r}" y2="${y(v)}" stroke="#DFE4E9"/>
+    <line x1="${pad.l}" y1="${y(v)}" x2="${w-pad.r}" y2="${y(v)}" stroke="${themeColour('hairline')}"/>
     <text x="${pad.l-6}" y="${y(v)+3}" text-anchor="end"
-      font-family="IBM Plex Mono,monospace" font-size="8" fill="#5C6B7A">${v}</text>`).join('');
+      font-family="IBM Plex Mono,monospace" font-size="8" fill="${themeColour('muted')}">${v}</text>`).join('');
   const last=points[points.length-1];
   return `<svg viewBox="0 0 ${w} ${h}" class="w-full" role="img" aria-label="Trust score over time">
     ${grid}
     <line x1="${pad.l}" y1="${y(70)}" x2="${w-pad.r}" y2="${y(70)}"
-          stroke="#A93226" stroke-width="1" stroke-dasharray="3 3" opacity=".55"/>
+          stroke="${themeColour('down')}" stroke-width="1" stroke-dasharray="3 3" opacity=".55"/>
     <text x="${w-pad.r}" y="${y(70)-4}" text-anchor="end"
-      font-family="IBM Plex Mono,monospace" font-size="8" fill="#A93226">re-verify below 70</text>
+      font-family="IBM Plex Mono,monospace" font-size="8" fill="${themeColour('down')}">re-verify below 70</text>
     <path d="${area}" fill="${trustColour(last.trust)}" opacity=".10"/>
     <path d="${path}" fill="none" stroke="${trustColour(last.trust)}" stroke-width="1.6"/>
     <circle cx="${x(last).toFixed(1)}" cy="${y(last.trust).toFixed(1)}" r="2.6" fill="${trustColour(last.trust)}"/>
-    <text x="${pad.l}" y="${h-6}" font-family="IBM Plex Mono,monospace" font-size="8" fill="#5C6B7A">${ago(points[0].ts)} ago</text>
-    <text x="${w-pad.r}" y="${h-6}" text-anchor="end" font-family="IBM Plex Mono,monospace" font-size="8" fill="#5C6B7A">now</text>
+    <text x="${pad.l}" y="${h-6}" font-family="IBM Plex Mono,monospace" font-size="8" fill="${themeColour('muted')}">${ago(points[0].ts)} ago</text>
+    <text x="${w-pad.r}" y="${h-6}" text-anchor="end" font-family="IBM Plex Mono,monospace" font-size="8" fill="${themeColour('muted')}">now</text>
   </svg>`;
 }
 
@@ -260,10 +314,39 @@ function enter(){
   $('app').classList.remove('hidden');
   const h=(location.hash||'').replace('#/','');
   if (h.startsWith('host/')) { state.page='host'; state.host=h.slice(5); }
+  else if (h==='overview'||h==='nodes') state.page='servers';
   else if (PAGES.some(([k])=>k===h)) state.page=h;
+  applyThemeLabel();
   refresh(); setInterval(refresh, POLL_MS);
 }
 sb.auth.getSession().then(({data})=>{ if(data.session) enter(); });
+
+// ═══════════════════════════ theme
+function applyThemeLabel(){
+  const dark = currentTheme() === 'dark';
+  if ($('theme-label')) $('theme-label').textContent = dark ? 'Light mode' : 'Dark mode';
+  if ($('theme-knob'))  $('theme-knob').style.left = dark ? '1.125rem' : '0.125rem';
+}
+function currentTheme(){ return document.documentElement.getAttribute('data-theme') || 'light'; }
+function applyTheme(t){
+  document.documentElement.setAttribute('data-theme', t);
+  try { localStorage.setItem('nw-theme', t); } catch(e) { /* private mode */ }
+  const dark = t === 'dark';
+  if ($('theme-label')) $('theme-label').textContent = dark ? 'Light mode' : 'Dark mode';
+  if ($('theme-knob'))  $('theme-knob').style.left = dark ? '1.125rem' : '0.125rem';
+  // Inline SVG and status colours are set from JS, so re-render after a swap.
+  if (state.hosts.length) render();
+}
+$('theme').onclick = () => applyTheme(currentTheme() === 'dark' ? 'light' : 'dark');
+
+// ═══════════════════════════ drawer
+function openRail(){ $('rail').classList.remove('-translate-x-full');
+                     $('scrim').classList.remove('hidden'); }
+function closeRail(){ $('rail').classList.add('-translate-x-full');
+                      $('scrim').classList.add('hidden'); }
+$('railopen').onclick = openRail;
+$('railclose').onclick = closeRail;
+$('scrim').onclick = closeRail;
 
 // ═══════════════════════════ nav
 function badges(){
@@ -272,7 +355,7 @@ function badges(){
   const highChecks = state.checks.filter(c=>c.severity==='high').length;
   const severeVulns = state.vulns.filter(v=>v.severity==='critical'||v.severity==='high').length;
   const critFiles = state.fim.filter(f=>f.critical).length;
-  return { nodes:down, alerts:failedMail, posture:highChecks,
+  return { servers:down, alerts:failedMail, posture:highChecks,
            vulns:severeVulns, activity:critFiles };
 }
 function renderNav(){
@@ -285,102 +368,120 @@ function renderNav(){
       ${b[k] ? `<span class="text-down">${b[k]}</span>` : ''}
     </button>`).join('');
   $('nav').querySelectorAll('[data-page]').forEach(el =>
-    el.onclick = () => { state.page = el.dataset.page; location.hash = '#/'+el.dataset.page; render(); });
+    el.onclick = () => { state.page = el.dataset.page; location.hash = '#/'+el.dataset.page;
+                         closeRail(); render(); });
 }
 window.addEventListener('hashchange', ()=>{
   const h=(location.hash||'').replace('#/','');
   if (PAGES.some(([k])=>k===h) && h!==state.page) { state.page=h; render(); }
 });
 
-// ═══════════════════════════ page: overview
-function pageOverview(){
+// ═══════════════════════════ page: servers (landing)
+function pageServers(){
   const h=state.hosts, c={healthy:0,degraded:0,down:0,pending:0};
   h.forEach(r=>c[r.status]!==undefined&&c[r.status]++);
   const scored=h.filter(r=>r.trust!=null);
   const avg=scored.length?Math.round(scored.reduce((a,r)=>a+r.trust,0)/scored.length):null;
   const day=Date.now()-86400000;
   const recent=state.alerts.filter(a=>new Date(a.created_at)>day);
-  const sent=recent.filter(a=>a.status==='sent').length;
-  const failed=recent.filter(a=>a.status==='failed').length;
-  const supp=recent.filter(a=>a.status==='suppressed').length;
-  const queued=state.alerts.filter(a=>a.status==='pending'||a.status==='sending').length;
-  const fileChanges=h.reduce((a,r)=>a+(r.file_changes_24h||0),0);
-  const critFiles=h.reduce((a,r)=>a+(r.critical_file_changes_24h||0),0);
-  const severeVulns=h.reduce((a,r)=>a+(r.vulns_severe||0),0);
+  const failedMail=recent.filter(a=>a.status==='failed').length;
 
-  const kpi=(label,val,colour,sub)=>`
-    <div class="px-5 py-4">
-      <dt class="font-mono text-[9px] tracking-[.18em] uppercase text-muted">${label}</dt>
-      <dd class="text-2xl font-semibold tabular-nums leading-none mt-1.5" style="color:${colour||'#16202B'}">${val}</dd>
-      ${sub?`<p class="font-mono text-[10px] text-muted mt-1">${sub}</p>`:''}
-    </div>`;
-
-  // things that need a human
+  // Anything a person needs to act on. Shown only when non-empty: an
+  // always-present panel that usually says "nothing" trains people to skip it.
   const attention=[];
-  h.filter(r=>r.status==='down').forEach(r=>attention.push(['critical',`${r.label} has stopped reporting`,`last seen ${ago(r.last_seen)} ago`]));
-  h.filter(r=>r.needs_reverification&&r.status!=='down').forEach(r=>attention.push(['warning',`${r.label} is below the trust threshold`,`trust ${r.trust}`]));
-  h.filter(r=>r.priv_changes_24h>0).forEach(r=>attention.push(['critical',`Privileged account change on ${r.label}`,`${r.priv_changes_24h} in 24h`]));
-  h.filter(r=>r.critical_file_changes_24h>0).forEach(r=>attention.push(['critical',
-    `Security-critical file changed on ${r.label}`,`${r.critical_file_changes_24h} in 24h`]));
-  h.filter(r=>r.checks_failed_high>0).forEach(r=>attention.push(['warning',`${r.checks_failed_high} high-severity check(s) failing on ${r.label}`,'']));
-  h.filter(r=>r.vulns_severe>0).forEach(r=>attention.push(['warning',
-    `${r.vulns_severe} severe vulnerabilit${r.vulns_severe===1?'y':'ies'} on ${r.label}`,'critical or high']));
-  h.filter(r=>r.recipient_count===0).forEach(r=>attention.push(['info',`${r.label} has no alert recipients`,'alerts would go nowhere']));
-  if (failed) attention.push(['critical',`${failed} alert email(s) failed to send`,'open Alerts for the reason']);
+  h.filter(r=>r.status==='down').forEach(r=>attention.push(['critical',r.id,`${r.label} has stopped reporting`,`last seen ${ago(r.last_seen)} ago`]));
+  h.filter(r=>r.critical_file_changes_24h>0).forEach(r=>attention.push(['critical',r.id,`Security-critical file changed on ${r.label}`,`${r.critical_file_changes_24h} in 24h`]));
+  h.filter(r=>r.priv_changes_24h>0).forEach(r=>attention.push(['critical',r.id,`Privileged account change on ${r.label}`,`${r.priv_changes_24h} in 24h`]));
+  h.filter(r=>r.needs_reverification&&r.status!=='down').forEach(r=>attention.push(['warning',r.id,`${r.label} is below the trust threshold`,`trust ${r.trust}`]));
+  h.filter(r=>r.checks_failed_high>0).forEach(r=>attention.push(['warning',r.id,`${r.checks_failed_high} high-severity check(s) failing on ${r.label}`,'']));
+  h.filter(r=>r.vulns_severe>0).forEach(r=>attention.push(['warning',r.id,`${r.vulns_severe} severe vulnerabilit${r.vulns_severe===1?'y':'ies'} on ${r.label}`,'']));
+  h.filter(r=>r.recipient_count===0).forEach(r=>attention.push(['info',r.id,`${r.label} has no alert recipients`,'alerts go nowhere']));
+  if (failedMail) attention.push(['critical',null,`${failedMail} alert email(s) failed to send`,'see Alerts']);
 
   const tone={critical:'text-down',warning:'text-degraded',info:'text-muted'};
 
+  const rows=h.filter(r=>{
+    if(state.filter!=='all'&&r.status!==state.filter) return false;
+    if(!state.query) return true;
+    return `${r.label} ${r.instance_id} ${r.hostname||''}`.toLowerCase().includes(state.query);
+  });
+
+  const pill=(label,n,colour)=>`
+    <div class="flex items-baseline gap-1.5">
+      <span class="text-lg font-semibold tabular-nums leading-none" style="color:${colour||'var(--c-ink)'}">${n}</span>
+      <span class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">${label}</span>
+    </div>`;
+
   return `
-  <div class="space-y-6">
-    <dl class="bg-paper border border-rule grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 divide-x divide-hairline">
-      ${kpi('Nodes',h.length,null,`${c.pending} pending`)}
-      ${kpi('Healthy',c.healthy,HEX.healthy)}
-      ${kpi('Degraded',c.degraded,c.degraded?HEX.degraded:null)}
-      ${kpi('Down',c.down,c.down?HEX.down:null)}
-      ${kpi('Mean trust',avg??'—',trustColour(avg))}
-      ${kpi('File changes 24h',fileChanges,critFiles?HEX.down:null,`${critFiles} critical`)}
-      ${kpi('Severe CVEs',severeVulns,severeVulns?HEX.down:HEX.healthy,`${h.reduce((a,r)=>a+(r.vulns_total||0),0)} total known`)}
-      ${kpi('Mail 24h',sent,failed?HEX.down:HEX.healthy,`${failed} failed · ${queued} queued`)}
-    </dl>
-
-    <div class="grid lg:grid-cols-2 gap-6">
-      ${card(sectionHead('Needs attention') + (attention.length
-        ? `<div class="divide-y divide-hairline max-h-[22rem] overflow-y-auto">${attention.map(([sev,title,sub])=>`
-            <div class="flex items-baseline gap-3 px-5 py-2.5 rise">
-              <span class="font-mono text-[10px] uppercase tracking-[.12em] w-16 shrink-0 ${tone[sev]}">${sev}</span>
-              <span class="text-sm flex-1">${esc(title)}</span>
-              <span class="font-mono text-[11px] text-muted shrink-0">${esc(sub)}</span>
-            </div>`).join('')}</div>`
-        : empty('Nothing needs attention. Every node is reporting and within threshold.')))}
-
-      ${card(sectionHead('Recent alerts',
-        `<button data-goto="alerts" class="font-mono text-[10px] uppercase tracking-[.12em] text-signal hover:underline">View all</button>`)
-        + (state.alerts.length
-        ? `<div class="divide-y divide-hairline max-h-[22rem] overflow-y-auto">${state.alerts.slice(0,8).map(a=>`
-            <div class="flex items-center gap-3 px-5 py-2.5 rise">
-              <span class="font-mono text-[10px] uppercase tracking-[.12em] w-16 shrink-0 ${tone[a.severity]}">${esc(a.severity)}</span>
-              <span class="text-sm truncate flex-1">${esc(a.subject)}</span>
-              ${statusPill(a.status)}
-              <span class="font-mono text-[11px] text-muted tabular-nums w-10 text-right shrink-0">${ago(a.created_at)}</span>
-            </div>`).join('')}</div>`
-        : empty('No alerts yet.')))}
+  <div class="space-y-5">
+    <!-- status strip -->
+    <div class="bg-paper border border-rule px-4 sm:px-5 py-3 flex flex-wrap items-center gap-x-6 gap-y-3">
+      ${pill('servers',h.length)}
+      ${pill('healthy',c.healthy,'var(--c-healthy)')}
+      ${pill('degraded',c.degraded,c.degraded?'var(--c-degraded)':null)}
+      ${pill('down',c.down,c.down?'var(--c-down)':null)}
+      ${c.pending?pill('pending',c.pending,'var(--c-pending)'):''}
+      ${pill('mean trust',avg??'—',trustColour(avg))}
+      <span class="flex-1"></span>
+      <div id="chips" class="flex"></div>
     </div>
 
-    ${card(sectionHead('Fleet',
-      `<button data-goto="nodes" class="font-mono text-[10px] uppercase tracking-[.12em] text-signal hover:underline">Manage</button>`)
-      + (h.length ? `<div class="divide-y divide-hairline">${h.map(r=>`
-        <div class="flex items-center gap-4 px-5 py-2.5">
-          <span class="relative inline-block w-2 h-2 rounded-full shrink-0 ${r.status==='healthy'?'live':''}"
-                style="background:${HEX[r.status]||HEX.down};color:${HEX[r.status]||HEX.down}"></span>
-          <span class="font-semibold text-sm w-40 truncate">${esc(r.label)}</span>
-          <span class="font-mono text-[11px] text-muted w-44 truncate hidden md:block">${esc(r.instance_id)}</span>
-          <span class="flex-1 max-w-[220px] hidden lg:block">${trace(state.series[r.id]||[],HEX[r.status]||HEX.down)}</span>
-          <span class="font-mono text-[11px] text-muted w-24 text-right tabular-nums">${r.external_ports??0} ext ports</span>
-          <span class="font-mono text-[11px] text-muted w-20 text-right tabular-nums">${ago(r.last_seen)} ago</span>
-          <span class="text-xl font-semibold tabular-nums w-12 text-right" style="color:${trustColour(r.trust)}">${r.trust??'—'}</span>
-        </div>`).join('')}</div>`
-      : empty('No nodes yet. Launch one from the nodewatch-node template.')))}
+    ${attention.length?`
+    <div class="bg-paper border border-rule">
+      <div class="flex items-center justify-between px-4 sm:px-5 py-2.5 border-b border-rule">
+        <h3 class="font-mono text-[10px] tracking-[.2em] uppercase text-muted">Needs attention</h3>
+        <span class="font-mono text-[10px] text-down">${attention.length}</span>
+      </div>
+      <div class="divide-y divide-hairline max-h-56 overflow-y-auto">${attention.map(([sev,id,title,sub])=>`
+        <div ${id?`data-jump="${id}"`:''} class="flex items-baseline gap-3 px-4 sm:px-5 py-2 ${id?'cursor-pointer hover:bg-ground':''}">
+          <span class="font-mono text-[10px] uppercase tracking-[.12em] w-14 shrink-0 ${tone[sev]}">${sev}</span>
+          <span class="text-sm flex-1 min-w-0 truncate">${esc(title)}</span>
+          <span class="font-mono text-[10px] text-muted shrink-0 hidden sm:inline">${esc(sub)}</span>
+        </div>`).join('')}</div>
+    </div>`:''}
+
+    <!-- server list -->
+    ${rows.length?`<div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">${rows.map(serverCard).join('')}</div>`
+      : card(empty(h.length?'No servers match this filter.'
+        :'No servers yet. Launch one from the nodewatch-node template and it appears within a minute.'))}
   </div>`;
+}
+
+function serverCard(r){
+  const st=HEX[r.status]?r.status:'down', m=state.metrics[r.id]||{};
+  return `<article data-agent="${r.id}" tabindex="0" role="button"
+    aria-label="Open ${esc(r.label)}"
+    class="bg-paper border border-rule rise cursor-pointer hover:border-ink transition-colors flex flex-col">
+    <div class="flex items-start justify-between gap-3 px-4 pt-3.5">
+      <div class="min-w-0">
+        <div class="flex items-center gap-2">
+          <span class="relative inline-block w-2 h-2 rounded-full shrink-0 ${st==='healthy'?'live':''}"
+                style="background:${HEX[st]};color:${HEX[st]}"></span>
+          <h3 class="font-semibold tracking-tight truncate">${esc(r.label)}</h3>
+          ${r.muted?'<span class="font-mono text-[9px] uppercase tracking-[.12em] text-muted border border-rule px-1 shrink-0">muted</span>':''}
+        </div>
+        <p class="font-mono text-[10px] text-muted mt-1 truncate">${esc(r.instance_id)} · ${esc(r.region||'—')}</p>
+      </div>
+      <div class="text-right shrink-0">
+        <p class="text-3xl font-semibold tabular-nums leading-none" style="color:${trustColour(r.trust)}">${r.trust??'—'}</p>
+        <p class="font-mono text-[9px] tracking-[.16em] uppercase" style="color:${HEX[st]}">${st}</p>
+      </div>
+    </div>
+    <div class="px-4 pt-2.5">${trace(state.series[r.id]||[],HEX[st])}</div>
+    <div class="px-4 pt-2 flex gap-1.5">${trustBar(r)}</div>
+    <dl class="grid grid-cols-4 border-t border-hairline mt-3 divide-x divide-hairline">
+      ${[['cpu',m.cpu_pct!=null?m.cpu_pct.toFixed(0)+'%':'—'],
+         ['mem',m.mem_pct!=null?m.mem_pct.toFixed(0)+'%':'—'],
+         ['up',uptime(m.uptime_s)],['ext',r.external_ports??0]].map(([k,v])=>`
+        <div class="px-2.5 py-1.5"><dt class="font-mono text-[8px] tracking-[.14em] uppercase text-muted">${k}</dt>
+        <dd class="font-mono text-[13px] tabular-nums">${v}</dd></div>`).join('')}
+    </dl>
+    ${flags(r)}
+    <div class="border-t border-hairline px-4 py-1.5 flex items-center justify-between mt-auto">
+      <span class="font-mono text-[10px] ${r.recipient_count?'text-muted':'text-down'}">${r.recipient_count||0} recipient${r.recipient_count===1?'':'s'}</span>
+      <span class="font-mono text-[10px] text-muted tabular-nums">seen ${ago(r.last_seen)} ago</span>
+    </div>
+  </article>`;
 }
 
 function statusPill(s){
@@ -389,52 +490,6 @@ function statusPill(s){
            sending:['text-signal','sending']};
   const [cls,label]=m[s]||['text-muted',s];
   return `<span class="font-mono text-[10px] uppercase tracking-[.12em] shrink-0 w-20 text-right ${cls}">${esc(label)}</span>`;
-}
-
-// ═══════════════════════════ page: nodes
-function pageNodes(){
-  const rows=state.hosts.filter(r=>{
-    if(state.filter!=='all'&&r.status!==state.filter) return false;
-    if(!state.query) return true;
-    return `${r.label} ${r.instance_id} ${r.hostname||''}`.toLowerCase().includes(state.query);
-  });
-  if(!rows.length) return card(empty(state.hosts.length?'No nodes match this filter.'
-    :'No nodes yet. Launch one from the nodewatch-node template and it appears within a minute.'));
-
-  return `<div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">${rows.map(r=>{
-    const st=HEX[r.status]?r.status:'down', m=state.metrics[r.id]||{};
-    return `<article data-agent="${r.id}" tabindex="0" role="button" aria-label="Settings for ${esc(r.label)}"
-      class="bg-paper border border-rule rise cursor-pointer hover:border-ink transition-colors flex flex-col">
-      <div class="flex items-start justify-between gap-3 px-4 pt-3.5">
-        <div class="min-w-0">
-          <div class="flex items-center gap-2">
-            <span class="relative inline-block w-2 h-2 rounded-full shrink-0 ${st==='healthy'?'live':''}"
-                  style="background:${HEX[st]};color:${HEX[st]}"></span>
-            <h3 class="font-semibold tracking-tight truncate">${esc(r.label)}</h3>
-            ${r.muted?'<span class="font-mono text-[9px] uppercase tracking-[.12em] text-muted border border-rule px-1 shrink-0">muted</span>':''}
-          </div>
-          <p class="font-mono text-[10px] text-muted mt-1 truncate">${esc(r.instance_id)} · ${esc(r.region||'—')}</p>
-        </div>
-        <div class="text-right shrink-0">
-          <p class="text-3xl font-semibold tabular-nums leading-none" style="color:${trustColour(r.trust)}">${r.trust??'—'}</p>
-          <p class="font-mono text-[9px] tracking-[.16em] uppercase" style="color:${HEX[st]}">${st}</p>
-        </div>
-      </div>
-      <div class="px-4 pt-2.5">${trace(state.series[r.id]||[],HEX[st])}</div>
-      <div class="px-4 pt-2 flex gap-1.5">${trustBar(r)}</div>
-      <dl class="grid grid-cols-4 border-t border-hairline mt-3 divide-x divide-hairline">
-        ${[['cpu',m.cpu_pct!=null?m.cpu_pct.toFixed(0)+'%':'—'],
-           ['mem',m.mem_pct!=null?m.mem_pct.toFixed(0)+'%':'—'],
-           ['up',uptime(m.uptime_s)],['ext',r.external_ports??0]].map(([k,v])=>`
-          <div class="px-2.5 py-1.5"><dt class="font-mono text-[8px] tracking-[.14em] uppercase text-muted">${k}</dt>
-          <dd class="font-mono text-[13px] tabular-nums">${v}</dd></div>`).join('')}
-      </dl>
-      ${flags(r)}
-      <div class="border-t border-hairline px-4 py-1.5 flex items-center justify-between mt-auto">
-        <span class="font-mono text-[10px] ${r.recipient_count?'text-muted':'text-down'}">${r.recipient_count||0} recipient${r.recipient_count===1?'':'s'}</span>
-        <span class="font-mono text-[10px] text-muted tabular-nums">seen ${ago(r.last_seen)} ago</span>
-      </div>
-    </article>`;}).join('')}</div>`;
 }
 
 function flags(r){
@@ -463,7 +518,7 @@ function pageHost(){
   const stat=(label,val,colour)=>`
     <div class="px-4 py-3">
       <dt class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">${label}</dt>
-      <dd class="font-mono text-base tabular-nums mt-1" style="color:${colour||'#16202B'}">${val}</dd>
+      <dd class="font-mono text-base tabular-nums mt-1" style="color:${colour||'var(--c-ink)'}">${val}</dd>
     </div>`;
 
   const counts={checks:d.checks.length,packages:d.packages.length,fim:d.fim.length,
@@ -598,7 +653,7 @@ function pageAlerts(){
 
   const chips=['all','open','sent','failed','suppressed'].map(s=>`
     <button data-alertchip="${s}" class="font-mono text-[10px] uppercase tracking-[.12em] px-2.5 py-1.5 border border-rule -ml-px
-      ${f===s?'bg-ink text-white border-ink':'bg-paper text-muted hover:text-ink'}">${s} ${counts[s]||0}</button>`).join('');
+      ${f===s?'bg-ink text-paper border-ink':'bg-paper text-muted hover:text-ink'}">${s} ${counts[s]||0}</button>`).join('');
 
   const tone={critical:'text-down',warning:'text-degraded',info:'text-muted'};
 
@@ -734,7 +789,7 @@ function pageVulns(){
 
   const kpi=(l,v,col)=>`<div class="px-5 py-4">
     <dt class="font-mono text-[9px] tracking-[.18em] uppercase text-muted">${l}</dt>
-    <dd class="text-2xl font-semibold tabular-nums leading-none mt-1.5" style="color:${col||'#16202B'}">${v}</dd></div>`;
+    <dd class="text-2xl font-semibold tabular-nums leading-none mt-1.5" style="color:${col||'var(--c-ink)'}">${v}</dd></div>`;
 
   return `<div class="space-y-5">
     <dl class="bg-paper border border-rule grid grid-cols-2 md:grid-cols-5 divide-x divide-hairline">
@@ -808,7 +863,7 @@ function pageSettings(){
         <div class="flex gap-2">
           <input id="s-newmail" type="email" placeholder="oncall@example.com"
                  class="flex-1 border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
-          <button id="s-addmail" class="bg-ink text-white px-4 text-sm hover:bg-signal transition-colors">Add</button>
+          <button id="s-addmail" class="bg-ink text-paper px-4 text-sm hover:bg-signal transition-colors">Add</button>
         </div>
         <p id="s-msg" class="text-sm text-down min-h-[1.25rem]"></p>
       </div>`)}
@@ -858,15 +913,14 @@ function pageSettings(){
 // ═══════════════════════════ router
 function openHost(id){
   state.host=id; state.page='host'; state.hostTab='checks';
-  location.hash='#/host/'+id;
+  location.hash='#/host/'+id; closeRail();
   loadHostDetail(id).then(render);
   render();
 }
 
 const TITLES = {
-  host:['Node','Everything collected from this host'],
-  overview:['Overview','Fleet state at a glance'],
-  nodes:['Nodes','Rename, mute, and set recipients'],
+  host:['Server','Everything collected from this host'],
+  servers:['Servers','Select a server to see its detail'],
   alerts:['Alerts','What fired, and whether it was delivered'],
   activity:['Activity','Port, account and sign-in events'],
   posture:['Posture','Failing configuration checks by node'],
@@ -885,16 +939,14 @@ function render(){
     $('page-title').textContent = r ? r.label : 'Node';
     $('page-sub').textContent = r ? r.instance_id : '';
   }
-  $('page-actions').innerHTML = state.page==='nodes' ? `
-    <input id="search" value="${esc(state.query)}" placeholder="Filter by name or instance"
-      class="border border-rule bg-paper px-3 py-1.5 font-mono text-xs w-52 focus:border-signal outline-none">
-    <div id="chips" class="flex"></div>
-    <button id="addnode" class="font-mono text-[11px] uppercase tracking-[.14em] border border-ink px-3 py-1.5 hover:bg-ink hover:text-white transition-colors">Add node</button>`
+  $('page-actions').innerHTML = state.page==='servers' ? `
+    <input id="search" value="${esc(state.query)}" placeholder="Filter servers"
+      class="hidden sm:block border border-rule px-3 py-1.5 font-mono text-xs w-44 focus:border-signal outline-none">
+    <button id="addnode" class="font-mono text-[11px] uppercase tracking-[.14em] border border-ink px-3 py-1.5 hover:bg-ink hover:text-paper transition-colors">Add</button>`
     : '';
 
   $('page').innerHTML =
-    state.page==='overview' ? pageOverview() :
-    state.page==='nodes'    ? pageNodes()    :
+    state.page==='servers'  ? pageServers()  :
     state.page==='alerts'   ? pageAlerts()   :
     state.page==='activity' ? pageActivity() :
     state.page==='posture'  ? pagePosture()  :
@@ -907,6 +959,14 @@ function render(){
 function bind(){
   document.querySelectorAll('[data-goto]').forEach(el =>
     el.onclick = () => { state.page=el.dataset.goto; location.hash='#/'+el.dataset.goto; render(); });
+
+  if ($('chips')) {
+    $('chips').innerHTML=['all','healthy','degraded','down','pending'].map(o=>`
+      <button data-chip="${o}" class="font-mono text-[10px] uppercase tracking-[.12em] px-2.5 py-1.5 border border-rule -ml-px
+        ${state.filter===o?'bg-ink text-paper border-ink':'text-muted hover:text-ink'}">${o}</button>`).join('');
+    $('chips').querySelectorAll('[data-chip]').forEach(b =>
+      b.onclick=()=>{ state.filter=b.dataset.chip; render(); });
+  }
 
   document.querySelectorAll('[data-agent]').forEach(el => {
     const row=state.hosts.find(x=>x.id===el.dataset.agent);
@@ -923,17 +983,10 @@ function bind(){
   document.querySelectorAll('[data-alertchip]').forEach(el =>
     el.onclick=()=>{ state.alertFilter=el.dataset.alertchip; render(); });
 
-  if ($('chips')) {
-    $('chips').innerHTML=['all','healthy','degraded','down','pending'].map(o=>`
-      <button data-chip="${o}" class="font-mono text-[10px] uppercase tracking-[.12em] px-2.5 py-1.5 border border-rule -ml-px
-        ${state.filter===o?'bg-ink text-white border-ink':'bg-paper text-muted hover:text-ink'}">${o}</button>`).join('');
-    $('chips').querySelectorAll('[data-chip]').forEach(b =>
-      b.onclick=()=>{ state.filter=b.dataset.chip; render(); });
-  }
   if ($('search')) {
     $('search').addEventListener('input', e => {
       state.query=e.target.value.toLowerCase();
-      $('page').innerHTML=pageNodes(); bind();
+      $('page').innerHTML=pageServers(); bind();
       const s=$('search'); if(s){ s.focus(); s.setSelectionRange(s.value.length,s.value.length); }
     });
   }
@@ -953,6 +1006,9 @@ function bind(){
     };
     $('s-newmail').addEventListener('keydown',e=>{ if(e.key==='Enter') $('s-addmail').click(); });
   }
+
+  document.querySelectorAll('[data-jump]').forEach(el =>
+    el.onclick=()=>openHost(el.dataset.jump));
 
   document.querySelectorAll('[data-hosttab]').forEach(el =>
     el.onclick=()=>{ state.hostTab=el.dataset.hosttab; render(); });
