@@ -29,6 +29,9 @@ import inventory
 
 INGEST_URL = os.environ.get("NW_INGEST_URL", "http://100.64.0.1:8000").rstrip("/")
 STATE_DIR = Path(os.environ.get("NW_STATE_DIR", "/var/lib/nodewatch"))
+# Optional single-use enrolment token, issued from the dashboard. Only
+# required when the server is configured with NW_REQUIRE_TOKEN=true.
+ENROLL_TOKEN = os.environ.get("NW_ENROLL_TOKEN", "")
 DB_PATH = STATE_DIR / "buffer.db"
 
 HEARTBEAT_INTERVAL = 15
@@ -130,16 +133,23 @@ def imds_token() -> str:
 
 
 def instance_identity():
-    """Returns (instance_id, identity document, signed pkcs7)."""
+    """
+    Returns (instance_id, parsed document, raw document text, signed pkcs7).
+
+    The raw text matters: AWS signs those exact bytes, so re-encoding the
+    parsed dict would break signature verification on the server.
+    """
     tok = imds_token()
     h = {"X-aws-ec2-metadata-token": tok}
-    doc = requests.get(
+    resp = requests.get(
         f"{IMDS}/latest/dynamic/instance-identity/document", headers=h, timeout=2
-    ).json()
+    )
+    doc_raw = resp.text
+    doc = resp.json()
     pkcs7 = requests.get(
         f"{IMDS}/latest/dynamic/instance-identity/pkcs7", headers=h, timeout=2
     ).text
-    return doc["instanceId"], doc, pkcs7
+    return doc["instanceId"], doc, doc_raw, pkcs7
 
 
 class Session:
@@ -151,14 +161,16 @@ class Session:
 
     def enroll(self) -> bool:
         try:
-            instance_id, doc, pkcs7 = instance_identity()
+            instance_id, doc, doc_raw, pkcs7 = instance_identity()
         except Exception as e:
             log.error("IMDS unreachable, cannot enroll: %s", e)
             return False
 
         body = {
             "document": doc,
+            "document_raw": doc_raw,
             "pkcs7": pkcs7,
+            "enroll_token": ENROLL_TOKEN or None,
             "hostname": socket.gethostname(),
             "agent_version": "0.1.0",
             "os": platform_string(),
