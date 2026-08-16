@@ -12,6 +12,7 @@ drift and ask for a resync.
 
 import hashlib
 import os
+import re
 import stat
 import subprocess
 import time
@@ -39,11 +40,33 @@ CRITICAL_PATHS = {
 CRITICAL_DIRS = ("/etc/sudoers.d/", "/etc/ssh/sshd_config.d/",
                  "/etc/cron.d/", "/etc/pam.d/", "/etc/systemd/system/")
 
+# Auto-generated unit files that snapd rewrites on every refresh. The
+# revision number is part of the filename, so an ordinary snap update
+# deletes one set and creates another - churn, not tampering.
+#
+# The pattern deliberately requires the numeric revision. A file called
+# snap-evil.mount would still be reported: only the machine-generated
+# naming convention is excused, not the directory.
+NOISE_PATTERNS = [
+    re.compile(r"^/etc/systemd/system/(?:[^/]+\.wants/)?snap[-.].*-\d+\.mount$"),
+    re.compile(r"^/etc/systemd/system/snap\.[^/]+\.service$"),
+    re.compile(r"^/etc/systemd/system/multi-user\.target\.wants/snap[-.].*-\d+\.mount$"),
+    re.compile(r"^/etc/systemd/system/snapd\.mounts(?:-pre)?\.target\.wants/.*\.mount$"),
+    # Certificate bundle rehashes on every ca-certificates update.
+    re.compile(r"^/etc/ssl/certs/[0-9a-f]{8}\.\d+$"),
+]
+
+
+def is_noise(path: str) -> bool:
+    return any(p.match(path) for p in NOISE_PATTERNS)
+
 MAX_FILE_BYTES = 8 * 1024 * 1024   # skip anything larger; nothing in /etc should be
 MAX_FILES = 8000                    # hard ceiling so a bad path cannot hang the agent
 
 
 def is_critical(path: str) -> bool:
+    if is_noise(path):
+        return False
     return path in CRITICAL_PATHS or path.startswith(CRITICAL_DIRS)
 
 
@@ -76,7 +99,7 @@ def scan_files():
                        if not os.path.join(root, d).startswith(SKIP_PREFIXES)]
             for name in files:
                 p = os.path.join(root, name)
-                if p.startswith(SKIP_PREFIXES):
+                if p.startswith(SKIP_PREFIXES) or is_noise(p):
                     continue
                 count += 1
                 if count > MAX_FILES:
