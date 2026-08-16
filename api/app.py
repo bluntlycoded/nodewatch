@@ -196,7 +196,7 @@ def enroll(body: EnrollBody, request: Request):
 @app.post("/v1/ingest")
 def ingest(body: IngestBody, authorization: str | None = Header(default=None)):
     agent_id = agent_from_token(authorization)
-    counts = {"heartbeat": 0, "auth": 0, "ports": 0, "port_changes": 0, "checks": 0, "users": 0, "user_changes": 0}
+    counts = {"heartbeat": 0, "auth": 0, "ports": 0, "port_changes": 0, "checks": 0, "users": 0, "user_changes": 0, "fim": 0, "packages": 0}
 
     with pool.connection() as conn:
         for ev in body.events:
@@ -243,6 +243,13 @@ def ingest(body: IngestBody, authorization: str | None = Header(default=None)):
                 counts["user_changes"] += diff_users(
                     conn, agent_id, ts, ev.data.get("accounts", [])
                 )
+
+            elif ev.kind == "fim":
+                counts["fim"] += sync_fim(conn, agent_id, ts, ev.data)
+
+            elif ev.kind == "packages":
+                counts["packages"] += sync_packages(
+                    conn, agent_id, ts, ev.data.get("packages", []))
 
             elif ev.kind == "checks":
                 counts["checks"] += sync_checks(
@@ -465,3 +472,67 @@ def diff_users(conn, agent_id: str, ts: datetime, accounts: list) -> int:
         changes += 1
 
     return changes
+
+
+def sync_fim(conn, agent_id: str, ts: datetime, data: dict) -> int:
+    """
+    Record file-integrity changes. Unlike ports, the agent has already
+    diffed: /etc is thousands of files and shipping a full manifest every
+    cycle is not viable. The manifest digest is stored so divergence
+    between agent and server is detectable.
+    """
+    events = data.get("events", [])
+    summary = data.get("summary", {})
+
+    conn.execute(
+        """
+        insert into fim_state (agent_id, files_watched, digest, paths, last_scan)
+        values (%s, %s, %s, %s, %s)
+        on conflict (agent_id) do update set
+            files_watched = excluded.files_watched,
+            digest        = excluded.digest,
+            paths         = excluded.paths,
+            last_scan     = excluded.last_scan
+        """,
+        (agent_id, summary.get("files_watched", 0), summary.get("digest"),
+         summary.get("paths", []), ts),
+    )
+
+    if not events:
+        return 0
+
+    conn.cursor().executemany(
+        """insert into fim_events
+           (agent_id, ts, path, action, critical, sha256, mode, size, detail)
+           values (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+        [(agent_id, ts, e.get("path"), e.get("action"), e.get("critical", False),
+          e.get("sha256"), e.get("mode"), e.get("size"), e.get("detail"))
+         for e in events if e.get("path") and e.get("action")],
+    )
+    return len(events)
+
+
+def sync_packages(conn, agent_id: str, ts: datetime, packages: list) -> int:
+    """Replace the host's package inventory. OSV lookup happens separately."""
+    if not packages:
+        return 0
+
+    rows = [(agent_id, p["name"], p["version"], p.get("arch"), ts)
+            for p in packages if p.get("name") and p.get("version")]
+
+    conn.cursor().executemany(
+        """
+        insert into host_packages (agent_id, name, version, arch, last_seen)
+        values (%s, %s, %s, %s, %s)
+        on conflict (agent_id, name) do update set
+            version = excluded.version, arch = excluded.arch,
+            last_seen = excluded.last_seen
+        """, rows)
+
+    # Drop packages the host no longer reports, so an uninstalled package
+    # cannot keep contributing vulnerabilities to its score.
+    conn.execute(
+        "delete from host_packages where agent_id = %s and name <> all(%s)",
+        (agent_id, [p["name"] for p in packages if p.get("name")]),
+    )
+    return len(rows)
