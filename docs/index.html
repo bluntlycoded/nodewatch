@@ -120,6 +120,18 @@ tailwind.config = {
         <div id="ports" class="bg-paper border border-rule divide-y divide-rule max-h-[19rem] overflow-y-auto"></div>
       </section>
 
+      <!-- accounts -->
+      <section>
+        <h2 class="font-mono text-[10px] tracking-[.22em] uppercase text-muted mb-2">Account changes</h2>
+        <div id="users" class="bg-paper border border-rule divide-y divide-rule max-h-[15rem] overflow-y-auto"></div>
+      </section>
+
+      <!-- posture -->
+      <section>
+        <h2 class="font-mono text-[10px] tracking-[.22em] uppercase text-muted mb-2">Failing posture checks</h2>
+        <div id="posture" class="bg-paper border border-rule divide-y divide-rule max-h-[17rem] overflow-y-auto"></div>
+      </section>
+
       <!-- auth -->
       <section>
         <h2 class="font-mono text-[10px] tracking-[.22em] uppercase text-muted mb-2">Authentication</h2>
@@ -209,7 +221,8 @@ function trustBar(r) {
     ['recency',  r.f_recency,  0.00],
     ['exposure', r.f_exposure, 0.30],
     ['auth',     r.f_auth,     0.45],
-    ['churn',    r.f_churn,    0.25],
+    ['churn',    r.f_churn,    0.15],
+    ['posture',  r.f_posture,  0.30],
   ];
   return parts.slice(1).map(([label, v]) => `
     <div class="flex-1" title="${label}: ${(v ?? 0).toFixed(2)}">
@@ -287,6 +300,16 @@ function renderHosts(rows, latest, series) {
           </div>`).join('')}
       </dl>
 
+      ${r.priv_changes_24h > 0 ? `
+      <p class="border-t border-rule px-5 py-2 font-mono text-[11px] text-down">
+        ${r.priv_changes_24h} privileged account change${r.priv_changes_24h>1?'s':''} in the last 24h
+      </p>` : ''}
+
+      ${r.checks_failed > 0 ? `
+      <p class="border-t border-rule px-5 py-2 font-mono text-[11px] ${r.checks_failed_high > 0 ? 'text-down' : 'text-degraded'}">
+        ${r.checks_failed} posture check${r.checks_failed>1?'s':''} failing${r.checks_failed_high>0?` (${r.checks_failed_high} high severity)`:''}
+      </p>` : ''}
+
       ${r.failed_logins_1h > 0 ? `
       <p class="border-t border-rule px-5 py-2 font-mono text-[11px] text-down">
         ${r.failed_logins_1h} failed sign-in${r.failed_logins_1h>1?'s':''} in the last hour
@@ -314,6 +337,47 @@ function renderPorts(rows) {
     </div>`).join('');
 }
 
+function renderUsers(rows) {
+  if (!rows.length) {
+    $('users').innerHTML = `<p class="px-4 py-6 text-sm text-muted">
+      No accounts have been added, removed or changed since these hosts enrolled.</p>`;
+    return;
+  }
+  const tone = { added:'text-signal', removed:'text-down', modified:'text-degraded' };
+  $('users').innerHTML = rows.map(r => `
+    <div class="px-4 py-2.5 rise">
+      <div class="flex items-center gap-3">
+        <span class="font-mono text-[10px] uppercase tracking-[.12em] w-16 shrink-0 ${tone[r.action]}">${esc(r.action)}</span>
+        <span class="font-mono text-sm truncate">${esc(r.username)}</span>
+        ${r.sudoer ? '<span class="font-mono text-[10px] uppercase tracking-[.12em] text-down shrink-0">sudo</span>' : ''}
+        <span class="flex-1"></span>
+        <span class="font-mono text-[11px] text-muted truncate shrink-0">${esc(r.agents?.hostname || '')}</span>
+        <span class="font-mono text-[11px] text-muted tabular-nums shrink-0">${ago(r.ts)}</span>
+      </div>
+      <p class="font-mono text-[11px] text-muted mt-1 pl-[4.75rem] truncate">${esc(r.detail || '')}</p>
+    </div>`).join('');
+}
+
+function renderPosture(rows, hosts) {
+  const name = {};
+  hosts.forEach(h => name[h.id] = h.hostname || h.instance_id);
+  if (!rows.length) {
+    $('posture').innerHTML = `<p class="px-4 py-6 text-sm text-muted">
+      Every configuration check is passing on all hosts.</p>`;
+    return;
+  }
+  const tone = { high:'text-down', medium:'text-degraded', low:'text-muted' };
+  $('posture').innerHTML = rows.map(r => `
+    <div class="px-4 py-2.5 rise">
+      <div class="flex items-center gap-3">
+        <span class="font-mono text-[10px] uppercase tracking-[.12em] w-14 shrink-0 ${tone[r.severity]}">${esc(r.severity)}</span>
+        <span class="text-sm truncate flex-1">${esc(r.title)}</span>
+        <span class="font-mono text-[11px] text-muted truncate shrink-0">${esc(name[r.agent_id] || '')}</span>
+      </div>
+      <p class="font-mono text-[11px] text-muted mt-1 pl-[4.25rem] truncate">${esc(r.detail || '')}</p>
+    </div>`).join('');
+}
+
 function renderAuth(rows) {
   if (!rows.length) {
     $('auth').innerHTML = `<p class="px-4 py-6 text-sm text-muted">
@@ -337,7 +401,7 @@ function renderAuth(rows) {
 async function refresh() {
   try {
     const since = new Date(Date.now() - 20 * 60 * 1000).toISOString();
-    const [health, latest, hist, ports, auth] = await Promise.all([
+    const [health, latest, hist, ports, auth, posture, users] = await Promise.all([
       sb.from('agent_trust').select('*').order('hostname'),
       sb.from('agent_latest_metrics').select('*'),
       sb.from('metrics').select('agent_id,ts,cpu_pct').gte('ts', since).order('ts'),
@@ -345,9 +409,13 @@ async function refresh() {
         .order('ts', { ascending:false }).limit(50),
       sb.from('auth_events').select('ts,kind,username,source_ip,agents(hostname)')
         .order('ts', { ascending:false }).limit(50),
+      sb.from('host_checks').select('agent_id,check_id,title,severity,status,detail')
+        .eq('status','fail').order('severity').limit(60),
+      sb.from('user_events').select('ts,username,action,uid,sudoer,detail,agents(hostname)')
+        .order('ts', { ascending:false }).limit(40),
     ]);
 
-    const bad = [health, latest, hist, ports, auth].find(r => r.error);
+    const bad = [health, latest, hist, ports, auth, posture, users].find(r => r.error);
     if (bad) throw bad.error;
 
     const byAgent = {};
@@ -360,6 +428,8 @@ async function refresh() {
     renderHosts(health.data, byAgent, series);
     renderPorts(ports.data);
     renderAuth(auth.data);
+    renderPosture(posture.data, health.data);
+    renderUsers(users.data);
 
     $('clock').textContent = new Date().toLocaleTimeString([], { hour12:false });
     $('err').textContent = '';
