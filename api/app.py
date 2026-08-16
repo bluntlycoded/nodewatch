@@ -335,13 +335,18 @@ def sync_checks(conn, agent_id: str, ts: datetime, results: list) -> int:
     if not results:
         return 0
 
-    seen = []
+    seen, crows = [], []
     for c in results:
         cid = c.get("check_id")
         if not cid:
             continue
         seen.append(cid)
-        conn.execute(
+        crows.append(
+            (agent_id, cid, c.get("title", cid), c.get("category", "other"),
+             c.get("severity", "low"), c.get("status", "error"),
+             c.get("detail"), ts))
+    if crows:
+        conn.cursor().executemany(
             """
             insert into host_checks (agent_id, check_id, title, category,
                                      severity, status, detail, last_seen)
@@ -358,11 +363,7 @@ def sync_checks(conn, agent_id: str, ts: datetime, results: list) -> int:
                                  else host_checks.last_changed
                                end,
                 status       = excluded.status
-            """,
-            (agent_id, cid, c.get("title", cid), c.get("category", "other"),
-             c.get("severity", "low"), c.get("status", "error"),
-             c.get("detail"), ts),
-        )
+            """, crows)
 
     # Retire checks the agent no longer reports, e.g. after an upgrade
     # removes one. Leaving them would freeze a stale failure into the score.
@@ -399,6 +400,7 @@ def diff_users(conn, agent_id: str, ts: datetime, accounts: list) -> int:
     # "added" event for every pre-existing system account would be noise,
     # and would wrongly depress the churn factor right after enrolment.
     seeding = not known
+    rows = []
 
     for name, a in snap.items():
         prev = known.get(name)
@@ -430,7 +432,15 @@ def diff_users(conn, agent_id: str, ts: datetime, accounts: list) -> int:
                 )
                 changes += 1
 
-        conn.execute(
+        rows.append((agent_id, name, a.get("uid"), a.get("gid"), a.get("shell"),
+                     a.get("home"), a.get("groups", []), a.get("sudoer", False),
+                     a.get("can_login", False), a.get("password"), ts))
+
+    # One pipelined round trip instead of one per account. Latency to a
+    # cross-region database makes per-row writes untenable: 24 accounts was
+    # 24 round trips, which exceeded the agent's request timeout.
+    if rows:
+        conn.cursor().executemany(
             """
             insert into user_state (agent_id, username, uid, gid, shell, home,
                                     groups, sudoer, can_login, password, last_seen)
@@ -440,11 +450,7 @@ def diff_users(conn, agent_id: str, ts: datetime, accounts: list) -> int:
                 home = excluded.home, groups = excluded.groups,
                 sudoer = excluded.sudoer, can_login = excluded.can_login,
                 password = excluded.password, last_seen = excluded.last_seen
-            """,
-            (agent_id, name, a.get("uid"), a.get("gid"), a.get("shell"),
-             a.get("home"), a.get("groups", []), a.get("sudoer", False),
-             a.get("can_login", False), a.get("password"), ts),
-        )
+            """, rows)
 
     for name in set(known) - set(snap):
         prev = known[name]
