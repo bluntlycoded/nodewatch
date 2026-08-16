@@ -99,6 +99,9 @@ tailwind.config = {
         <p class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Refreshed</p>
         <p id="clock" class="font-mono text-sm tabular-nums">—</p>
       </div>
+      <button id="addnode" class="font-mono text-[11px] uppercase tracking-[.14em] text-signal hover:underline underline-offset-4">
+        Add node
+      </button>
       <button id="signout" class="font-mono text-[11px] uppercase tracking-[.14em] text-muted hover:text-signal underline underline-offset-4">
         Sign out
       </button>
@@ -143,6 +146,69 @@ tailwind.config = {
   <p id="err" class="mt-5 font-mono text-xs text-down"></p>
 </div>
 
+<!-- ================= node settings ================= -->
+<div id="modal" class="hidden fixed inset-0 bg-ink/40 items-center justify-center px-5 z-50">
+  <div class="bg-paper border border-rule w-full max-w-lg max-h-[88vh] overflow-y-auto">
+    <div class="flex items-start justify-between border-b border-rule px-6 py-4">
+      <div>
+        <p class="font-mono text-[10px] tracking-[.22em] uppercase text-muted" id="m-eyebrow">Node settings</p>
+        <h2 class="text-xl font-semibold tracking-tight mt-0.5" id="m-title">—</h2>
+      </div>
+      <button id="m-close" class="font-mono text-xs text-muted hover:text-ink px-2">Close</button>
+    </div>
+
+    <div class="px-6 py-5 space-y-5">
+      <div id="m-idfield" class="hidden">
+        <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">EC2 instance ID</label>
+        <input id="m-instance" placeholder="i-0abc123..." spellcheck="false"
+               class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+        <p class="text-xs text-muted mt-1">The node appears as <span class="font-mono">pending</span> until its agent first reports in.</p>
+      </div>
+
+      <div>
+        <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Display name</label>
+        <input id="m-name" placeholder="nw-node-1"
+               class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+      </div>
+
+      <div>
+        <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Notes</label>
+        <input id="m-notes" placeholder="What this node is for"
+               class="mt-1 w-full border border-rule px-3 py-2 text-sm focus:border-signal outline-none">
+      </div>
+
+      <label class="flex items-center gap-2 cursor-pointer">
+        <input id="m-muted" type="checkbox" class="accent-ink">
+        <span class="text-sm">Mute alerts for this node</span>
+      </label>
+
+      <div id="m-mailwrap">
+        <div class="flex items-baseline justify-between">
+          <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Alert recipients</label>
+          <span class="font-mono text-[10px] text-muted" id="m-count">0 of 5</span>
+        </div>
+        <div id="m-emails" class="mt-2 border border-rule divide-y divide-rule"></div>
+        <div class="flex gap-2 mt-2">
+          <input id="m-newmail" type="email" placeholder="name@example.com"
+                 class="flex-1 border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+          <button id="m-addmail" class="bg-ink text-white px-4 text-sm hover:bg-signal transition-colors">Add</button>
+        </div>
+        <p class="text-xs text-muted mt-2">
+          Digest every 6 hours. Critical changes — a node going silent, a new sudo account,
+          trust falling below 50 — send straight away.
+        </p>
+      </div>
+
+      <p id="m-msg" class="text-sm text-down min-h-[1.25rem]"></p>
+
+      <div class="flex gap-2 pt-1">
+        <button id="m-save" class="flex-1 bg-ink text-white py-2.5 text-sm font-medium hover:bg-signal transition-colors">Save</button>
+        <button id="m-cancel" class="px-5 border border-rule text-sm hover:border-ink transition-colors">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
 // ---------------------------------------------------------------- config
 const SUPABASE_URL = "https://jcprvuqhnjtgskjuoded.supabase.co";
@@ -152,7 +218,7 @@ const TRACE_POINTS = 40;
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const $ = id => document.getElementById(id);
-const STATUS = { healthy:'healthy', degraded:'degraded', down:'down' };
+const STATUS = { healthy:'healthy', degraded:'degraded', down:'down', pending:'pending' };
 
 // ---------------------------------------------------------------- auth
 $('signin').onclick = async () => {
@@ -216,6 +282,127 @@ function trace(samples, colour) {
 
 // Component breakdown. The score is only useful if you can see which
 // factor pulled it down, so each segment is drawn at its own weight.
+
+// ---------------------------------------------------------------- node settings
+let editing = null;          // agent row, or null when adding
+let emailRows = [];
+
+const modal = () => $('modal');
+function openModal(row) {
+  editing = row;
+  const adding = !row;
+  $('m-eyebrow').textContent = adding ? 'Register a node' : 'Node settings';
+  $('m-title').textContent   = adding ? 'New node' : (row.label || row.instance_id);
+  $('m-idfield').classList.toggle('hidden', !adding);
+  $('m-mailwrap').classList.toggle('hidden', adding);
+  $('m-instance').value = '';
+  $('m-name').value  = row?.display_name || '';
+  $('m-notes').value = row?.notes || '';
+  $('m-muted').checked = !!row?.muted;
+  $('m-msg').textContent = '';
+  modal().classList.remove('hidden');
+  modal().classList.add('flex');
+  if (!adding) loadEmails(row.id); else emailRows = [];
+  setTimeout(() => (adding ? $('m-instance') : $('m-name')).focus(), 40);
+}
+
+function closeModal() {
+  modal().classList.add('hidden');
+  modal().classList.remove('flex');
+  editing = null;
+}
+
+async function loadEmails(agentId) {
+  const { data, error } = await sb.from('alert_recipients')
+    .select('id,email,agent_id,digest,instant')
+    .or(`agent_id.eq.${agentId},agent_id.is.null`)
+    .order('created_at');
+  if (error) { $('m-msg').textContent = error.message; return; }
+  emailRows = data || [];
+  renderEmails();
+}
+
+function renderEmails() {
+  const own = emailRows.filter(e => e.agent_id);
+  $('m-count').textContent = `${own.length} of 5`;
+  if (!emailRows.length) {
+    $('m-emails').innerHTML = `<p class="px-3 py-4 text-sm text-muted">
+      No recipients yet. Alerts for this node go nowhere.</p>`;
+    return;
+  }
+  $('m-emails').innerHTML = emailRows.map(e => `
+    <div class="flex items-center gap-2 px-3 py-2">
+      <span class="font-mono text-sm truncate flex-1">${esc(e.email)}</span>
+      ${e.agent_id ? '' : '<span class="font-mono text-[10px] uppercase tracking-[.12em] text-muted shrink-0">all nodes</span>'}
+      ${e.agent_id ? `<button data-rm="${e.id}" class="font-mono text-[11px] text-down hover:underline shrink-0">Remove</button>` : ''}
+    </div>`).join('');
+  $('m-emails').querySelectorAll('[data-rm]').forEach(b =>
+    b.onclick = () => removeEmail(b.dataset.rm));
+}
+
+async function removeEmail(id) {
+  const { error } = await sb.from('alert_recipients').delete().eq('id', id);
+  if (error) { $('m-msg').textContent = error.message; return; }
+  emailRows = emailRows.filter(e => e.id !== id);
+  renderEmails();
+}
+
+$('m-addmail').onclick = async () => {
+  const email = $('m-newmail').value.trim();
+  $('m-msg').textContent = '';
+  if (!email || !editing) return;
+  const { data, error } = await sb.from('alert_recipients')
+    .insert({ agent_id: editing.id, email }).select().single();
+  if (error) {
+    $('m-msg').textContent = /5 recipients/.test(error.message)
+      ? 'This node already has 5 recipients. Remove one first.'
+      : /duplicate/i.test(error.message)
+      ? 'That address is already on this node.'
+      : error.message;
+    return;
+  }
+  emailRows.push(data);
+  $('m-newmail').value = '';
+  renderEmails();
+};
+$('m-newmail').addEventListener('keydown', e => { if (e.key === 'Enter') $('m-addmail').click(); });
+
+$('m-save').onclick = async () => {
+  $('m-msg').textContent = '';
+  const patch = {
+    display_name: $('m-name').value.trim() || null,
+    notes: $('m-notes').value.trim() || null,
+    muted: $('m-muted').checked,
+  };
+  let error;
+  if (editing) {
+    ({ error } = await sb.from('agents').update(patch).eq('id', editing.id));
+  } else {
+    const iid = $('m-instance').value.trim();
+    if (!/^i-[0-9a-f]{8,}$/.test(iid)) {
+      $('m-msg').textContent = 'Enter a valid EC2 instance ID, e.g. i-0abc123def456.';
+      return;
+    }
+    ({ error } = await sb.from('agents')
+      .insert({ instance_id: iid, display_name: patch.display_name, notes: patch.notes }));
+  }
+  if (error) {
+    $('m-msg').textContent = /duplicate/i.test(error.message)
+      ? 'That instance is already registered.' : error.message;
+    return;
+  }
+  closeModal();
+  refresh();
+};
+
+$('m-cancel').onclick = closeModal;
+$('m-close').onclick  = closeModal;
+$('addnode').onclick  = () => openModal(null);
+modal().addEventListener('click', e => { if (e.target === modal()) closeModal(); });
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && !modal().classList.contains('hidden')) closeModal();
+});
+
 function trustBar(r) {
   const parts = [
     ['recency',  r.f_recency,  0.00],
@@ -235,7 +422,7 @@ function trustBar(r) {
 }
 
 function renderTally(rows) {
-  const c = { healthy:0, degraded:0, down:0 };
+  const c = { healthy:0, degraded:0, down:0, pending:0 };
   rows.forEach(r => c[r.status] !== undefined && c[r.status]++);
   $('tally').innerHTML = ['healthy','degraded','down'].map(k => `
     <div>
@@ -251,29 +438,34 @@ function renderHosts(rows, latest, series) {
     </div>`;
     return;
   }
-  const hex = { healthy:'#0F7B6C', degraded:'#B07314', down:'#A93226' };
+  const hex = { healthy:'#0F7B6C', degraded:'#B07314', down:'#A93226', pending:'#5C6B7A' };
   $('hosts').innerHTML = rows.map(r => {
     const m = latest[r.id] || {};
     const st = STATUS[r.status] ? r.status : 'down';
     return `
-    <article class="bg-paper border border-rule rise">
+    <article class="bg-paper border border-rule rise cursor-pointer hover:border-ink transition-colors"
+             data-agent="${r.id}" tabindex="0" role="button"
+             aria-label="Settings for ${esc(r.label || r.instance_id)}">
       <div class="flex items-start justify-between gap-4 px-5 pt-4">
         <div class="min-w-0">
           <div class="flex items-center gap-2">
             <span class="relative inline-block w-2 h-2 rounded-full ${st==='healthy'?'live':''}"
                   style="background:${hex[st]};color:${hex[st]}"></span>
-            <h3 class="font-semibold tracking-tight truncate">${esc(r.hostname || r.instance_id)}</h3>
+            <h3 class="font-semibold tracking-tight truncate">${esc(r.label || r.instance_id)}</h3>
+            ${r.muted ? '<span class="font-mono text-[9px] uppercase tracking-[.14em] text-muted border border-rule px-1.5 py-0.5 shrink-0">muted</span>' : ''}
           </div>
           <p class="font-mono text-[11px] text-muted mt-1 truncate">
             ${esc(r.instance_id)} · ${esc(r.region || '—')} · ${esc(r.os || '—')}
           </p>
+          ${r.notes ? `<p class="text-[11px] text-muted mt-1 truncate">${esc(r.notes)}</p>` : ''}
         </div>
         <div class="text-right shrink-0">
           <p class="font-mono text-[10px] tracking-[.16em] uppercase" style="color:${hex[st]}">${st}</p>
           <p class="font-mono text-[11px] text-muted tabular-nums mt-0.5">seen ${ago(r.last_seen)} ago</p>
           <p class="text-3xl font-semibold tabular-nums leading-none mt-2"
-             style="color:${r.trust >= 70 ? '#0F7B6C' : r.trust >= 40 ? '#B07314' : '#A93226'}">${r.trust ?? '—'}</p>
+             style="color:${r.trust == null ? '#5C6B7A' : r.trust >= 70 ? '#0F7B6C' : r.trust >= 40 ? '#B07314' : '#A93226'}">${r.trust ?? '—'}</p>
           <p class="font-mono text-[9px] tracking-[.18em] uppercase text-muted">trust</p>
+          <p class="font-mono text-[10px] text-muted mt-1">${r.recipient_count || 0} recipient${r.recipient_count === 1 ? '' : 's'}</p>
         </div>
       </div>
 
@@ -316,6 +508,12 @@ function renderHosts(rows, latest, series) {
       </p>` : ''}
     </article>`;
   }).join('');
+
+  $('hosts').querySelectorAll('[data-agent]').forEach(el => {
+    const row = rows.find(x => x.id === el.dataset.agent);
+    el.onclick = () => openModal(row);
+    el.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openModal(row); } };
+  });
 }
 
 function renderPorts(rows) {
@@ -402,7 +600,7 @@ async function refresh() {
   try {
     const since = new Date(Date.now() - 20 * 60 * 1000).toISOString();
     const [health, latest, hist, ports, auth, posture, users] = await Promise.all([
-      sb.from('agent_trust').select('*').order('hostname'),
+      sb.from('agent_overview').select('*').order('label'),
       sb.from('agent_latest_metrics').select('*'),
       sb.from('metrics').select('agent_id,ts,cpu_pct').gte('ts', since).order('ts'),
       sb.from('port_events').select('ts,port,proto,bind_addr,external,process,action,agents(hostname)')
