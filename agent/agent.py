@@ -23,6 +23,7 @@ import psutil
 import requests
 
 import checks
+import identity as ident_mod
 import inventory
 
 # ---------------------------------------------------------------- config
@@ -32,6 +33,7 @@ STATE_DIR = Path(os.environ.get("NW_STATE_DIR", "/var/lib/nodewatch"))
 # Optional single-use enrolment token, issued from the dashboard. Only
 # required when the server is configured with NW_REQUIRE_TOKEN=true.
 ENROLL_TOKEN = os.environ.get("NW_ENROLL_TOKEN", "")
+AGENT_VERSION = "0.3.0"
 DB_PATH = STATE_DIR / "buffer.db"
 
 HEARTBEAT_INTERVAL = 15
@@ -160,19 +162,27 @@ class Session:
         self.instance_id = None
 
     def enroll(self) -> bool:
+        """
+        Provider-agnostic. On AWS/GCP/Azure the cloud vouches for the host; on
+        anything else the enrolment token is the only evidence, so a missing
+        token is a hard failure rather than a downgrade.
+        """
         try:
-            instance_id, doc, doc_raw, pkcs7 = instance_identity()
+            ident = ident_mod.collect_identity()
         except Exception as e:
-            log.error("IMDS unreachable, cannot enroll: %s", e)
+            log.error("could not establish identity: %s", e)
+            return False
+
+        if ident.get("provider") == "generic" and not ENROLL_TOKEN:
+            log.error("this host has no cloud identity, so NW_ENROLL_TOKEN is "
+                      "required. Issue one from the dashboard.")
             return False
 
         body = {
-            "document": doc,
-            "document_raw": doc_raw,
-            "pkcs7": pkcs7,
+            "identity": ident,
             "enroll_token": ENROLL_TOKEN or None,
             "hostname": socket.gethostname(),
-            "agent_version": "0.1.0",
+            "agent_version": AGENT_VERSION,
             "os": platform_string(),
         }
         try:
@@ -185,9 +195,12 @@ class Session:
             log.error("enroll rejected (%s): %s", r.status_code, r.text[:200])
             return False
 
-        self.token = r.json()["token"]
-        self.instance_id = instance_id
-        log.info("enrolled as %s", instance_id)
+        data = r.json()
+        self.token = data["token"]
+        self.instance_id = data.get("agent_id")
+        log.info("enrolled as %s [%s, proof=%s]",
+                 ident.get("node_id"), data.get("provider"),
+                 data.get("identity_proof"))
         return True
 
     def headers(self):
