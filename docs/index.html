@@ -102,6 +102,7 @@ tailwind.config = { theme: { extend: {
       <div>
         <h1 class="text-xl font-semibold tracking-tight leading-none">nodewatch</h1>
         <p class="font-mono text-[9px] tracking-[.2em] uppercase text-muted mt-1">fleet telemetry</p>
+        <p id="whoami" class="font-mono text-[9px] text-muted mt-1.5 truncate"></p>
       </div>
       <button id="railclose" class="lg:hidden font-mono text-xs text-muted hover:text-ink px-1" aria-label="Close menu">✕</button>
     </div>
@@ -135,6 +136,100 @@ tailwind.config = { theme: { extend: {
     <div id="page" class="px-4 sm:px-6 lg:px-8 py-5 sm:py-6"></div>
     <p id="err" class="px-4 sm:px-6 lg:px-8 pb-6 font-mono text-xs text-down"></p>
   </main>
+</div>
+
+<!-- ════════════════════ add server ════════════════════ -->
+<div id="addmodal" class="hidden fixed inset-0 bg-ink/45 items-center justify-center px-4 z-50">
+  <div class="bg-paper border border-rule w-full max-w-xl max-h-[90vh] overflow-y-auto">
+    <div class="flex items-start justify-between border-b border-rule px-6 py-4">
+      <div>
+        <p class="font-mono text-[10px] tracking-[.22em] uppercase text-muted">Add a server</p>
+        <h2 class="text-xl font-semibold tracking-tight mt-0.5">Any Linux host</h2>
+      </div>
+      <button id="a-close" class="font-mono text-xs text-muted hover:text-ink px-2">Close</button>
+    </div>
+    <div class="px-6 py-5 space-y-5">
+      <div>
+        <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Where does it run</label>
+        <div id="a-providers" class="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2"></div>
+      </div>
+      <div class="grid sm:grid-cols-2 gap-3">
+        <div>
+          <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Name (optional)</label>
+          <input id="a-name" placeholder="db-primary"
+                 class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+        </div>
+        <div>
+          <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Site (optional)</label>
+          <input id="a-site" placeholder="Chennai DC"
+                 class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+        </div>
+      </div>
+      <div>
+        <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Ingest URL</label>
+        <input id="a-ingest"
+               class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+        <p class="text-xs text-muted mt-1">Where the agent posts. Must be reachable from the new server.</p>
+      </div>
+      <button id="a-gen" class="w-full bg-ink text-paper py-2.5 text-sm font-medium hover:bg-signal transition-colors">
+        Generate install command
+      </button>
+      <div id="a-out" class="hidden space-y-2">
+        <div class="flex items-center justify-between">
+          <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Run this on the server as root</label>
+          <button id="a-copy" class="font-mono text-[10px] uppercase tracking-[.12em] text-signal hover:underline">Copy</button>
+        </div>
+        <pre id="a-cmd" class="border border-rule bg-ground px-3 py-3 font-mono text-[11px] whitespace-pre-wrap break-all"></pre>
+        <p id="a-note" class="text-xs text-muted"></p>
+      </div>
+      <p id="a-msg" class="text-sm text-down min-h-[1.25rem]"></p>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════ channel ════════════════════ -->
+<div id="chanmodal" class="hidden fixed inset-0 bg-ink/45 items-center justify-center px-4 z-50">
+  <div class="bg-paper border border-rule w-full max-w-lg max-h-[90vh] overflow-y-auto">
+    <div class="flex items-start justify-between border-b border-rule px-6 py-4">
+      <div>
+        <p class="font-mono text-[10px] tracking-[.22em] uppercase text-muted">Alert channel</p>
+        <h2 class="text-xl font-semibold tracking-tight mt-0.5">New destination</h2>
+      </div>
+      <button id="c-close" class="font-mono text-xs text-muted hover:text-ink px-2">Close</button>
+    </div>
+    <div class="px-6 py-5 space-y-4">
+      <div>
+        <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Type</label>
+        <div id="c-kinds" class="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2"></div>
+      </div>
+      <div>
+        <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Label</label>
+        <input id="c-label" placeholder="Ops group"
+               class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+      </div>
+      <div id="c-fields" class="space-y-3"></div>
+      <div class="grid sm:grid-cols-2 gap-3">
+        <div>
+          <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Applies to</label>
+          <select id="c-agent" class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none"></select>
+        </div>
+        <div>
+          <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Minimum severity</label>
+          <select id="c-sev" class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+            <option value="critical">critical only</option>
+            <option value="warning" selected>warning and above</option>
+            <option value="info">everything</option>
+          </select>
+        </div>
+      </div>
+      <p id="c-help" class="text-xs text-muted"></p>
+      <p id="c-msg" class="text-sm text-down min-h-[1.25rem]"></p>
+      <div class="flex gap-2">
+        <button id="c-save" class="flex-1 bg-ink text-paper py-2.5 text-sm font-medium hover:bg-signal transition-colors">Save channel</button>
+        <button id="c-cancel" class="px-5 border border-rule text-sm hover:border-ink transition-colors">Cancel</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- ════════════════════ node settings modal ════════════════════ -->
@@ -208,13 +303,16 @@ const HEX = new Proxy({}, { get: (_, k) => themeColour(String(k)) });
 const PAGES = [
   ['servers','Servers'], ['alerts','Alerts'], ['activity','Activity'],
   ['posture','Posture'], ['vulns','Vulnerabilities'], ['settings','Settings'],
+  ['users','Users', true],   // third element: admin only
 ];
+const INGEST_HINT = 'http://172.31.30.90:8000';
 
 let state = {
   page:'servers', tab:'ports', filter:'all', query:'', alertFilter:'all',
   host:null, hostTab:'checks',
   hosts:[], metrics:{}, series:{}, alerts:[], ports:[], users:[], auth:[],
   checks:[], recipients:[], rules:[], fim:[], tokens:[], history:[], vulns:[],
+  role:'viewer', channels:[], users:[], audit:[], me:null,
   hostDetail:{ checks:[], packages:[], vulns:[], users:[], ports:[], fim:[], history:[] },
 };
 
@@ -309,9 +407,19 @@ $('signin').onclick = async () => {
 $('pw').addEventListener('keydown', e => { if(e.key==='Enter') $('signin').click(); });
 $('signout').onclick = async () => { await sb.auth.signOut(); location.reload(); };
 
-function enter(){
+async function loadMe(){
+  const { data:{ user } } = await sb.auth.getUser();
+  state.me = user?.id || null;
+  const { data, error } = await sb.rpc('my_role');
+  state.role = (!error && data) ? data : 'viewer';
+  if ($('whoami')) $('whoami').textContent = `${user?.email||''} · ${state.role}`;
+}
+
+async function enter(){
   $('gate').classList.add('hidden');
   $('app').classList.remove('hidden');
+  await loadMe();
+  if (state.page==='users' && !isAdmin()) state.page='servers';
   const h=(location.hash||'').replace('#/','');
   if (h.startsWith('host/')) { state.page='host'; state.host=h.slice(5); }
   else if (h==='overview'||h==='nodes') state.page='servers';
@@ -358,9 +466,11 @@ function badges(){
   return { servers:down, alerts:failedMail, posture:highChecks,
            vulns:severeVulns, activity:critFiles };
 }
+const isAdmin = () => state.role === 'admin';
+
 function renderNav(){
   const b=badges();
-  $('nav').innerHTML = PAGES.map(([k,label])=>`
+  $('nav').innerHTML = PAGES.filter(([,,adminOnly])=>!adminOnly||isAdmin()).map(([k,label])=>`
     <button data-page="${k}" class="w-full text-left px-5 py-2.5 flex items-center justify-between
       font-mono text-[11px] uppercase tracking-[.14em] border-l-2 transition-colors
       ${state.page===k ? 'border-ink bg-ground text-ink' : 'border-transparent text-muted hover:text-ink'}">
@@ -460,7 +570,9 @@ function serverCard(r){
           <h3 class="font-semibold tracking-tight truncate">${esc(r.label)}</h3>
           ${r.muted?'<span class="font-mono text-[9px] uppercase tracking-[.12em] text-muted border border-rule px-1 shrink-0">muted</span>':''}
         </div>
-        <p class="font-mono text-[10px] text-muted mt-1 truncate">${esc(r.instance_id)} · ${esc(r.region||'—')}</p>
+        <p class="font-mono text-[10px] text-muted mt-1 truncate">
+          ${providerTag(r)} · ${esc(r.region||r.site||'—')}
+        </p>
       </div>
       <div class="text-right shrink-0">
         <p class="text-3xl font-semibold tabular-nums leading-none" style="color:${trustColour(r.trust)}">${r.trust??'—'}</p>
@@ -482,6 +594,19 @@ function serverCard(r){
       <span class="font-mono text-[10px] text-muted tabular-nums">seen ${ago(r.last_seen)} ago</span>
     </div>
   </article>`;
+}
+
+// Provider and how strongly the host proved itself. An on-premise box is
+// genuinely weaker evidence than a signed AWS document, so it is shown
+// rather than smoothed over.
+const PROVIDER_LABEL = { aws:'AWS', gcp:'GCP', azure:'Azure', generic:'On-prem' };
+const PROOF_TONE = { signed:'text-healthy', account:'text-degraded',
+                     token:'text-muted', unverified:'text-down' };
+function providerTag(r){
+  const p = PROVIDER_LABEL[r.provider] || esc(r.provider || '?');
+  const proof = r.identity_proof || 'unverified';
+  return `<span class="uppercase tracking-[.1em]">${p}</span>` +
+         `<span class="${PROOF_TONE[proof]||'text-muted'}" title="identity proof: ${proof}"> ${proof}</span>`;
 }
 
 function statusPill(s){
@@ -535,7 +660,11 @@ function pageHost(){
       <span class="font-mono text-[11px] text-muted">${esc(r.instance_id)}</span>
       ${r.muted?'<span class="font-mono text-[10px] uppercase tracking-[.12em] text-muted border border-rule px-1.5">muted</span>':''}
       <span class="flex-1"></span>
-      <button data-agent="${r.id}" class="font-mono text-[11px] uppercase tracking-[.14em] border border-ink px-3 py-1.5 hover:bg-ink hover:text-white transition-colors">Settings</button>
+      ${isAdmin()?`
+        <button data-agent="${r.id}" class="font-mono text-[11px] uppercase tracking-[.14em] border border-ink px-3 py-1.5 hover:bg-ink hover:text-paper transition-colors">Settings</button>
+        <button data-delete="${r.id}" data-label="${esc(r.label)}"
+                class="font-mono text-[11px] uppercase tracking-[.14em] border border-down text-down px-3 py-1.5 hover:bg-down hover:text-paper transition-colors">Delete</button>`
+        :'<span class="font-mono text-[10px] uppercase tracking-[.12em] text-muted">read only</span>'}
     </div>
 
     <div class="grid lg:grid-cols-[300px_1fr] gap-5">
@@ -547,6 +676,7 @@ function pageHost(){
             <h3 class="text-lg font-semibold tracking-tight truncate">${esc(r.label)}</h3>
           </div>
           <p class="font-mono text-[11px] text-muted mt-1">${esc(r.os||'—')}</p>
+          <p class="font-mono text-[10px] text-muted mt-1">${providerTag(r)}${r.site?` · ${esc(r.site)}`:''}</p>
           ${r.notes?`<p class="text-[12px] text-muted mt-2">${esc(r.notes)}</p>`:''}
         </div>
         <div class="px-5 py-4 text-center border-b border-rule">
@@ -848,65 +978,145 @@ function pagePosture(){
 }
 
 // ═══════════════════════════ page: settings
+const CHANNEL_KINDS = {
+  telegram: { label:'Telegram', fields:[['bot_token','Bot token','123456:ABC-DEF...'],
+                                        ['chat_id','Chat ID','-1001234567890']],
+              help:'Create a bot with @BotFather, add it to the group, then read the chat id from getUpdates. Group ids are negative.' },
+  botim:    { label:'Botim',    fields:[['url','Open API endpoint','https://openapi.botim.me/...'],
+                                        ['token','Access token',''],
+                                        ['app_id','App ID (optional)',''],
+                                        ['target','Target / group id','']],
+              help:'Botim requires a verified Official Account through their developer portal, so the endpoint and token come from your OA console rather than being fixed here.' },
+  webhook:  { label:'Webhook',  fields:[['url','POST URL','https://example.com/hook']],
+              help:'Any endpoint accepting a JSON POST.' },
+  slack:    { label:'Slack',    fields:[['url','Incoming webhook URL','https://hooks.slack.com/services/...']],
+              help:'Slack incoming webhook.' },
+};
+
 function pageSettings(){
   const global=state.recipients.filter(r=>!r.agent_id);
+  const admin=isAdmin();
+
+  const chanRows = state.channels.length ? state.channels.map(c=>`
+    <div class="flex flex-wrap items-center gap-3 px-4 py-2.5">
+      <span class="font-mono text-[10px] uppercase tracking-[.12em] w-20 shrink-0">${esc(CHANNEL_KINDS[c.kind]?.label||c.kind)}</span>
+      <span class="text-sm truncate flex-1 min-w-0">${esc(c.label||'unnamed')}
+        <span class="font-mono text-[10px] text-muted">${c.node_label?`· ${esc(c.node_label)}`:'· all servers'}</span></span>
+      <span class="font-mono text-[10px] uppercase tracking-[.1em] ${c.configured?'text-healthy':'text-down'}">${c.configured?'configured':'incomplete'}</span>
+      <span class="font-mono text-[10px] text-muted">min ${esc(c.min_severity)}</span>
+      <span class="font-mono text-[10px] ${c.failed_7d?'text-down':'text-muted'}">${c.sent_7d||0} sent · ${c.failed_7d||0} failed</span>
+      ${!c.enabled?'<span class="font-mono text-[10px] uppercase text-muted">disabled</span>':''}
+      ${admin?`<button data-chandel="${c.id}" class="font-mono text-[10px] text-down hover:underline">Remove</button>`:''}
+      ${c.last_error?`<p class="w-full font-mono text-[10px] text-down truncate">${esc(c.last_error)}</p>`:''}
+    </div>`).join('') : '<p class="px-4 py-4 text-sm text-muted">No channels configured. Alerts go by email only.</p>';
+
   return `
   <div class="space-y-6 max-w-4xl">
-    ${card(sectionHead('Recipients on every node')
-      + `<div class="px-5 py-4 space-y-3">
-        <p class="text-sm text-muted">These addresses receive alerts for all nodes, in addition to any per-node recipients.</p>
+    ${!admin?`<div class="bg-paper border border-rule px-5 py-3">
+      <p class="text-sm text-muted">You have <span class="font-mono">viewer</span> access.
+      Settings are read-only, and channel credentials are not readable by your account.</p></div>`:''}
+
+    ${card(sectionHead('Alert channels', admin
+      ? `<button id="s-newchan" class="font-mono text-[10px] uppercase tracking-[.12em] text-signal hover:underline">Add channel</button>` : '')
+      + `<div class="divide-y divide-hairline">${chanRows}</div>
+         <p class="px-4 py-3 font-mono text-[11px] text-muted border-t border-rule">
+           Telegram, Botim, Slack and plain webhooks. Credentials are stored server-side and
+           are never sent to a viewer's browser.</p>`)}
+
+    ${card(sectionHead('Email recipients on every server')
+      + `<div class="px-4 sm:px-5 py-4 space-y-3">
+        <p class="text-sm text-muted">These addresses receive alerts for all servers, in addition to per-server recipients.</p>
         <div class="border border-rule divide-y divide-hairline">${global.length?global.map(r=>`
           <div class="flex items-center gap-2 px-3 py-2">
             <span class="font-mono text-sm truncate flex-1">${esc(r.email)}</span>
-            <button data-rmglobal="${r.id}" class="font-mono text-[11px] text-down hover:underline">Remove</button>
+            ${admin?`<button data-rmglobal="${r.id}" class="font-mono text-[11px] text-down hover:underline">Remove</button>`:''}
           </div>`).join(''):'<p class="px-3 py-3 text-sm text-muted">None.</p>'}</div>
-        <div class="flex gap-2">
+        ${admin?`<div class="flex gap-2">
           <input id="s-newmail" type="email" placeholder="oncall@example.com"
                  class="flex-1 border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
           <button id="s-addmail" class="bg-ink text-paper px-4 text-sm hover:bg-signal transition-colors">Add</button>
-        </div>
+        </div>`:''}
         <p id="s-msg" class="text-sm text-down min-h-[1.25rem]"></p>
       </div>`)}
 
     ${card(sectionHead('Alert rules')
       + `<div class="divide-y divide-hairline">${state.rules.map(r=>`
-        <div class="flex items-center gap-4 px-5 py-3">
-          <label class="flex items-center gap-2 cursor-pointer shrink-0">
-            <input type="checkbox" data-rule="${esc(r.rule)}" ${r.enabled?'checked':''} class="accent-ink">
-          </label>
+        <div class="flex items-center gap-3 px-4 sm:px-5 py-3">
+          <input type="checkbox" data-rule="${esc(r.rule)}" ${r.enabled?'checked':''} ${admin?'':'disabled'} class="accent-ink shrink-0">
           <div class="min-w-0 flex-1">
-            <p class="text-sm font-medium">${esc(r.description||r.rule)}</p>
+            <p class="text-sm font-medium truncate">${esc(r.description||r.rule)}</p>
             <p class="font-mono text-[10px] text-muted mt-0.5">${esc(r.rule)}</p>
           </div>
           <span class="font-mono text-[10px] uppercase tracking-[.12em] shrink-0
             ${r.severity==='critical'?'text-down':r.severity==='warning'?'text-degraded':'text-muted'}">${esc(r.severity)}</span>
-          <span class="font-mono text-[11px] text-muted w-28 text-right shrink-0">
-            ${r.cooldown==='00:00:00'?'no cooldown':'cooldown '+esc(r.cooldown)}</span>
+          <span class="font-mono text-[11px] text-muted w-24 text-right shrink-0 hidden sm:inline">
+            ${r.cooldown==='00:00:00'?'no cooldown':esc(r.cooldown)}</span>
         </div>`).join('')}</div>`)}
 
-    ${card(sectionHead('Enrolment tokens',
+    ${admin?card(sectionHead('Enrolment tokens',
       `<button id="s-newtoken" class="font-mono text-[10px] uppercase tracking-[.12em] text-signal hover:underline">Issue token</button>`)
-      + `<div class="px-5 py-4 space-y-3">
-        <p class="text-sm text-muted">Single use, expires in 24 hours. Pass it to a new node as
-          <span class="font-mono text-[11px]">NW_ENROLL_TOKEN</span>. Only enforced when the API runs with
-          <span class="font-mono text-[11px]">NW_REQUIRE_TOKEN=true</span>.</p>
+      + `<div class="px-4 sm:px-5 py-4 space-y-3">
+        <p class="text-sm text-muted">Single use, expires in 24 hours. Required for on-premise
+          servers, which have no cloud identity to verify.</p>
         ${state.tokens.length?`<div class="border border-rule divide-y divide-hairline">${state.tokens.map(t=>`
           <div class="flex items-center gap-3 px-3 py-2">
             <span class="font-mono text-xs truncate flex-1">${esc(t.status==='open'?t.token:t.token.slice(0,12)+'…')}</span>
-            <span class="font-mono text-[11px] text-muted truncate w-32">${esc(t.label||'')}</span>
+            <span class="font-mono text-[11px] text-muted truncate w-28 hidden sm:inline">${esc(t.label||'')}</span>
             <span class="font-mono text-[10px] uppercase tracking-[.12em] w-16 text-right
               ${t.status==='open'?'text-healthy':t.status==='used'?'text-muted':'text-degraded'}">${esc(t.status)}</span>
             ${t.status==='open'?`<button data-revoke="${esc(t.token)}" class="font-mono text-[10px] text-down hover:underline">Revoke</button>`:''}
           </div>`).join('')}</div>`:'<p class="text-sm text-muted">No tokens issued.</p>'}
-        <p id="s-tokmsg" class="text-sm text-down min-h-[1.25rem]"></p>
-      </div>`)}
+      </div>`):''}
 
     ${card(sectionHead('Schedule')
-      + `<div class="px-5 py-4 font-mono text-[12px] text-muted space-y-1">
+      + `<div class="px-4 sm:px-5 py-4 font-mono text-[12px] text-muted space-y-1">
         <p>Critical alerts are queued the moment the event lands and sent within a minute.</p>
-        <p>Digest runs every 6 hours at 00:00, 06:00, 12:00 and 18:00 UTC.</p>
-        <p>Each node accepts up to 5 recipients, plus the global list above.</p>
+        <p>Digest every 6 hours at 00:00, 06:00, 12:00 and 18:00 UTC.</p>
+        <p>Up to 5 email recipients per server, plus the global list.</p>
       </div>`)}
+
+    ${card(sectionHead('Recent administrative changes')
+      + (state.audit.length?`<div class="divide-y divide-hairline max-h-64 overflow-y-auto">${state.audit.map(a=>`
+        <div class="flex items-center gap-3 px-4 sm:px-5 py-2">
+          <span class="font-mono text-[11px] text-muted w-40 truncate shrink-0">${esc(a.actor_email||'system')}</span>
+          <span class="font-mono text-[11px] flex-1 truncate">${esc(a.action)}</span>
+          <span class="font-mono text-[11px] text-muted truncate w-40 text-right hidden sm:inline">${esc(a.target||'')}</span>
+          <span class="font-mono text-[10px] text-muted tabular-nums w-10 text-right shrink-0">${ago(a.created_at)}</span>
+        </div>`).join('')}</div>`:empty('No changes recorded.')))}
+  </div>`;
+}
+
+// ═══════════════════════════ page: users
+function pageUsers(){
+  if(!isAdmin()) return card(empty('Only an admin can manage users.'));
+  return `
+  <div class="space-y-5 max-w-3xl">
+    ${card(sectionHead('People with access',
+      `<button id="u-new" class="font-mono text-[10px] uppercase tracking-[.12em] text-signal hover:underline">Add user</button>`)
+      + (state.users.length?`<div class="divide-y divide-hairline">${state.users.map(u=>`
+        <div class="flex flex-wrap items-center gap-3 px-4 sm:px-5 py-3">
+          <div class="min-w-0 flex-1">
+            <p class="text-sm truncate">${esc(u.email)}${u.id===state.me?' <span class="font-mono text-[10px] text-muted">you</span>':''}</p>
+            <p class="font-mono text-[10px] text-muted mt-0.5">
+              ${u.last_sign_in_at?`last signed in ${ago(u.last_sign_in_at)} ago`:'never signed in'}
+              ${u.confirmed?'':' · unconfirmed'}</p>
+          </div>
+          <select data-urole="${u.id}" class="border border-rule px-2 py-1 font-mono text-[11px] focus:border-signal outline-none">
+            <option value="viewer" ${u.role==='viewer'?'selected':''}>viewer</option>
+            <option value="admin"  ${u.role==='admin'?'selected':''}>admin</option>
+          </select>
+          <button data-upw="${u.id}" data-email="${esc(u.email)}" class="font-mono text-[10px] uppercase tracking-[.1em] text-signal hover:underline">Reset password</button>
+          ${u.id===state.me?'':`<button data-udel="${u.id}" data-email="${esc(u.email)}" class="font-mono text-[10px] uppercase tracking-[.1em] text-down hover:underline">Remove</button>`}
+        </div>`).join('')}</div>`:empty('Loading users…')))}
+    <p id="u-msg" class="text-sm text-down min-h-[1.25rem]"></p>
+    <div class="bg-paper border border-rule px-5 py-4">
+      <h3 class="font-mono text-[10px] tracking-[.2em] uppercase text-muted">What each role may do</h3>
+      <p class="text-sm text-muted mt-2 leading-relaxed">
+        A <span class="font-mono">viewer</span> sees every server, alert, posture check and vulnerability,
+        and can acknowledge or resolve alerts. They cannot add or delete servers, change alert
+        configuration, or read channel credentials — enforced by the database, not just hidden here.
+      </p>
+    </div>
   </div>`;
 }
 
@@ -921,6 +1131,7 @@ function openHost(id){
 const TITLES = {
   host:['Server','Everything collected from this host'],
   servers:['Servers','Select a server to see its detail'],
+  users:['Users','Who can sign in, and what they may change'],
   alerts:['Alerts','What fired, and whether it was delivered'],
   activity:['Activity','Port, account and sign-in events'],
   posture:['Posture','Failing configuration checks by node'],
@@ -942,7 +1153,7 @@ function render(){
   $('page-actions').innerHTML = state.page==='servers' ? `
     <input id="search" value="${esc(state.query)}" placeholder="Filter servers"
       class="hidden sm:block border border-rule px-3 py-1.5 font-mono text-xs w-44 focus:border-signal outline-none">
-    <button id="addnode" class="font-mono text-[11px] uppercase tracking-[.14em] border border-ink px-3 py-1.5 hover:bg-ink hover:text-paper transition-colors">Add</button>`
+    ${isAdmin()?`<button id="addserver" class="font-mono text-[11px] uppercase tracking-[.14em] border border-ink px-3 py-1.5 hover:bg-ink hover:text-paper transition-colors">Add server</button>`:''}`
     : '';
 
   $('page').innerHTML =
@@ -951,7 +1162,8 @@ function render(){
     state.page==='activity' ? pageActivity() :
     state.page==='posture'  ? pagePosture()  :
     state.page==='host'     ? pageHost()     :
-    state.page==='vulns'    ? pageVulns()    : pageSettings();
+    state.page==='vulns'    ? pageVulns()    :
+    state.page==='users'    ? pageUsers()    : pageSettings();
 
   bind();
 }
@@ -972,7 +1184,7 @@ function bind(){
     const row=state.hosts.find(x=>x.id===el.dataset.agent);
     // On the fleet grid a card opens the node; on the detail page the
     // button opens settings for the node already being viewed.
-    const act = state.page==='host' ? ()=>openModal(row) : ()=>openHost(row.id);
+    const act = state.page==='host' ? (isAdmin()?()=>openModal(row):()=>{}) : ()=>openHost(row.id);
     el.onclick=act;
     el.onkeydown=e=>{ if(e.key==='Enter'||e.key===' '){e.preventDefault();act();} };
   });
@@ -990,7 +1202,43 @@ function bind(){
       const s=$('search'); if(s){ s.focus(); s.setSelectionRange(s.value.length,s.value.length); }
     });
   }
-  if ($('addnode')) $('addnode').onclick=()=>openModal(null);
+  if ($('addserver')) $('addserver').onclick=openAdd;
+  if ($('s-newchan')) $('s-newchan').onclick=openChan;
+  if ($('u-new'))     $('u-new').onclick=addUser;
+
+  document.querySelectorAll('[data-delete]').forEach(el =>
+    el.onclick=async e=>{ e.stopPropagation();
+      const label=el.dataset.label;
+      if(!confirm(`Delete ${label}? Its metrics, alerts, posture checks and file history are removed with it. The agent will re-enrol if it is still running.`)) return;
+      const { error } = await sb.from('agents').delete().eq('id', el.dataset.delete);
+      if (error) { $('err').textContent = error.message; return; }
+      state.page='servers'; location.hash='#/servers'; refresh();
+    });
+
+  document.querySelectorAll('[data-chandel]').forEach(el =>
+    el.onclick=async()=>{ if(!confirm('Remove this alert channel?')) return;
+      const { error } = await sb.from('alert_channels').delete().eq('id', el.dataset.chandel);
+      if (error && $('s-msg')) $('s-msg').textContent = error.message;
+      refresh(); });
+
+  document.querySelectorAll('[data-urole]').forEach(el =>
+    el.onchange=async()=>{
+      try { await callUsers({action:'set_role', id:el.dataset.urole, role:el.value}); await loadUsers(); render(); }
+      catch(e){ if($('u-msg')) $('u-msg').textContent=e.message; await loadUsers(); render(); } });
+
+  document.querySelectorAll('[data-udel]').forEach(el =>
+    el.onclick=async()=>{
+      if(!confirm(`Remove ${el.dataset.email}? They lose access immediately.`)) return;
+      try { await callUsers({action:'delete', id:el.dataset.udel}); await loadUsers(); render(); }
+      catch(e){ if($('u-msg')) $('u-msg').textContent=e.message; } });
+
+  document.querySelectorAll('[data-upw]').forEach(el =>
+    el.onclick=async()=>{
+      const pw = prompt(`New password for ${el.dataset.email} (at least 10 characters)`);
+      if(!pw) return;
+      try { await callUsers({action:'reset_password', id:el.dataset.upw, password:pw});
+            if($('u-msg')) $('u-msg').textContent=''; alert('Password updated.'); }
+      catch(e){ if($('u-msg')) $('u-msg').textContent=e.message; } });
 
   document.querySelectorAll('[data-rmglobal]').forEach(el =>
     el.onclick=async()=>{ await sb.from('alert_recipients').delete().eq('id',el.dataset.rmglobal); refresh(); });
@@ -1031,12 +1279,172 @@ function bind(){
 
   if ($('s-newtoken')) $('s-newtoken').onclick=async()=>{
     const { error } = await sb.rpc('new_enroll_token', { p_label:'issued from dashboard', p_hours:24 });
-    if (error && $('s-tokmsg')) $('s-tokmsg').textContent = error.message;
+    if (error && $('s-msg')) $('s-msg').textContent =
+      /admin/i.test(error.message) ? 'Only an admin can issue enrolment tokens.' : error.message;
     refresh();
   };
 
   document.querySelectorAll('[data-rule]').forEach(el =>
     el.onchange=async()=>{ await sb.from('alert_rules').update({enabled:el.checked}).eq('rule',el.dataset.rule); refresh(); });
+}
+
+
+// ═══════════════════════════ add server
+const PROVIDERS = [
+  ['aws','AWS EC2','Signed instance identity — no token needed'],
+  ['gcp','Google Cloud','Signed identity JWT — no token needed'],
+  ['azure','Azure','Attested document, token as fallback'],
+  ['generic','On-premise','No cloud identity, so a token is required'],
+];
+let addProvider='aws';
+
+function openAdd(){
+  addProvider='aws';
+  $('a-name').value=''; $('a-site').value='';
+  $('a-ingest').value = localStorage_get('nw-ingest') || INGEST_HINT;
+  $('a-out').classList.add('hidden'); $('a-msg').textContent='';
+  renderProviders();
+  $('addmodal').classList.remove('hidden'); $('addmodal').classList.add('flex');
+}
+function closeAdd(){ $('addmodal').classList.add('hidden'); $('addmodal').classList.remove('flex'); }
+
+function localStorage_get(k){ try { return localStorage.getItem(k); } catch(e){ return null; } }
+function localStorage_set(k,v){ try { localStorage.setItem(k,v); } catch(e){} }
+
+function renderProviders(){
+  $('a-providers').innerHTML = PROVIDERS.map(([k,label])=>`
+    <button data-prov="${k}" class="border px-2 py-2 text-left transition-colors
+      ${addProvider===k?'border-ink bg-ground':'border-rule hover:border-ink'}">
+      <span class="block font-mono text-[10px] uppercase tracking-[.1em]">${label}</span>
+    </button>`).join('');
+  $('a-providers').querySelectorAll('[data-prov]').forEach(b =>
+    b.onclick=()=>{ addProvider=b.dataset.prov; renderProviders();
+                    $('a-out').classList.add('hidden'); });
+  const meta = PROVIDERS.find(([k])=>k===addProvider);
+  $('a-note').textContent = meta ? meta[2] : '';
+}
+
+$('a-gen').onclick = async () => {
+  $('a-msg').textContent='';
+  const ingest = $('a-ingest').value.trim();
+  if(!ingest){ $('a-msg').textContent='Enter the ingest URL.'; return; }
+  localStorage_set('nw-ingest', ingest);
+
+  // Only a host without cloud attestation strictly needs a token, but issuing
+  // one for every provider is harmless and makes enrolment explicit.
+  const label = $('a-name').value.trim() || addProvider + ' server';
+  const { data: token, error } = await sb.rpc('new_enroll_token',
+    { p_label: label, p_hours: 24 });
+  if (error) { $('a-msg').textContent = error.message; return; }
+
+  const env = [`NW_INGEST_URL=${ingest}`, `NW_ENROLL_TOKEN=${token}`];
+  if (addProvider !== 'aws') env.push(`NW_PROVIDER=${addProvider}`);
+  const site = $('a-site').value.trim();
+  if (site) env.push(`NW_SITE="${site}"`);
+
+  $('a-cmd').textContent =
+    `curl -fsSL https://raw.githubusercontent.com/bluntlycoded/nodewatch/main/agent/install.sh -o /tmp/nw.sh\n` +
+    `sudo ${env.join(' \\\n     ')} \\\n     bash /tmp/nw.sh`;
+  $('a-note').textContent =
+    'The token is single use and expires in 24 hours. The server appears here within about two minutes of the agent starting.'
+    + (addProvider==='generic' ? ' On-premise hosts must present this token; there is no cloud identity to fall back on.' : '');
+  $('a-out').classList.remove('hidden');
+  refresh();
+};
+
+$('a-copy').onclick = async () => {
+  try { await navigator.clipboard.writeText($('a-cmd').textContent); $('a-copy').textContent='Copied'; }
+  catch(e){ $('a-copy').textContent='Select and copy'; }
+  setTimeout(()=>{ $('a-copy').textContent='Copy'; }, 1800);
+};
+$('a-close').onclick = closeAdd;
+$('addmodal').addEventListener('click', e=>{ if(e.target===$('addmodal')) closeAdd(); });
+
+// ═══════════════════════════ channel
+let chanKind='telegram';
+function openChan(){
+  chanKind='telegram'; $('c-label').value=''; $('c-msg').textContent='';
+  $('c-agent').innerHTML = '<option value="">All servers</option>' +
+    state.hosts.map(h=>`<option value="${h.id}">${esc(h.label)}</option>`).join('');
+  renderKinds();
+  $('chanmodal').classList.remove('hidden'); $('chanmodal').classList.add('flex');
+}
+function closeChan(){ $('chanmodal').classList.add('hidden'); $('chanmodal').classList.remove('flex'); }
+
+function renderKinds(){
+  $('c-kinds').innerHTML = Object.entries(CHANNEL_KINDS).map(([k,v])=>`
+    <button data-kind="${k}" class="border px-2 py-2 font-mono text-[10px] uppercase tracking-[.1em] transition-colors
+      ${chanKind===k?'border-ink bg-ground':'border-rule hover:border-ink'}">${v.label}</button>`).join('');
+  $('c-kinds').querySelectorAll('[data-kind]').forEach(b =>
+    b.onclick=()=>{ chanKind=b.dataset.kind; renderKinds(); });
+  const spec = CHANNEL_KINDS[chanKind];
+  $('c-fields').innerHTML = spec.fields.map(([key,label,ph])=>`
+    <div>
+      <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">${label}</label>
+      <input data-cfg="${key}" placeholder="${esc(ph)}" autocomplete="off" spellcheck="false"
+             class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+    </div>`).join('');
+  $('c-help').textContent = spec.help;
+}
+
+$('c-save').onclick = async () => {
+  $('c-msg').textContent='';
+  const config={};
+  $('c-fields').querySelectorAll('[data-cfg]').forEach(i=>{
+    if(i.value.trim()) config[i.dataset.cfg]=i.value.trim();
+  });
+  const required = CHANNEL_KINDS[chanKind].fields
+    .filter(([k,l])=>!/optional/i.test(l)).map(([k])=>k);
+  const missing = required.filter(k=>!config[k]);
+  if(missing.length){ $('c-msg').textContent='Missing: '+missing.join(', '); return; }
+
+  const { error } = await sb.from('alert_channels').insert({
+    kind: chanKind,
+    label: $('c-label').value.trim() || CHANNEL_KINDS[chanKind].label,
+    agent_id: $('c-agent').value || null,
+    min_severity: $('c-sev').value,
+    config,
+  });
+  if (error) {
+    $('c-msg').textContent = /row-level security/i.test(error.message)
+      ? 'Only an admin can add channels.' : error.message;
+    return;
+  }
+  closeChan(); refresh();
+};
+$('c-cancel').onclick = closeChan;
+$('c-close').onclick = closeChan;
+$('chanmodal').addEventListener('click', e=>{ if(e.target===$('chanmodal')) closeChan(); });
+
+// ═══════════════════════════ users
+async function callUsers(payload){
+  const { data: { session } } = await sb.auth.getSession();
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/manage-users`, {
+    method:'POST',
+    headers:{ 'Content-Type':'application/json',
+              'Authorization': `Bearer ${session?.access_token}` },
+    body: JSON.stringify(payload),
+  });
+  const json = await res.json().catch(()=>({error:'bad response'}));
+  if (!res.ok) throw new Error(json.error || res.status);
+  return json;
+}
+
+async function loadUsers(){
+  if(!isAdmin()) return;
+  try { state.users = (await callUsers({action:'list'})).users || []; }
+  catch(e){ if($('u-msg')) $('u-msg').textContent = 'Could not load users: '+e.message; }
+}
+
+async function addUser(){
+  const email = prompt('Email address for the new user');
+  if(!email) return;
+  const pw = prompt('Temporary password (at least 10 characters)');
+  if(!pw) return;
+  const role = confirm('Make this user an admin?\n\nOK = admin, Cancel = viewer') ? 'admin' : 'viewer';
+  try { await callUsers({action:'create', email:email.trim(), password:pw, role});
+        await loadUsers(); render(); }
+  catch(e){ if($('u-msg')) $('u-msg').textContent=e.message; }
 }
 
 // ═══════════════════════════ node settings modal
@@ -1145,7 +1553,7 @@ async function loadHostDetail(id){
 async function refresh(){
   try{
     const since=new Date(Date.now()-20*60*1000).toISOString();
-    const [hosts,latest,hist,ports,auth,checks,users,alerts,recips,rules,tokens,fim,vulns,pkgs]=await Promise.all([
+    const [hosts,latest,hist,ports,auth,checks,users,alerts,recips,rules,tokens,fim,vulns,pkgs,chans,audit]=await Promise.all([
       sb.from('agent_overview').select('*').order('label'),
       sb.from('agent_latest_metrics').select('*'),
       sb.from('metrics').select('agent_id,ts,cpu_pct').gte('ts',since).order('ts'),
@@ -1167,13 +1575,19 @@ async function refresh(){
       // one row can answer "which nodes does this affect".
       sb.from('package_vulns').select('name,version,vuln_id,severity,summary,fixed_in').limit(400),
       sb.from('host_packages').select('agent_id,name,version').limit(4000),
+      sb.from('alert_channel_status').select('*').order('kind'),
+      sb.from('audit_log').select('actor_email,action,target,created_at')
+        .order('id',{ascending:false}).limit(40),
     ]);
-    const bad=[hosts,latest,hist,ports,auth,checks,users,alerts,recips,rules,tokens,fim,vulns,pkgs].find(r=>r.error);
+    // Token and audit reads are admin-only under RLS, so a viewer legitimately
+    // gets empty results there. Only treat the shared reads as fatal.
+    const bad=[hosts,latest,hist,ports,auth,checks,users,alerts,recips,rules,fim,vulns,pkgs,chans].find(r=>r.error);
     if(bad) throw bad.error;
 
     state.hosts=hosts.data; state.ports=ports.data; state.auth=auth.data;
     state.checks=checks.data; state.users=users.data; state.alerts=alerts.data;
-    state.recipients=recips.data; state.rules=rules.data; state.tokens=tokens.data||[];
+    state.recipients=recips.data||[]; state.rules=rules.data||[]; state.tokens=tokens.data||[];
+    state.channels=chans.data||[]; state.audit=audit.data||[];
     state.fim=fim.data||[];
 
     // Attach affected hosts to each finding. Done client-side because the
@@ -1186,6 +1600,7 @@ async function refresh(){
     state.series={};  hist.data.forEach(m=>(state.series[m.agent_id] ||= []).push(m.cpu_pct??0));
 
     if (state.page==='host' && state.host) await loadHostDetail(state.host);
+    if (state.page==='users' && isAdmin() && !state.users.length) await loadUsers();
     render();
     $('clock').textContent=new Date().toLocaleTimeString([],{hour12:false});
     $('err').textContent='';
