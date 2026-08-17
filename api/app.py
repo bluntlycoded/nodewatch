@@ -59,10 +59,13 @@ pool = ConnectionPool(DATABASE_URL, min_size=1, max_size=8, open=True)
 # ---------------------------------------------------------------- models
 
 class EnrollBody(BaseModel):
-    # The parsed document is convenience; document_raw is what AWS actually
-    # signed. Reconstructing JSON from the parsed form does not byte-match
-    # and verification would always fail.
-    document: dict
+    # Provider-agnostic identity envelope. The legacy AWS-only fields below
+    # are kept so an older agent still enrols during a rolling upgrade.
+    identity: dict | None = None
+    # Legacy AWS-only fields, optional now that identity carries the payload.
+    # document_raw is what AWS actually signed; reconstructing JSON from the
+    # parsed form does not byte-match and verification would always fail.
+    document: dict | None = None
     document_raw: str | None = None
     pkcs7: str | None = None
     hostname: str | None = None
@@ -146,9 +149,9 @@ def verify_pkcs7(doc: dict, doc_raw: str | None, pkcs7: str | None) -> bool:
 
 def consume_token(conn, token: str | None, instance_id: str) -> None:
     """Single use, time limited, revocable. Consumed inside the enrolment txn."""
-    if not REQUIRE_TOKEN:
-        return
     if not token:
+        if not REQUIRE_TOKEN:
+            return
         raise HTTPException(403, "enrolment token required")
 
     row = conn.execute(
@@ -248,62 +251,179 @@ def health():
     return {"ok": True}
 
 
+GOOGLE_JWKS = "https://www.googleapis.com/oauth2/v3/certs"
+GCP_AUDIENCE = os.environ.get("NW_GCP_AUDIENCE", "nodewatch")
+AZURE_CERT_PATH = os.environ.get("NW_AZURE_CERT_PATH", "")
+
+# Cached across requests; Google rotates keys, PyJWKClient handles refresh.
+_gcp_jwks = None
+
+
+def verify_gcp(ident: dict) -> tuple[str, str]:
+    """
+    Verify Google's signed instance identity JWT against Google's published
+    keys. Returns (node_id, proof). No shared secret; the audience must match
+    what the agent requested, which stops a token minted for another service
+    being replayed here.
+    """
+    global _gcp_jwks
+    token = ident.get("identity_jwt")
+    if not token:
+        raise HTTPException(400, "gcp identity token missing")
+
+    if _gcp_jwks is None:
+        _gcp_jwks = jwt.PyJWKClient(GOOGLE_JWKS)
+
+    try:
+        key = _gcp_jwks.get_signing_key_from_jwt(token).key
+        claims = jwt.decode(token, key, algorithms=["RS256"], audience=GCP_AUDIENCE)
+    except Exception as e:
+        log.warning("gcp identity verification failed: %s", e)
+        raise HTTPException(403, "gcp identity token is not valid")
+
+    google = claims.get("google", {}).get("compute_engine", {})
+    node_id = str(google.get("instance_id") or claims.get("sub") or "")
+    if not node_id:
+        raise HTTPException(400, "gcp token carries no instance id")
+    if ident.get("node_id") and str(ident["node_id"]) != node_id:
+        raise HTTPException(403, "gcp token does not match claimed instance")
+    return node_id, "signed"
+
+
+def verify_azure(ident: dict) -> tuple[str, str]:
+    """
+    Azure's attested document is a PKCS7 signature over the vmId and nonce.
+    Verifying it needs the Azure certificate chain; when no certificate is
+    configured we fall back to token-only trust and say so rather than
+    claiming a verification that did not happen.
+    """
+    node_id = ident.get("node_id")
+    if not node_id:
+        raise HTTPException(400, "azure identity missing vmId")
+
+    sig = ident.get("attested_signature")
+    if not sig or not AZURE_CERT_PATH or not os.path.exists(AZURE_CERT_PATH):
+        return node_id, "token"
+
+    body = "-----BEGIN PKCS7-----\n" + sig.strip() + "\n-----END PKCS7-----\n"
+    with tempfile.TemporaryDirectory() as tmp:
+        sig_path = os.path.join(tmp, "sig.pem")
+        with open(sig_path, "w") as f:
+            f.write(body)
+        proc = subprocess.run(
+            ["openssl", "cms", "-verify", "-in", sig_path, "-inform", "PEM",
+             "-CAfile", AZURE_CERT_PATH, "-purpose", "any"],
+            capture_output=True, text=True, timeout=10,
+        )
+    if proc.returncode != 0:
+        log.warning("azure attestation failed for %s: %s", node_id, proc.stderr[:200])
+        raise HTTPException(403, "azure attested document is not valid")
+    if node_id not in proc.stdout:
+        raise HTTPException(403, "azure attestation does not match claimed vmId")
+    return node_id, "signed"
+
+
+def verify_generic(ident: dict, conn) -> tuple[str, str]:
+    """
+    Nothing vouches for an on-premise host, so the enrolment token is the
+    only evidence and is therefore mandatory regardless of NW_REQUIRE_TOKEN.
+    The machine id is recorded so substitution is detectable later.
+    """
+    node_id = ident.get("machine_id") or ident.get("node_id")
+    if not node_id:
+        raise HTTPException(400, "generic host sent no machine id")
+
+    prev = conn.execute(
+        "select machine_id from agents where instance_id = %s", (node_id,)
+    ).fetchone()
+    if prev and prev[0] and ident.get("machine_id") and prev[0] != ident["machine_id"]:
+        raise HTTPException(403, "machine id changed for a known node")
+
+    return node_id, "token"
+
+
 @app.post("/v1/enroll")
 def enroll(body: EnrollBody, request: Request):
-    doc = body.document
-    instance_id = doc.get("instanceId")
-    if not instance_id:
-        raise HTTPException(400, "missing instanceId")
-
-    # Layered, cheapest and strongest first:
-    #   1. AWS signed this document      (cryptographic, if a cert is configured)
-    #   2. the instance is in our account and the source address matches
-    #   3. somebody invited this node    (if tokens are required)
-    signed = verify_pkcs7(doc, body.document_raw, body.pkcs7)
-
-    # A valid signature over a *different* document would otherwise pass.
-    if signed and body.document_raw:
-        try:
-            if json.loads(body.document_raw).get("instanceId") != instance_id:
-                raise HTTPException(403, "signed document does not match claimed instance")
-        except json.JSONDecodeError:
-            raise HTTPException(400, "raw identity document is not valid JSON")
-    verify_instance(doc, client_ip(request))
+    # Accept both shapes: the new provider envelope, and the older AWS-only
+    # payload from an agent that has not been upgraded yet.
+    ident = body.identity or {
+        "provider": "aws",
+        "node_id": (body.document or {}).get("instanceId"),
+        "region": (body.document or {}).get("region"),
+        "account": (body.document or {}).get("accountId"),
+        "instance_type": (body.document or {}).get("instanceType"),
+        "document": body.document,
+        "document_raw": body.document_raw,
+        "pkcs7": body.pkcs7,
+    }
+    provider = ident.get("provider", "aws")
+    if provider not in ("aws", "gcp", "azure", "generic"):
+        raise HTTPException(400, f"unknown provider {provider!r}")
 
     with pool.connection() as conn:
-        consume_token(conn, body.enroll_token, instance_id)
-        # Scope the row factory to this cursor. Setting it on the connection
-        # leaks the setting to the next request that borrows it from the pool.
+        if provider == "aws":
+            doc = ident.get("document") or {}
+            node_id = doc.get("instanceId") or ident.get("node_id")
+            if not node_id:
+                raise HTTPException(400, "missing instanceId")
+            signed = verify_pkcs7(doc, ident.get("document_raw"), ident.get("pkcs7"))
+            if signed and ident.get("document_raw"):
+                try:
+                    if json.loads(ident["document_raw"]).get("instanceId") != node_id:
+                        raise HTTPException(403, "signed document does not match claimed instance")
+                except json.JSONDecodeError:
+                    raise HTTPException(400, "raw identity document is not valid JSON")
+            verify_instance(doc, client_ip(request))
+            proof = "signed" if signed else ("account" if VERIFY_MODE == "aws" else "unverified")
+
+        elif provider == "gcp":
+            node_id, proof = verify_gcp(ident)
+
+        elif provider == "azure":
+            node_id, proof = verify_azure(ident)
+
+        else:
+            node_id, proof = verify_generic(ident, conn)
+            # An unattested host must be invited, whatever the global setting.
+            if not body.enroll_token:
+                raise HTTPException(403, "on-premise nodes require an enrolment token")
+
+        consume_token(conn, body.enroll_token, node_id)
+
         cur = conn.cursor(row_factory=dict_row)
         row = cur.execute(
             """
-            insert into agents (instance_id, account_id, region, instance_type,
-                                hostname, os, agent_version, last_seen)
-            values (%s, %s, %s, %s, %s, %s, %s, now())
+            insert into agents (instance_id, provider, account_id, account, region,
+                                instance_type, hostname, os, agent_version,
+                                machine_id, fingerprint, identity_proof, last_seen)
+            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
             on conflict (instance_id) do update set
-                hostname      = excluded.hostname,
-                os            = excluded.os,
-                agent_version = excluded.agent_version,
-                region        = excluded.region,
-                instance_type = excluded.instance_type,
-                enrolled_at   = now(),
-                enroll_count  = agents.enroll_count + 1
+                hostname       = excluded.hostname,
+                os             = excluded.os,
+                agent_version  = excluded.agent_version,
+                region         = excluded.region,
+                instance_type  = excluded.instance_type,
+                provider       = excluded.provider,
+                account        = excluded.account,
+                machine_id     = coalesce(excluded.machine_id, agents.machine_id),
+                fingerprint    = excluded.fingerprint,
+                identity_proof = excluded.identity_proof,
+                enrolled_at    = now(),
+                enroll_count   = agents.enroll_count + 1
             returning id
             """,
-            (
-                instance_id,
-                doc.get("accountId"),
-                doc.get("region"),
-                doc.get("instanceType"),
-                body.hostname,
-                body.os,
-                body.agent_version,
-            ),
+            (str(node_id), provider,
+             ident.get("account") if provider == "aws" else None,
+             ident.get("account"), ident.get("region"), ident.get("instance_type"),
+             body.hostname, body.os, body.agent_version,
+             ident.get("machine_id"),
+             json.dumps(ident.get("fingerprint")) if ident.get("fingerprint") else None,
+             proof),
         ).fetchone()
 
-    log.info("enrolled %s (%s)%s", instance_id, body.hostname,
-             " [pkcs7 verified]" if signed else "")
-    return {"token": issue_token(row["id"], instance_id), "agent_id": str(row["id"])}
+    log.info("enrolled %s [%s, proof=%s] (%s)", node_id, provider, proof, body.hostname)
+    return {"token": issue_token(row["id"], str(node_id)),
+            "agent_id": str(row["id"]), "provider": provider, "identity_proof": proof}
 
 
 @app.post("/v1/ingest")
