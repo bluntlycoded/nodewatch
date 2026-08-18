@@ -49,11 +49,14 @@ python3 -m venv /opt/nodewatch/venv
   echo "[Service]"
   echo "Type=simple"
   echo "User=root"
-  echo "Environment=NW_INGEST_URL=${NW_INGEST_URL}"
-  echo "Environment=NW_STATE_DIR=/var/lib/nodewatch"
-  [ -n "$NW_ENROLL_TOKEN" ] && echo "Environment=NW_ENROLL_TOKEN=${NW_ENROLL_TOKEN}"
-  [ -n "$NW_PROVIDER" ]     && echo "Environment=NW_PROVIDER=${NW_PROVIDER}"
-  [ -n "$NW_SITE" ]         && echo "Environment=NW_SITE=${NW_SITE}"
+  # Quote every value: systemd splits an unquoted Environment= line on
+  # whitespace, so NW_SITE="VIT-AP Lab" silently became two assignments and
+  # the second one was discarded as invalid.
+  echo "Environment=\"NW_INGEST_URL=${NW_INGEST_URL}\""
+  echo "Environment=\"NW_STATE_DIR=/var/lib/nodewatch\""
+  [ -n "$NW_ENROLL_TOKEN" ] && echo "Environment=\"NW_ENROLL_TOKEN=${NW_ENROLL_TOKEN}\""
+  [ -n "$NW_PROVIDER" ]     && echo "Environment=\"NW_PROVIDER=${NW_PROVIDER}\""
+  [ -n "$NW_SITE" ]         && echo "Environment=\"NW_SITE=${NW_SITE}\""
   echo "ExecStart=/opt/nodewatch/venv/bin/python /opt/nodewatch/agent.py"
   echo "Restart=always"
   echo "RestartSec=10"
