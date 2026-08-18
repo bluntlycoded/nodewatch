@@ -187,13 +187,102 @@ tailwind.config = { theme: { extend: {
   </div>
 </div>
 
+<!-- ════════════════════ check ════════════════════ -->
+<div id="checkmodal" class="hidden fixed inset-0 bg-ink/45 items-center justify-center px-4 z-50">
+  <div class="bg-paper border border-rule w-full max-w-lg max-h-[90vh] overflow-y-auto">
+    <div class="flex items-start justify-between border-b border-rule px-6 py-4">
+      <div>
+        <p class="font-mono text-[10px] tracking-[.22em] uppercase text-muted">Agentless check</p>
+        <h2 id="k-title" class="text-xl font-semibold tracking-tight mt-0.5">New check</h2>
+      </div>
+      <button id="k-close" class="font-mono text-xs text-muted hover:text-ink px-2">Close</button>
+    </div>
+    <div class="px-6 py-5 space-y-4">
+      <div>
+        <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Type</label>
+        <div id="k-kinds" class="grid grid-cols-3 gap-2 mt-2"></div>
+        <p id="k-hint" class="text-xs text-muted mt-2"></p>
+      </div>
+      <div class="grid sm:grid-cols-2 gap-3">
+        <div>
+          <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Name</label>
+          <input id="k-name" placeholder="Core switch"
+                 class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+        </div>
+        <div>
+          <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Site</label>
+          <input id="k-site" placeholder="VIT-AP Lab"
+                 class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+        </div>
+      </div>
+      <div class="grid sm:grid-cols-3 gap-3">
+        <div class="sm:col-span-2">
+          <label id="k-targetlabel" class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Target</label>
+          <input id="k-target" placeholder="10.0.0.1" spellcheck="false"
+                 class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+        </div>
+        <div id="k-portwrap">
+          <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Port</label>
+          <input id="k-port" type="number" placeholder="443"
+                 class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+        </div>
+      </div>
+      <div id="k-urlwrap" class="hidden grid sm:grid-cols-2 gap-3">
+        <div>
+          <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Expect status (optional)</label>
+          <input id="k-status" type="number" placeholder="200"
+                 class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+        </div>
+        <div>
+          <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Body contains (optional)</label>
+          <input id="k-text" placeholder="healthy"
+                 class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+        </div>
+      </div>
+      <div class="grid sm:grid-cols-3 gap-3">
+        <div>
+          <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Every</label>
+          <select id="k-interval" class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+            <option value="30">30 seconds</option>
+            <option value="60" selected>1 minute</option>
+            <option value="300">5 minutes</option>
+            <option value="900">15 minutes</option>
+          </select>
+        </div>
+        <div>
+          <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Timeout</label>
+          <select id="k-timeout" class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+            <option value="2000">2 s</option>
+            <option value="5000" selected>5 s</option>
+            <option value="10000">10 s</option>
+          </select>
+        </div>
+        <div>
+          <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Category</label>
+          <input id="k-category" placeholder="network"
+                 class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+        </div>
+      </div>
+      <label class="flex items-center gap-2 cursor-pointer">
+        <input id="k-enabled" type="checkbox" checked class="accent-ink">
+        <span class="text-sm">Enabled</span>
+      </label>
+      <p id="k-msg" class="text-sm text-down min-h-[1.25rem]"></p>
+      <div class="flex gap-2">
+        <button id="k-save" class="flex-1 bg-ink text-paper py-2.5 text-sm font-medium hover:bg-signal transition-colors">Save check</button>
+        <button id="k-cancel" class="px-5 border border-rule text-sm hover:border-ink transition-colors">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ════════════════════ channel ════════════════════ -->
 <div id="chanmodal" class="hidden fixed inset-0 bg-ink/45 items-center justify-center px-4 z-50">
   <div class="bg-paper border border-rule w-full max-w-lg max-h-[90vh] overflow-y-auto">
     <div class="flex items-start justify-between border-b border-rule px-6 py-4">
       <div>
         <p class="font-mono text-[10px] tracking-[.22em] uppercase text-muted">Alert channel</p>
-        <h2 class="text-xl font-semibold tracking-tight mt-0.5">New destination</h2>
+        <h2 id="c-title" class="text-xl font-semibold tracking-tight mt-0.5">New destination</h2>
       </div>
       <button id="c-close" class="font-mono text-xs text-muted hover:text-ink px-2">Close</button>
     </div>
@@ -301,7 +390,7 @@ function themeColour(name){
 const HEX = new Proxy({}, { get: (_, k) => themeColour(String(k)) });
 
 const PAGES = [
-  ['servers','Servers'], ['alerts','Alerts'], ['activity','Activity'],
+  ['servers','Servers'], ['checks','Checks'], ['alerts','Alerts'], ['activity','Activity'],
   ['posture','Posture'], ['vulns','Vulnerabilities'], ['settings','Settings'],
   ['users','Users', true],   // third element: admin only
 ];
@@ -310,9 +399,11 @@ const INGEST_HINT = 'http://172.31.30.90:8000';
 let state = {
   page:'servers', tab:'ports', filter:'all', query:'', alertFilter:'all',
   host:null, hostTab:'checks',
-  hosts:[], metrics:{}, series:{}, alerts:[], ports:[], users:[], auth:[],
+  hosts:[], metrics:{}, series:{}, alerts:[], ports:[], auth:[],
   checks:[], recipients:[], rules:[], fim:[], tokens:[], history:[], vulns:[],
-  role:'viewer', channels:[], users:[], audit:[], me:null,
+  role:'viewer', channels:[], userEvents:[], dashUsers:[], audit:[], me:null,
+  navOpen:null, checkKind:null,
+  probes:[], matrix:[], availability:[], mttr:[], latency:[],
   hostDetail:{ checks:[], packages:[], vulns:[], users:[], ports:[], fim:[], history:[] },
 };
 
@@ -423,11 +514,120 @@ async function enter(){
   const h=(location.hash||'').replace('#/','');
   if (h.startsWith('host/')) { state.page='host'; state.host=h.slice(5); }
   else if (h==='overview'||h==='nodes') state.page='servers';
-  else if (PAGES.some(([k])=>k===h)) state.page=h;
+  else if (h) {
+    const [page,arg]=h.split('?');
+    if(page==='checks'){ state.page='checks'; state.checkKind=arg||null; }
+    else if(page==='activity'){ state.page='activity'; state.tab=arg||'ports'; }
+    else if(page.startsWith('todo:')||PAGES.some(([k])=>k===page)) state.page=page;
+  }
   applyThemeLabel();
   refresh(); setInterval(refresh, POLL_MS);
 }
 sb.auth.getSession().then(({data})=>{ if(data.session) enter(); });
+
+
+// ═══════════════════════════ navigation tree
+// Mirrors the menu structure of the NMS suite this is measured against.
+// Items marked todo are deliberate placeholders: the route exists and the
+// page explains what the feature would collect, rather than being a dead
+// link or a fake screen.
+const NAV = [
+  ['Dashboards', [
+    ['servers',      'Server Overview',       {}],
+    ['checks',       'Synthetic Overview',    {}],
+    ['posture',      'Security Overview',     {}],
+    ['todo:app-ov',  'Application Overview',  {todo:'app-ov'}],
+    ['todo:db-ov',   'Database Overview',     {todo:'db-ov'}],
+    ['todo:desk-ov', 'Desktop Overview',      {todo:'desktop'}],
+    ['todo:net-ov',  'Network Overview',      {todo:'net-ov'}],
+    ['todo:link-ov', 'Link Overview',         {todo:'link'}],
+  ]],
+  ['Monitoring', [
+    ['servers',        'Server Monitoring',   {}],
+    ['todo:idrac',     'iDRAC Monitoring',    {todo:'idrac'}],
+    ['todo:ilo',       'HP iLO Monitoring',   {todo:'ilo'}],
+    ['todo:proxmox',   'Proxmox Monitoring',  {todo:'proxmox'}],
+    ['todo:nutanix',   'Nutanix Monitoring',  {todo:'nutanix'}],
+    ['todo:desktop',   'Desktop Monitoring',  {todo:'desktop'}],
+    ['todo:snmp',      'SNMP Monitoring',     {todo:'snmp'}],
+    ['todo:link',      'Link Monitoring',     {todo:'link'}],
+    ['todo:topology',  'Topology Map',        {todo:'topology'}],
+  ]],
+  ['Synthetic', [
+    ['checks?ping', 'Ping Monitoring', {}],
+    ['checks?port', 'Port Monitoring', {}],
+    ['checks?url',  'URL Monitoring',  {}],
+  ]],
+  ['Database', [
+    ['todo:postgres', 'PostgreSQL Monitoring', {todo:'postgres'}],
+    ['todo:mysql',    'MySQL Monitoring',      {todo:'mysql'}],
+    ['todo:mssql',    'SQL Server Monitoring', {todo:'mssql'}],
+    ['todo:oracle',   'Oracle DB Monitoring',  {todo:'oracle'}],
+  ]],
+  ['Application', [
+    ['todo:tomcat', 'Tomcat Monitoring', {todo:'tomcat'}],
+    ['todo:jboss',  'JBoss Monitoring',  {todo:'jboss'}],
+    ['todo:iis',    'IIS Monitoring',    {todo:'iis'}],
+  ]],
+  ['Security', [
+    ['posture',        'Posture',         {}],
+    ['vulns',          'Vulnerabilities', {}],
+    ['activity?files', 'File Integrity',  {}],
+    ['activity?users', 'Account Changes', {}],
+    ['activity?auth',  'Sign-ins',        {}],
+  ]],
+  ['Alerting', [
+    ['alerts',   'Alerts',        {}],
+    ['settings', 'Channels',      {}],
+    ['todo:escalation', 'Escalation Policies', {todo:'escalation'}],
+  ]],
+  ['Reports', [
+    ['todo:rep-avail', 'Availability Report',      {todo:'rep-avail'}],
+    ['todo:rep-perf',  'Performance Report',       {todo:'rep-perf'}],
+    ['todo:rep-sec',   'Security Posture Report',  {todo:'rep-sec'}],
+  ]],
+  ['Administration', [
+    ['users',         'Users',         {admin:true}],
+    ['settings',      'Settings',      {}],
+    ['todo:ipam',     'IPAM',          {todo:'ipam'}],
+    ['todo:nettools', 'Network Tools', {todo:'nettools'}],
+    ['todo:automation','Automation',   {todo:'automation'}],
+    ['todo:bsm',      'Business Service Mapping', {todo:'bsm'}],
+  ]],
+];
+
+// What each unbuilt feature would actually do. Written out so the placeholder
+// is a specification rather than a shrug.
+const TODO_SPEC = {
+  idrac:   ['iDRAC Monitoring', 'Dell PowerEdge out-of-band telemetry over the Redfish API: PSU and fan status with RPM, inlet and exhaust temperature, CPU die temperature, physical disk health with predictive-failure flags, RAID and CMOS battery, DIMM population, NIC link state, and the system event log.', 'Redfish is a REST API over HTTPS, so this needs an iDRAC address and read-only credentials per chassis. HP iLO implements the same standard, so the two share most of their code.'],
+  ilo:     ['HP iLO Monitoring', 'The same out-of-band hardware telemetry as iDRAC, for HP ProLiant chassis.', 'Shares the Redfish client with iDRAC; mostly a matter of vendor-specific field mapping.'],
+  proxmox: ['Proxmox Monitoring', 'Cluster and node status, VM and container inventory with running state, per-guest CPU, memory and disk usage, storage pool capacity, and backup job outcomes.', 'Uses the Proxmox VE REST API with an API token. One poll covers every guest on a node.'],
+  nutanix: ['Nutanix Monitoring', 'Cluster health, host and VM inventory, storage container usage, and alert feed.', 'Uses the Prism REST API.'],
+  snmp:    ['SNMP Monitoring', 'Interface counters and link state for switches, routers, firewalls and printers: in/out octets, errors, discards, admin and operational status, uptime and system description.', 'Needs SNMP v2c community strings or v3 credentials. This is the foundation for link utilisation and the topology map.'],
+  link:    ['Link Monitoring', 'Bandwidth utilisation per interface, computed from SNMP counter deltas, with top-N by utilisation and threshold alerting on saturation.', 'Depends on SNMP polling being in place first.'],
+  topology:['Topology Map', 'A visual map of how devices connect, discovered from LLDP or CDP neighbour tables and ARP caches.', 'Depends on SNMP. The hard part is layout, not discovery.'],
+  desktop: ['Desktop Monitoring', 'The same agent telemetry as servers, aimed at end-user machines: uptime, resource pressure, patch level, disk health.', 'The Linux agent already collects this. Windows would need a port, which is a separate piece of work.'],
+  postgres:['PostgreSQL Monitoring', 'Connection counts against max_connections, cache hit ratio, transaction rate, longest-running query, replication lag, table and index bloat, and deadlock count.', 'Connects with a read-only role and queries pg_stat_*. Credentials would be stored per instance the same way channel credentials are.'],
+  mysql:   ['MySQL Monitoring', 'Threads connected, InnoDB buffer pool hit rate, slow query count, replication lag and status, table locks.', 'Reads performance_schema and SHOW STATUS with a read-only account.'],
+  mssql:   ['SQL Server Monitoring', 'Buffer cache hit ratio, page life expectancy, blocking sessions, wait statistics, database file sizes and log usage.', 'Needs a driver and a read-only login per instance.'],
+  oracle:  ['Oracle DB Monitoring', 'Tablespace usage, session counts, wait events, ASM disk group capacity, and archive log destination status.', 'Needs the Oracle client libraries.'],
+  tomcat:  ['Tomcat Monitoring', 'JVM heap and non-heap usage, garbage collection frequency and pause time, thread pool utilisation, request throughput and error rate per connector.', 'Reads JMX, or the Manager app status endpoint where JMX is not exposed.'],
+  jboss:   ['JBoss / WildFly Monitoring', 'The same JVM and thread-pool metrics as Tomcat, plus datasource pool usage and deployment state.', 'Uses the management API.'],
+  iis:     ['IIS Monitoring', 'Requests per second, queue length, worker process recycling, and application pool state.', 'Windows-only, so it depends on a Windows agent existing.'],
+  'app-ov':['Application Overview', 'A single view across every monitored application: error rate, response time and throughput, with the worst performers surfaced first.', 'Becomes useful once at least one application monitor exists.'],
+  'db-ov': ['Database Overview', 'Connection pool pressure, slow queries and replication health across every monitored database engine in one place.', 'Depends on the database monitors.'],
+  'desk-ov':['Desktop Overview', 'Fleet-wide view of end-user machines.', 'Depends on desktop monitoring.'],
+  'net-ov':['Network Overview', 'Device reachability, interface errors and utilisation across the network estate.', 'Depends on SNMP.'],
+  'link-ov':['Link Overview', 'Top links by bandwidth utilisation, with saturation trends.', 'Depends on link monitoring.'],
+  ipam:    ['IP Address Management', 'Subnet inventory with used and free address counts, discovered hosts per subnet from ARP and ping sweeps, VLAN mapping and conflict detection.', 'Substantial on its own. Discovery could reuse the probe runner.'],
+  nettools:['Network Tools', 'Ad-hoc traceroute, DNS lookup, port scan and MTU discovery run from the probe host, with results kept for comparison.', 'Small, and the probe runner already provides the execution model.'],
+  automation:['Automation', 'Scheduled remediation: restart a service when a check fails, clear a full log directory, or run a playbook, with an approval step and a full audit trail.', 'Autonomous action on production hosts deserves careful design; the audit and RBAC groundwork is already in place.'],
+  bsm:     ['Business Service Mapping', 'Group infrastructure into the services it supports, so an outage reads as "payments degraded" rather than a list of hosts.', 'Mostly a modelling problem: services, dependencies, and how health rolls up.'],
+  escalation:['Escalation Policies', 'Rules for who is notified when, with time-based escalation if an alert is not acknowledged, on-call rotations and quiet hours.', 'The alert log already tracks acknowledgement, which is the hard half.'],
+  'rep-avail':['Availability Report', 'Uptime percentage and downtime minutes per server and per check over a chosen period, exportable as PDF or CSV.', 'The data exists in availability_summary and host_outages; this is rendering and export.'],
+  'rep-perf':['Performance Report', 'CPU, memory, disk and network trends per server over a chosen period, with peak and average.', 'The metrics table already holds this.'],
+  'rep-sec':['Security Posture Report', 'Failing configuration checks, outstanding vulnerabilities, privileged account changes and file integrity events across the fleet.', 'All of this is already collected; it needs a report layout and an exporter.'],
+};
 
 // ═══════════════════════════ theme
 function applyThemeLabel(){
@@ -463,24 +663,79 @@ function badges(){
   const highChecks = state.checks.filter(c=>c.severity==='high').length;
   const severeVulns = state.vulns.filter(v=>v.severity==='critical'||v.severity==='high').length;
   const critFiles = state.fim.filter(f=>f.critical).length;
-  return { servers:down, alerts:failedMail, posture:highChecks,
+  const downChecks = state.probes.filter(x=>x.status==='down').length;
+  return { servers:down, checks:downChecks, alerts:failedMail, posture:highChecks,
            vulns:severeVulns, activity:critFiles };
 }
 const isAdmin = () => state.role === 'admin';
 
 function renderNav(){
   const b=badges();
-  $('nav').innerHTML = PAGES.filter(([,,adminOnly])=>!adminOnly||isAdmin()).map(([k,label])=>`
-    <button data-page="${k}" class="w-full text-left px-5 py-2.5 flex items-center justify-between
-      font-mono text-[11px] uppercase tracking-[.14em] border-l-2 transition-colors
-      ${state.page===k ? 'border-ink bg-ground text-ink' : 'border-transparent text-muted hover:text-ink'}">
-      <span>${label}</span>
-      ${b[k] ? `<span class="text-down">${b[k]}</span>` : ''}
-    </button>`).join('');
-  $('nav').querySelectorAll('[data-page]').forEach(el =>
-    el.onclick = () => { state.page = el.dataset.page; location.hash = '#/'+el.dataset.page;
-                         closeRail(); render(); });
+  // Which group is open. Default to whichever contains the current page, so
+  // arriving by deep link does not present a collapsed tree.
+  if(!state.navOpen){
+    state.navOpen = NAV.find(([,items]) =>
+      items.some(([route]) => route.split('?')[0] === state.page))?.[0] || 'Dashboards';
+  }
+
+  $('nav').innerHTML = NAV.map(([group, items])=>{
+    const visible = items.filter(([,,opt]) => !opt.admin || isAdmin());
+    if(!visible.length) return '';
+    const open = state.navOpen === group;
+    const groupBadge = GROUP_BADGE[group] ? b[GROUP_BADGE[group]] : 0;
+    return `
+    <div class="border-b border-hairline last:border-0">
+      <button data-group="${esc(group)}"
+        class="w-full flex items-center justify-between px-5 py-2.5 font-mono text-[10px]
+               uppercase tracking-[.16em] ${open?'text-ink':'text-muted'} hover:text-ink">
+        <span>${esc(group)}</span>
+        <span class="flex items-center gap-2">
+          ${groupBadge?`<span class="text-down">${groupBadge}</span>`:''}
+          <span class="text-[9px]">${open?'▾':'▸'}</span>
+        </span>
+      </button>
+      ${open?`<div class="pb-1">${visible.map(([route,label,opt])=>{
+        const active = route === currentRoute();
+        return `
+        <button data-route="${esc(route)}"
+          class="w-full text-left pl-7 pr-4 py-1.5 flex items-center justify-between
+                 text-[12px] border-l-2 transition-colors
+                 ${active?'border-ink bg-ground text-ink':'border-transparent text-muted hover:text-ink'}">
+          <span class="truncate">${esc(label)}</span>
+          ${opt.todo?'<span class="font-mono text-[8px] uppercase tracking-[.1em] text-muted border border-rule px-1 shrink-0">soon</span>':''}
+        </button>`;}).join('')}</div>`:''}
+    </div>`;
+  }).join('');
+
+  $('nav').querySelectorAll('[data-group]').forEach(el =>
+    el.onclick=()=>{ state.navOpen = state.navOpen===el.dataset.group ? null : el.dataset.group; renderNav(); });
+
+  $('nav').querySelectorAll('[data-route]').forEach(el =>
+    el.onclick=()=>{ goRoute(el.dataset.route); closeRail(); });
 }
+
+// Groups that carry a count of things needing attention.
+const GROUP_BADGE = { Dashboards:'servers', Monitoring:'servers',
+                      Synthetic:'checks', Security:'posture', Alerting:'alerts' };
+
+// A route is "page" or "page?filter". The filter selects a tab or a probe
+// kind, so one page can back several menu entries without duplicating it.
+function currentRoute(){
+  if(state.page==='checks' && state.checkKind) return 'checks?'+state.checkKind;
+  if(state.page==='activity') return 'activity?'+state.tab;
+  return state.page;
+}
+
+function goRoute(route){
+  const [page, arg] = route.split('?');
+  if(page==='checks'){ state.checkKind = arg || null; }
+  else if(page==='activity'){ state.tab = arg || 'ports'; }
+  else if(page.startsWith('todo:')){ /* handled by page dispatch */ }
+  state.page = page;
+  location.hash = '#/' + route;
+  render();
+}
+
 window.addEventListener('hashchange', ()=>{
   const h=(location.hash||'').replace('#/','');
   if (PAGES.some(([k])=>k===h) && h!==state.page) { state.page=h; render(); }
@@ -536,6 +791,8 @@ function pageServers(){
       <div id="chips" class="flex"></div>
     </div>
 
+    ${matrixPanel()}
+
     ${attention.length?`
     <div class="bg-paper border border-rule">
       <div class="flex items-center justify-between px-4 sm:px-5 py-2.5 border-b border-rule">
@@ -554,6 +811,36 @@ function pageServers(){
     ${rows.length?`<div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">${rows.map(serverCard).join('')}</div>`
       : card(empty(h.length?'No servers match this filter.'
         :'No servers yet. Launch one from the nodewatch-node template and it appears within a minute.'))}
+  </div>`;
+}
+
+// Grouped the way an operator thinks about the estate, not the way the data
+// happens to be collected: agent-reported infrastructure and agentless
+// synthetic checks side by side.
+function matrixPanel(){
+  if(!state.matrix.length) return '';
+  const bands={};
+  state.matrix.forEach(m=>(bands[m.band] ||= []).push(m));
+  const tone=p=>p>=100?HEX.healthy:p>=80?HEX.degraded:HEX.down;
+  return `
+  <div class="bg-paper border border-rule">
+    <div class="px-4 sm:px-5 py-2.5 border-b border-rule">
+      <h3 class="font-mono text-[10px] tracking-[.2em] uppercase text-muted">Environment health</h3>
+    </div>
+    <div class="divide-y divide-hairline">
+      ${Object.entries(bands).map(([band,rows])=>`
+        <div class="flex flex-wrap items-center gap-3 px-4 sm:px-5 py-3">
+          <span class="font-mono text-[9px] tracking-[.18em] uppercase text-muted w-28 shrink-0">${esc(band)}</span>
+          ${rows.map(m=>`
+            <div class="border border-rule px-3 py-1.5 min-w-[7.5rem]"
+                 style="border-left:3px solid ${tone(m.pct)}">
+              <p class="font-mono text-[10px] uppercase tracking-[.1em]">${esc(m.category)}</p>
+              <p class="font-mono text-[10px] text-muted mt-0.5">
+                ${m.total} tot <span style="color:${tone(m.pct)}">${m.pct ?? 0}%</span>
+              </p>
+            </div>`).join('')}
+        </div>`).join('')}
+    </div>
   </div>`;
 }
 
@@ -628,6 +915,154 @@ function flags(r){
   if(!out.length) return '';
   return `<div class="border-t border-hairline px-4 py-1.5 space-y-0.5">
     ${out.map(([t,c])=>`<p class="font-mono text-[10px] ${c}">${t}</p>`).join('')}</div>`;
+}
+
+// ═══════════════════════════ page: not built yet
+function pageTodo(){
+  const key = state.page.slice(5);
+  const spec = TODO_SPEC[key];
+  if(!spec) return card(empty('Unknown page.'));
+  const [title, what, how] = spec;
+  return `
+  <div class="max-w-2xl space-y-5">
+    ${card(`
+      <div class="px-5 sm:px-6 py-5 border-b border-rule">
+        <div class="flex items-center gap-3">
+          <h2 class="text-xl font-semibold tracking-tight">${esc(title)}</h2>
+          <span class="font-mono text-[9px] uppercase tracking-[.14em] text-muted border border-rule px-1.5 py-0.5">not built yet</span>
+        </div>
+      </div>
+      <div class="px-5 sm:px-6 py-5 space-y-4">
+        <div>
+          <h3 class="font-mono text-[10px] tracking-[.2em] uppercase text-muted">What it would collect</h3>
+          <p class="text-sm leading-relaxed mt-2">${esc(what)}</p>
+        </div>
+        <div>
+          <h3 class="font-mono text-[10px] tracking-[.2em] uppercase text-muted">How it would work</h3>
+          <p class="text-sm text-muted leading-relaxed mt-2">${esc(how)}</p>
+        </div>
+      </div>`)}
+    <div class="bg-paper border border-rule px-5 sm:px-6 py-4">
+      <p class="text-sm text-muted leading-relaxed">
+        The agentless probe framework behind <span class="font-mono text-[12px]">Checks</span> already
+        polls targets on a schedule and stores results, so most of these are a new check type rather
+        than a new system.
+      </p>
+      <button data-goto="checks" class="mt-3 font-mono text-[11px] uppercase tracking-[.14em] text-signal hover:underline">
+        See what is running today
+      </button>
+    </div>
+  </div>`;
+}
+
+// ═══════════════════════════ page: checks
+const CHECK_KINDS = {
+  ping: { label:'Ping',    hint:'ICMP reachability. Some devices and cloud gateways drop ICMP by policy and will never answer.' },
+  port: { label:'TCP port',hint:'Opens a connection and closes it. Proves the service is listening, not that it is healthy.' },
+  url:  { label:'URL',     hint:'HTTP GET. Optionally assert a status code or that the body contains some text.' },
+};
+
+function pageChecks(){
+  const admin=isAdmin();
+  // The Synthetic menu entries are the same page filtered by check type.
+  const p = state.checkKind
+    ? state.probes.filter(x=>x.kind===state.checkKind)
+    : state.probes;
+  const c={up:0,down:0,pending:0,stale:0,paused:0};
+  p.forEach(x=>c[x.status]!==undefined&&c[x.status]++);
+
+  const availBy={}; state.availability.forEach(a=>availBy[a.object_id]=a);
+  const latBy={};   state.latency.forEach(l=>latBy[l.probe_id]=l);
+
+  const pill=(label,n,colour)=>`
+    <div class="flex items-baseline gap-1.5">
+      <span class="text-lg font-semibold tabular-nums leading-none" style="color:${colour||'var(--c-ink)'}">${n}</span>
+      <span class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">${label}</span>
+    </div>`;
+
+  const tone={up:HEX.healthy,down:HEX.down,pending:HEX.pending,stale:HEX.degraded,paused:HEX.muted};
+
+  return `
+  <div class="space-y-5">
+    <div class="bg-paper border border-rule px-4 sm:px-5 py-3 flex flex-wrap items-center gap-x-6 gap-y-3">
+      ${pill(state.checkKind?CHECK_KINDS[state.checkKind].label.toLowerCase()+' checks':'checks', p.length)}
+      ${pill('up',c.up,HEX.healthy)}
+      ${pill('down',c.down,c.down?HEX.down:null)}
+      ${c.stale?pill('stale',c.stale,HEX.degraded):''}
+      ${c.pending?pill('pending',c.pending,HEX.pending):''}
+      <span class="flex-1"></span>
+      ${admin?`<button id="k-new" class="font-mono text-[11px] uppercase tracking-[.14em] border border-ink px-3 py-1.5 hover:bg-ink hover:text-paper transition-colors">Add check</button>`:''}
+    </div>
+
+    ${p.length ? card(`<div class="divide-y divide-hairline">${p.map(x=>{
+      const a=availBy[x.id]||{}, l=latBy[x.id]||{};
+      return `
+      <div class="px-4 sm:px-5 py-3">
+        <div class="flex flex-wrap items-center gap-3">
+          <span class="w-2 h-2 rounded-full shrink-0" style="background:${tone[x.status]||HEX.pending}"></span>
+          <span class="font-semibold text-sm truncate min-w-0">${esc(x.name)}</span>
+          <span class="font-mono text-[10px] uppercase tracking-[.1em] text-muted shrink-0">${esc(CHECK_KINDS[x.kind]?.label||x.kind)}</span>
+          <span class="font-mono text-[11px] text-muted truncate flex-1 min-w-0">
+            ${esc(x.target)}${x.port?':'+x.port:''}
+          </span>
+          <span class="font-mono text-[10px] uppercase tracking-[.12em] w-16 text-right shrink-0"
+                style="color:${tone[x.status]||HEX.pending}">${esc(x.status)}</span>
+          <span class="font-mono text-[11px] tabular-nums w-16 text-right shrink-0 text-muted">
+            ${x.latency_ms!=null?x.latency_ms+' ms':'—'}</span>
+          ${admin?`
+            <button data-kedit="${x.id}" class="font-mono text-[10px] uppercase tracking-[.1em] text-signal hover:underline shrink-0">Edit</button>
+            <button data-kdel="${x.id}" data-name="${esc(x.name)}" class="font-mono text-[10px] uppercase tracking-[.1em] text-down hover:underline shrink-0">Remove</button>`:''}
+        </div>
+        <div class="flex flex-wrap gap-x-5 gap-y-1 mt-1.5 pl-5 font-mono text-[10px] text-muted">
+          <span>every ${x.interval_s}s</span>
+          ${a.avail_24h!=null?`<span>24h <span style="color:${a.avail_24h>=99?HEX.healthy:a.avail_24h>=95?HEX.degraded:HEX.down}">${a.avail_24h}%</span></span>`:''}
+          ${a.avail_7d!=null?`<span>7d ${a.avail_7d}%</span>`:''}
+          ${a.avail_30d!=null?`<span>30d ${a.avail_30d}%</span>`:''}
+          ${l.avg_ms!=null?`<span>avg ${l.avg_ms} ms · p95 ${l.p95_ms} ms</span>`:''}
+          ${x.status==='down'&&x.consecutive?`<span class="text-down">failing ${x.consecutive} checks</span>`:''}
+          ${x.detail?`<span class="truncate max-w-md">${esc(x.detail)}</span>`:''}
+        </div>
+      </div>`;}).join('')}`)
+      : card(empty(admin
+          ? 'No checks yet. Add one to monitor something that cannot run an agent — a switch, a printer, a public URL.'
+          : 'No checks configured.'))}
+
+    <div class="grid lg:grid-cols-2 gap-5">
+      ${card(sectionHead('Availability')
+        + (state.availability.length?`<div class="divide-y divide-hairline max-h-80 overflow-y-auto">
+          <div class="flex items-center gap-3 px-4 sm:px-5 py-2 font-mono text-[9px] tracking-[.14em] uppercase text-muted">
+            <span class="flex-1">name</span><span class="w-12 text-right">24h</span>
+            <span class="w-12 text-right">7d</span><span class="w-12 text-right">30d</span>
+          </div>
+          ${state.availability.filter(a=>a.avail_24h!=null||a.avail_7d!=null).map(a=>`
+          <div class="flex items-center gap-3 px-4 sm:px-5 py-2">
+            <span class="font-mono text-[10px] uppercase tracking-[.1em] text-muted w-12 shrink-0">${a.object_kind==='host'?'host':'check'}</span>
+            <span class="text-sm truncate flex-1">${esc(a.name)}</span>
+            ${[a.avail_24h,a.avail_7d,a.avail_30d].map(v=>`
+              <span class="font-mono text-[11px] tabular-nums w-12 text-right"
+                    style="color:${v==null?'var(--c-muted)':v>=99?HEX.healthy:v>=95?HEX.degraded:HEX.down}">
+                ${v==null?'—':v+'%'}</span>`).join('')}
+          </div>`).join('')}</div>`
+        : empty('No availability data yet. Hosts need trust snapshots and checks need results.')))}
+
+      ${card(sectionHead('Mean time to recovery', `<span class="font-mono text-[10px] text-muted">last 30 days</span>`)
+        + (state.mttr.length?`<div class="divide-y divide-hairline max-h-80 overflow-y-auto">${state.mttr.map(m=>`
+          <div class="flex items-center gap-3 px-4 sm:px-5 py-2">
+            <span class="text-sm truncate flex-1">${esc(m.name)}</span>
+            <span class="font-mono text-[11px] text-muted w-16 text-right">${m.outages_30d} outage${m.outages_30d===1?'':'s'}</span>
+            <span class="font-mono text-[11px] tabular-nums w-16 text-right">${fmtDur(m.mttr_s)}</span>
+            <span class="font-mono text-[11px] tabular-nums w-16 text-right text-muted">worst ${fmtDur(m.worst_s)}</span>
+          </div>`).join('')}</div>`
+        : empty('No outages recorded in the last 30 days.')))}
+    </div>
+  </div>`;
+}
+
+function fmtDur(sec){
+  if(sec==null) return '—';
+  if(sec<60) return sec+'s';
+  if(sec<3600) return Math.round(sec/60)+'m';
+  return (sec/3600).toFixed(1)+'h';
 }
 
 // ═══════════════════════════ page: host detail
@@ -831,7 +1266,7 @@ function pageAlerts(){
 // ═══════════════════════════ page: activity
 const TABS=[['ports','Ports'],['users','Accounts'],['auth','Sign-ins'],['files','File changes']];
 function pageActivity(){
-  const counts={ports:state.ports.length,users:state.users.length,
+  const counts={ports:state.ports.length,users:state.userEvents.length,
                 auth:state.auth.length,files:state.fim.length};
   const tabs=TABS.map(([k,l])=>`
     <button data-tab="${k}" role="tab" aria-selected="${state.tab===k}"
@@ -859,7 +1294,7 @@ function tabPorts(){
 }
 function tabUsers(){
   const tone={added:'text-signal',removed:'text-down',modified:'text-degraded'};
-  return list(state.users.map(r=>line(`
+  return list(state.userEvents.map(r=>line(`
     <span class="font-mono text-[10px] uppercase tracking-[.12em] w-16 shrink-0 ${tone[r.action]}">${esc(r.action)}</span>
     <span class="font-mono text-sm w-28 truncate shrink-0">${esc(r.username)}</span>
     ${r.sudoer?'<span class="font-mono text-[10px] uppercase tracking-[.1em] text-down shrink-0">sudo</span>':''}
@@ -1006,7 +1441,11 @@ function pageSettings(){
       <span class="font-mono text-[10px] text-muted">min ${esc(c.min_severity)}</span>
       <span class="font-mono text-[10px] ${c.failed_7d?'text-down':'text-muted'}">${c.sent_7d||0} sent · ${c.failed_7d||0} failed</span>
       ${!c.enabled?'<span class="font-mono text-[10px] uppercase text-muted">disabled</span>':''}
-      ${admin?`<button data-chandel="${c.id}" class="font-mono text-[10px] text-down hover:underline">Remove</button>`:''}
+      ${admin?`
+        <button data-chanedit="${c.id}" class="font-mono text-[10px] uppercase tracking-[.1em] text-signal hover:underline">Edit</button>
+        <button data-chantoggle="${c.id}" data-on="${c.enabled?'1':'0'}"
+                class="font-mono text-[10px] uppercase tracking-[.1em] text-muted hover:text-ink hover:underline">${c.enabled?'Disable':'Enable'}</button>
+        <button data-chandel="${c.id}" class="font-mono text-[10px] uppercase tracking-[.1em] text-down hover:underline">Remove</button>`:''}
       ${c.last_error?`<p class="w-full font-mono text-[10px] text-down truncate">${esc(c.last_error)}</p>`:''}
     </div>`).join('') : '<p class="px-4 py-4 text-sm text-muted">No channels configured. Alerts go by email only.</p>';
 
@@ -1093,7 +1532,7 @@ function pageUsers(){
   <div class="space-y-5 max-w-3xl">
     ${card(sectionHead('People with access',
       `<button id="u-new" class="font-mono text-[10px] uppercase tracking-[.12em] text-signal hover:underline">Add user</button>`)
-      + (state.users.length?`<div class="divide-y divide-hairline">${state.users.map(u=>`
+      + (state.dashUsers.length?`<div class="divide-y divide-hairline">${state.dashUsers.map(u=>`
         <div class="flex flex-wrap items-center gap-3 px-4 sm:px-5 py-3">
           <div class="min-w-0 flex-1">
             <p class="text-sm truncate">${esc(u.email)}${u.id===state.me?' <span class="font-mono text-[10px] text-muted">you</span>':''}</p>
@@ -1131,6 +1570,8 @@ function openHost(id){
 const TITLES = {
   host:['Server','Everything collected from this host'],
   servers:['Servers','Select a server to see its detail'],
+  checks:['Checks','Agentless ping, port and URL monitoring'],
+  activity:['Activity','Port, account and sign-in events'],
   users:['Users','Who can sign in, and what they may change'],
   alerts:['Alerts','What fired, and whether it was delivered'],
   activity:['Activity','Port, account and sign-in events'],
@@ -1141,7 +1582,11 @@ const TITLES = {
 
 function render(){
   renderNav();
-  const [title,sub]=TITLES[state.page]||TITLES.overview;
+  let [title,sub] = TITLES[state.page] || TITLES.servers;
+  if(state.page.startsWith('todo:')){
+    const spec = TODO_SPEC[state.page.slice(5)];
+    if(spec){ title = spec[0]; sub = 'Planned — not built yet'; }
+  }
   $('page-title').textContent=title;
   $('page-sub').textContent=sub;
 
@@ -1158,6 +1603,8 @@ function render(){
 
   $('page').innerHTML =
     state.page==='servers'  ? pageServers()  :
+    state.page.startsWith('todo:') ? pageTodo() :
+    state.page==='checks'   ? pageChecks()   :
     state.page==='alerts'   ? pageAlerts()   :
     state.page==='activity' ? pageActivity() :
     state.page==='posture'  ? pagePosture()  :
@@ -1203,7 +1650,7 @@ function bind(){
     });
   }
   if ($('addserver')) $('addserver').onclick=openAdd;
-  if ($('s-newchan')) $('s-newchan').onclick=openChan;
+  if ($('s-newchan')) $('s-newchan').onclick=()=>openChan();
   if ($('u-new'))     $('u-new').onclick=addUser;
 
   document.querySelectorAll('[data-delete]').forEach(el =>
@@ -1214,6 +1661,16 @@ function bind(){
       if (error) { $('err').textContent = error.message; return; }
       state.page='servers'; location.hash='#/servers'; refresh();
     });
+
+  document.querySelectorAll('[data-chanedit]').forEach(el =>
+    el.onclick=()=>openChan(el.dataset.chanedit));
+
+  document.querySelectorAll('[data-chantoggle]').forEach(el =>
+    el.onclick=async()=>{
+      const { error } = await sb.from('alert_channels')
+        .update({ enabled: el.dataset.on !== '1' }).eq('id', el.dataset.chantoggle);
+      if (error && $('s-msg')) $('s-msg').textContent = error.message;
+      refresh(); });
 
   document.querySelectorAll('[data-chandel]').forEach(el =>
     el.onclick=async()=>{ if(!confirm('Remove this alert channel?')) return;
@@ -1360,12 +1817,126 @@ $('a-copy').onclick = async () => {
 $('a-close').onclick = closeAdd;
 $('addmodal').addEventListener('click', e=>{ if(e.target===$('addmodal')) closeAdd(); });
 
+// ═══════════════════════════ checks
+let checkKind='ping', editingCheck=null;
+
+function openCheck(row){
+  editingCheck = row || null;
+  checkKind = row?.kind || state.checkKind || 'ping';
+  $('k-title').textContent = row ? 'Edit check' : 'New check';
+  $('k-save').textContent  = row ? 'Save changes' : 'Save check';
+  $('k-name').value     = row?.name || '';
+  $('k-site').value     = row?.site || '';
+  $('k-target').value   = row?.target || '';
+  $('k-port').value     = row?.port ?? '';
+  $('k-status').value   = row?.expect_status ?? '';
+  $('k-text').value     = row?.expect_text || '';
+  $('k-category').value = row?.category || '';
+  $('k-interval').value = String(row?.interval_s || 60);
+  $('k-timeout').value  = String(row?.timeout_ms || 5000);
+  $('k-enabled').checked = row ? !!row.enabled : true;
+  $('k-msg').textContent = '';
+  renderCheckKinds();
+  $('checkmodal').classList.remove('hidden'); $('checkmodal').classList.add('flex');
+  setTimeout(()=>$('k-name').focus(), 40);
+}
+function closeCheck(){
+  $('checkmodal').classList.add('hidden'); $('checkmodal').classList.remove('flex');
+  editingCheck=null;
+}
+
+function renderCheckKinds(){
+  $('k-kinds').innerHTML = Object.entries(CHECK_KINDS).map(([k,v])=>`
+    <button data-kkind="${k}" class="border px-2 py-2 font-mono text-[10px] uppercase tracking-[.1em] transition-colors
+      ${checkKind===k?'border-ink bg-ground':'border-rule hover:border-ink'}">${v.label}</button>`).join('');
+  $('k-kinds').querySelectorAll('[data-kkind]').forEach(b =>
+    b.onclick=()=>{ checkKind=b.dataset.kkind; renderCheckKinds(); });
+
+  $('k-hint').textContent = CHECK_KINDS[checkKind].hint;
+  // Port only applies to a port check; the URL assertions only to a URL check.
+  $('k-portwrap').classList.toggle('hidden', checkKind !== 'port');
+  $('k-urlwrap').classList.toggle('hidden', checkKind !== 'url');
+  $('k-targetlabel').textContent =
+    checkKind === 'url' ? 'URL' : checkKind === 'port' ? 'Host or IP' : 'Host or IP';
+  $('k-target').placeholder =
+    checkKind === 'url' ? 'https://example.com/health' : '10.0.0.1';
+}
+
+$('k-save').onclick = async () => {
+  $('k-msg').textContent='';
+  const target = $('k-target').value.trim();
+  const name = $('k-name').value.trim();
+  if(!name || !target){ $('k-msg').textContent='Name and target are required.'; return; }
+  if(checkKind==='url' && !/^https?:\/\//i.test(target)){
+    $('k-msg').textContent='A URL check needs a full http:// or https:// address.'; return;
+  }
+  const port = checkKind==='port' ? parseInt($('k-port').value,10) : null;
+  if(checkKind==='port' && (!port || port<1 || port>65535)){
+    $('k-msg').textContent='A port check needs a port between 1 and 65535.'; return;
+  }
+
+  const patch = {
+    kind: checkKind, name, target,
+    port: port || null,
+    interval_s: parseInt($('k-interval').value,10),
+    timeout_ms: parseInt($('k-timeout').value,10),
+    expect_status: checkKind==='url' && $('k-status').value ? parseInt($('k-status').value,10) : null,
+    expect_text:   checkKind==='url' && $('k-text').value.trim() ? $('k-text').value.trim() : null,
+    category: $('k-category').value.trim() || 'synthetic',
+    site: $('k-site').value.trim() || null,
+    enabled: $('k-enabled').checked,
+  };
+
+  const { error } = editingCheck
+    ? await sb.from('probes').update(patch).eq('id', editingCheck.id)
+    : await sb.from('probes').insert(patch);
+
+  if(error){
+    $('k-msg').textContent =
+      /row-level security/i.test(error.message) ? 'Only an admin can change checks.'
+      : /duplicate|unique/i.test(error.message) ? 'That exact check already exists.'
+      : error.message;
+    return;
+  }
+  closeCheck(); refresh();
+};
+$('k-cancel').onclick = closeCheck;
+$('k-close').onclick  = closeCheck;
+$('checkmodal').addEventListener('click', e=>{ if(e.target===$('checkmodal')) closeCheck(); });
+
 // ═══════════════════════════ channel
 let chanKind='telegram';
-function openChan(){
-  chanKind='telegram'; $('c-label').value=''; $('c-msg').textContent='';
+let editingChan=null;      // channel row being edited, or null when creating
+
+async function openChan(id){
+  editingChan=null;
+  $('c-msg').textContent='';
   $('c-agent').innerHTML = '<option value="">All servers</option>' +
     state.hosts.map(h=>`<option value="${h.id}">${esc(h.label)}</option>`).join('');
+
+  if (id) {
+    // alert_channels is admin-only under RLS, so this read succeeds for an
+    // admin and returns nothing for anyone else. Credentials are prefilled
+    // because an admin can already read them by design; the point of the
+    // restriction is to keep them from viewers, not from the person who
+    // entered them.
+    const { data, error } = await sb.from('alert_channels')
+      .select('*').eq('id', id).single();
+    if (error || !data) {
+      $('c-msg').textContent = error?.message || 'Could not load that channel.';
+      return;
+    }
+    editingChan = data;
+    chanKind = data.kind;
+  } else {
+    chanKind = 'telegram';
+  }
+
+  $('c-title').textContent = editingChan ? 'Edit destination' : 'New destination';
+  $('c-save').textContent  = editingChan ? 'Save changes' : 'Save channel';
+  $('c-label').value = editingChan?.label || '';
+  $('c-sev').value   = editingChan?.min_severity || 'warning';
+  $('c-agent').value = editingChan?.agent_id || '';
   renderKinds();
   $('chanmodal').classList.remove('hidden'); $('chanmodal').classList.add('flex');
 }
@@ -1378,10 +1949,15 @@ function renderKinds(){
   $('c-kinds').querySelectorAll('[data-kind]').forEach(b =>
     b.onclick=()=>{ chanKind=b.dataset.kind; renderKinds(); });
   const spec = CHANNEL_KINDS[chanKind];
+  // Only carry values across when the kind has not been switched, otherwise
+  // a Telegram token would leak into a webhook URL field.
+  const cfg = (editingChan && editingChan.kind === chanKind)
+    ? (editingChan.config || {}) : {};
   $('c-fields').innerHTML = spec.fields.map(([key,label,ph])=>`
     <div>
       <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">${label}</label>
       <input data-cfg="${key}" placeholder="${esc(ph)}" autocomplete="off" spellcheck="false"
+             value="${esc(cfg[key]||'')}"
              class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
     </div>`).join('');
   $('c-help').textContent = spec.help;
@@ -1398,16 +1974,25 @@ $('c-save').onclick = async () => {
   const missing = required.filter(k=>!config[k]);
   if(missing.length){ $('c-msg').textContent='Missing: '+missing.join(', '); return; }
 
-  const { error } = await sb.from('alert_channels').insert({
+  const patch = {
     kind: chanKind,
     label: $('c-label').value.trim() || CHANNEL_KINDS[chanKind].label,
     agent_id: $('c-agent').value || null,
     min_severity: $('c-sev').value,
     config,
-  });
+  };
+
+  const { error } = editingChan
+    ? await sb.from('alert_channels').update({
+        ...patch,
+        // A saved change is a fresh attempt, so clear the stale failure.
+        last_error: null, last_error_at: null,
+      }).eq('id', editingChan.id)
+    : await sb.from('alert_channels').insert(patch);
+
   if (error) {
     $('c-msg').textContent = /row-level security/i.test(error.message)
-      ? 'Only an admin can add channels.' : error.message;
+      ? 'Only an admin can change channels.' : error.message;
     return;
   }
   closeChan(); refresh();
@@ -1432,7 +2017,7 @@ async function callUsers(payload){
 
 async function loadUsers(){
   if(!isAdmin()) return;
-  try { state.users = (await callUsers({action:'list'})).users || []; }
+  try { state.dashUsers = (await callUsers({action:'list'})).users || []; }
   catch(e){ if($('u-msg')) $('u-msg').textContent = 'Could not load users: '+e.message; }
 }
 
@@ -1553,7 +2138,8 @@ async function loadHostDetail(id){
 async function refresh(){
   try{
     const since=new Date(Date.now()-20*60*1000).toISOString();
-    const [hosts,latest,hist,ports,auth,checks,users,alerts,recips,rules,tokens,fim,vulns,pkgs,chans,audit]=await Promise.all([
+    const [hosts,latest,hist,ports,auth,checks,users,alerts,recips,rules,tokens,fim,vulns,pkgs,chans,audit,
+           probes,matrix,avail,mttr,latency]=await Promise.all([
       sb.from('agent_overview').select('*').order('label'),
       sb.from('agent_latest_metrics').select('*'),
       sb.from('metrics').select('agent_id,ts,cpu_pct').gte('ts',since).order('ts'),
@@ -1578,16 +2164,25 @@ async function refresh(){
       sb.from('alert_channel_status').select('*').order('kind'),
       sb.from('audit_log').select('actor_email,action,target,created_at')
         .order('id',{ascending:false}).limit(40),
+      sb.from('probe_state').select('*').order('name'),
+      sb.from('health_matrix').select('*'),
+      sb.from('availability_summary').select('*'),
+      sb.from('mttr_summary').select('*').order('mttr_s',{ascending:false}),
+      sb.from('probe_latency').select('*'),
     ]);
     // Token and audit reads are admin-only under RLS, so a viewer legitimately
     // gets empty results there. Only treat the shared reads as fatal.
-    const bad=[hosts,latest,hist,ports,auth,checks,users,alerts,recips,rules,fim,vulns,pkgs,chans].find(r=>r.error);
+    const bad=[hosts,latest,hist,ports,auth,checks,users,alerts,recips,rules,fim,vulns,pkgs,chans,
+               probes,matrix,avail,mttr,latency].find(r=>r.error);
     if(bad) throw bad.error;
 
     state.hosts=hosts.data; state.ports=ports.data; state.auth=auth.data;
-    state.checks=checks.data; state.users=users.data; state.alerts=alerts.data;
+    state.checks=checks.data; state.userEvents=users.data; state.alerts=alerts.data;
     state.recipients=recips.data||[]; state.rules=rules.data||[]; state.tokens=tokens.data||[];
     state.channels=chans.data||[]; state.audit=audit.data||[];
+    state.probes=probes.data||[]; state.matrix=matrix.data||[];
+    state.availability=avail.data||[]; state.mttr=mttr.data||[];
+    state.latency=latency.data||[];
     state.fim=fim.data||[];
 
     // Attach affected hosts to each finding. Done client-side because the
@@ -1600,7 +2195,7 @@ async function refresh(){
     state.series={};  hist.data.forEach(m=>(state.series[m.agent_id] ||= []).push(m.cpu_pct??0));
 
     if (state.page==='host' && state.host) await loadHostDetail(state.host);
-    if (state.page==='users' && isAdmin() && !state.users.length) await loadUsers();
+    if (state.page==='users' && isAdmin()) await loadUsers();
     render();
     $('clock').textContent=new Date().toLocaleTimeString([],{hour12:false});
     $('err').textContent='';
