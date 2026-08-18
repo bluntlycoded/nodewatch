@@ -1,0 +1,22 @@
+[Unit]
+Description=nodewatch probe runner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/nodewatch-probe
+EnvironmentFile=/etc/nodewatch/api.env
+ExecStart=/opt/nodewatch-api/venv/bin/python /opt/nodewatch-probe/prober.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
