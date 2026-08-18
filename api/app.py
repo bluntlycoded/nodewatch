@@ -323,23 +323,47 @@ def verify_azure(ident: dict) -> tuple[str, str]:
     return node_id, "signed"
 
 
-def verify_generic(ident: dict, conn) -> tuple[str, str]:
+def verify_generic(ident: dict, conn) -> tuple[str, str, bool]:
     """
-    Nothing vouches for an on-premise host, so the enrolment token is the
-    only evidence and is therefore mandatory regardless of NW_REQUIRE_TOKEN.
-    The machine id is recorded so substitution is detectable later.
+    Nothing vouches for an on-premise host, so an enrolment token is required
+    to introduce one. Returns (node_id, proof, is_returning).
+
+    A returning node does NOT need a token. Agents re-enrol whenever their
+    short-lived JWT expires - every 15 minutes - and tokens are single use,
+    so demanding one every time would lock a host out permanently on its
+    first renewal. The token is an invitation to join; the machine id is the
+    evidence of continuity afterwards.
     """
     node_id = ident.get("machine_id") or ident.get("node_id")
     if not node_id:
         raise HTTPException(400, "generic host sent no machine id")
 
     prev = conn.execute(
-        "select machine_id from agents where instance_id = %s", (node_id,)
+        "select machine_id, fingerprint from agents where instance_id = %s",
+        (node_id,),
     ).fetchone()
-    if prev and prev[0] and ident.get("machine_id") and prev[0] != ident["machine_id"]:
-        raise HTTPException(403, "machine id changed for a known node")
 
-    return node_id, "token"
+    if prev is None:
+        return node_id, "token", False
+
+    # For a generic host the node id IS the machine id, so a different
+    # machine is simply a different node and needs its own invitation. What
+    # a returning node can still be checked against is its hardware
+    # fingerprint: same machine id but a different board serial or product
+    # UUID means the identifier was copied onto another box.
+    old = prev[1] or {}
+    new = ident.get("fingerprint") or {}
+    for field in ("product_uuid", "board_serial"):
+        was, now_ = old.get(field), new.get(field)
+        if was and now_ and was != now_:
+            log.warning("fingerprint mismatch for %s: %s changed", node_id, field)
+            raise HTTPException(
+                403,
+                f"hardware fingerprint changed for a known node ({field}); "
+                "delete it from the dashboard and enrol it again if this is expected",
+            )
+
+    return node_id, "token", True
 
 
 @app.post("/v1/enroll")
@@ -359,6 +383,10 @@ def enroll(body: EnrollBody, request: Request):
     provider = ident.get("provider", "aws")
     if provider not in ("aws", "gcp", "azure", "generic"):
         raise HTTPException(400, f"unknown provider {provider!r}")
+
+    # Cloud-attested providers re-prove themselves on every enrolment, so a
+    # token is only ever a first-contact formality for them.
+    first_contact = True
 
     with pool.connection() as conn:
         if provider == "aws":
@@ -383,12 +411,17 @@ def enroll(body: EnrollBody, request: Request):
             node_id, proof = verify_azure(ident)
 
         else:
-            node_id, proof = verify_generic(ident, conn)
-            # An unattested host must be invited, whatever the global setting.
-            if not body.enroll_token:
+            node_id, proof, returning = verify_generic(ident, conn)
+            if not returning and not body.enroll_token:
+                # An unattested host must be invited the first time, whatever
+                # the global setting says.
                 raise HTTPException(403, "on-premise nodes require an enrolment token")
+            # Already introduced: its machine id is the credential now. Do not
+            # try to spend the token still sitting in its unit file.
+            first_contact = not returning
 
-        consume_token(conn, body.enroll_token, node_id)
+        if first_contact:
+            consume_token(conn, body.enroll_token, node_id)
 
         cur = conn.cursor(row_factory=dict_row)
         row = cur.execute(
