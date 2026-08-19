@@ -34,7 +34,7 @@ rm -rf /tmp/nodewatch-src
 git clone --depth 1 "$REPO" /tmp/nodewatch-src
 
 mkdir -p /opt/nodewatch /var/lib/nodewatch
-cp /tmp/nodewatch-src/agent/{agent,checks,inventory,identity}.py /opt/nodewatch/
+cp /tmp/nodewatch-src/agent/*.py /opt/nodewatch/
 
 python3 -m venv /opt/nodewatch/venv
 /opt/nodewatch/venv/bin/pip install -q --upgrade pip

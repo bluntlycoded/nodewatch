@@ -23,6 +23,8 @@ import subprocess
 
 import requests
 
+import osdetect
+
 AWS_IMDS = "http://169.254.169.254"
 GCP_MD = "http://metadata.google.internal/computeMetadata/v1"
 AZURE_IMDS = "http://169.254.169.254/metadata"
@@ -71,18 +73,15 @@ def detect_provider() -> str:
 
 def machine_id() -> str | None:
     """
-    Stable per-install identifier. Not a secret and not proof of anything on
-    its own, but it lets the server notice when a 'known' host is suddenly a
-    different machine reusing the same name.
+    Stable per-install identifier: machine-id on Linux, MachineGuid on
+    Windows, IOPlatformUUID on macOS. Not a secret and not proof on its own,
+    but it lets the server notice when a known node is suddenly a different
+    machine reusing the same name.
     """
-    for path in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
-        try:
-            v = open(path).read().strip()
-            if v:
-                return v
-        except OSError:
-            continue
-    return None
+    try:
+        return osdetect.machine_id()
+    except Exception:
+        return None
 
 
 def _dmi(field: str) -> str | None:
@@ -171,6 +170,10 @@ def generic_identity() -> dict:
     and the fingerprint exists to detect substitution later.
     """
     mid = machine_id()
+    try:
+        fp = osdetect.hardware_fingerprint()
+    except Exception:
+        fp = {"hostname": socket.gethostname()}
     return {
         "provider": "generic",
         "node_id": mid or socket.getfqdn(),
@@ -178,13 +181,8 @@ def generic_identity() -> dict:
         "account": None,
         "instance_type": None,
         "machine_id": mid,
-        "fingerprint": {
-            "hostname": socket.gethostname(),
-            "fqdn": socket.getfqdn(),
-            "product_uuid": _dmi("product_uuid"),
-            "board_serial": _dmi("board_serial"),
-            "kernel": os.uname().release,
-        },
+        "platform": osdetect.PLATFORM,
+        "fingerprint": fp,
     }
 
 
@@ -213,6 +211,7 @@ def collect_identity(forced: str | None = None) -> dict:
         ident["degraded_from"] = provider
 
     ident.setdefault("machine_id", machine_id())
+    ident.setdefault("platform", osdetect.PLATFORM)
     return ident
 
 

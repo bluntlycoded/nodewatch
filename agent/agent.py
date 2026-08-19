@@ -24,6 +24,7 @@ import requests
 
 import checks
 import identity as ident_mod
+import osdetect
 import inventory
 
 # ---------------------------------------------------------------- config
@@ -33,7 +34,7 @@ STATE_DIR = Path(os.environ.get("NW_STATE_DIR", "/var/lib/nodewatch"))
 # Optional single-use enrolment token, issued from the dashboard. Only
 # required when the server is configured with NW_REQUIRE_TOKEN=true.
 ENROLL_TOKEN = os.environ.get("NW_ENROLL_TOKEN", "")
-AGENT_VERSION = "0.3.0"
+AGENT_VERSION = "0.4.0"
 DB_PATH = STATE_DIR / "buffer.db"
 
 HEARTBEAT_INTERVAL = 15
@@ -208,15 +209,7 @@ class Session:
 
 
 def platform_string() -> str:
-    try:
-        info = {}
-        for line in Path("/etc/os-release").read_text().splitlines():
-            if "=" in line:
-                k, v = line.split("=", 1)
-                info[k] = v.strip('"')
-        return info.get("PRETTY_NAME", "unknown")
-    except Exception:
-        return "unknown"
+    return osdetect.os_label()
 
 
 # ---------------------------------------------------------------- collectors
@@ -258,103 +251,13 @@ def collect_ports() -> list:
     return out
 
 
-AUTH_PATTERNS = [
-    ("login_success", "Accepted "),
-    ("login_failed", "Failed password"),
-    ("login_failed", "Invalid user"),
-    ("session_opened", "session opened for user"),
-    ("session_closed", "session closed for user"),
-    ("logout", "Disconnected from user"),
-]
-
-
-def classify(message: str):
-    for kind, needle in AUTH_PATTERNS:
-        if needle in message:
-            return kind
-    return None
-
-
-def collect_auth_events(buf: Buffer) -> list:
-    """
-    Read new sshd/PAM records from journald using a persisted cursor.
-    Cursor-based reads mean no duplicate replay across agent restarts.
-    """
-    cursor = buf.get_meta("journal_cursor")
-    cmd = ["journalctl", "-u", "ssh", "-u", "sshd", "-o", "json", "--no-pager"]
-    if cursor:
-        cmd += ["--after-cursor", cursor]
-    else:
-        cmd += ["-n", "50"]
-
+def collect_auth_events(buf):
+    """Sign-in events, however this platform records them."""
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        return osdetect.collect_auth_events(buf)
     except Exception as e:
-        log.warning("journalctl failed: %s", e)
+        log.warning("auth collection failed: %s", e)
         return []
-
-    events = []
-    last_cursor = cursor
-    for line in res.stdout.splitlines():
-        try:
-            rec = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        last_cursor = rec.get("__CURSOR", last_cursor)
-        msg = rec.get("MESSAGE", "")
-        if not isinstance(msg, str):
-            continue
-        kind = classify(msg)
-        if not kind:
-            continue
-        events.append(
-            {
-                "kind": kind,
-                "ts": int(rec.get("__REALTIME_TIMESTAMP", 0)) / 1e6,
-                "username": extract_user(msg),
-                "source_ip": extract_ip(msg),
-                "raw": msg[:400],
-            }
-        )
-
-    if last_cursor and last_cursor != cursor:
-        buf.set_meta("journal_cursor", last_cursor)
-    return events
-
-
-IP_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b|\b[0-9a-fA-F:]{6,}:[0-9a-fA-F]{1,4}\b")
-
-
-def extract_user(msg: str):
-    """
-    sshd phrasing varies a lot:
-      'Accepted publickey for ubuntu from ...'
-      'Failed password for invalid user admin from ...'
-      'session opened for user ubuntu(uid=1000)'
-      'Disconnected from user ubuntu 10.0.0.5 port 22'
-    """
-    parts = msg.split()
-    # 'Invalid user oracle from 1.2.3.4' — username precedes any anchor word.
-    if len(parts) > 2 and parts[0].lower() == "invalid" and parts[1] == "user":
-        return parts[2].split("(")[0]
-    anchor = None
-    for word in ("for", "from"):
-        if word in parts:
-            anchor = parts.index(word) + 1
-            break
-    if anchor is None:
-        return None
-    while anchor < len(parts) and parts[anchor] in ("invalid", "user"):
-        anchor += 1
-    if anchor >= len(parts):
-        return None
-    cand = parts[anchor].split("(")[0]          # strip '(uid=1000)'
-    return cand if cand and not IP_RE.fullmatch(cand) else None
-
-
-def extract_ip(msg: str):
-    m = IP_RE.search(msg)
-    return m.group(0) if m else None
 
 
 # ---------------------------------------------------------------- shipping

@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=root
-Environment=NW_INGEST_URL=http://172.31.30.90:8000
+Environment=NW_INGEST_URL=http://100.64.0.1:8000
 Environment=NW_STATE_DIR=/var/lib/nodewatch
 ExecStart=/opt/nodewatch/venv/bin/python /opt/nodewatch/agent.py
 Restart=always

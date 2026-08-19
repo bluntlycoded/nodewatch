@@ -775,7 +775,7 @@ function pageServers(){
   const rows=h.filter(r=>{
     if(state.filter!=='all'&&r.status!==state.filter) return false;
     if(!state.query) return true;
-    return `${r.label} ${r.instance_id} ${r.hostname||''}`.toLowerCase().includes(state.query);
+    return `${r.label} ${r.instance_id} ${r.hostname||''} ${r.platform||''} ${r.provider||''}`.toLowerCase().includes(state.query);
   });
 
   const pill=(label,n,colour)=>`
@@ -906,12 +906,15 @@ function serverCard(r){
 // genuinely weaker evidence than a signed AWS document, so it is shown
 // rather than smoothed over.
 const PROVIDER_LABEL = { aws:'AWS', gcp:'GCP', azure:'Azure', generic:'On-prem' };
+const PLATFORM_LABEL = { linux:'Linux', windows:'Windows', macos:'macOS' };
 const PROOF_TONE = { signed:'text-healthy', account:'text-degraded',
                      token:'text-muted', unverified:'text-down' };
 function providerTag(r){
   const p = PROVIDER_LABEL[r.provider] || esc(r.provider || '?');
+  const os = PLATFORM_LABEL[r.platform] || '';
   const proof = r.identity_proof || 'unverified';
   return `<span class="uppercase tracking-[.1em]">${p}</span>` +
+         (os?`<span class="text-muted"> · ${os}</span>`:'') +
          `<span class="${PROOF_TONE[proof]||'text-muted'}" title="identity proof: ${proof}"> ${proof}</span>`;
 }
 

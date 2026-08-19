@@ -15,59 +15,37 @@ import os
 import re
 import stat
 import subprocess
+
+import osdetect
 import time
 
 # Directories worth watching by default. Deliberately narrow: hashing
 # /usr or /var produces noise on every package update and buries the
 # signal that matters.
-WATCH_PATHS = ["/etc"]
+WATCH_PATHS = osdetect.watch_paths()
 
-# Never hash these - they change constantly and carry no integrity value.
-SKIP_PREFIXES = (
-    "/etc/mtab", "/etc/adjtime", "/etc/resolv.conf",
-    "/etc/machine-id", "/etc/blkid.tab", "/etc/lvm/archive",
-    "/etc/apt/apt.conf.d/01autoremove-kernels",
-)
-
-# A change to any of these is reported at high severity regardless of what
-# else moved. These are the files an attacker edits.
-CRITICAL_PATHS = {
-    "/etc/passwd", "/etc/shadow", "/etc/group", "/etc/gshadow",
-    "/etc/sudoers", "/etc/crontab", "/etc/hosts",
-    "/etc/ssh/sshd_config", "/etc/pam.conf", "/etc/nsswitch.conf",
-    "/etc/ld.so.preload",
-}
-CRITICAL_DIRS = ("/etc/sudoers.d/", "/etc/ssh/sshd_config.d/",
-                 "/etc/cron.d/", "/etc/pam.d/", "/etc/systemd/system/")
-
-# Auto-generated unit files that snapd rewrites on every refresh. The
-# revision number is part of the filename, so an ordinary snap update
-# deletes one set and creates another - churn, not tampering.
-#
-# The pattern deliberately requires the numeric revision. A file called
-# snap-evil.mount would still be reported: only the machine-generated
-# naming convention is excused, not the directory.
-NOISE_PATTERNS = [
-    re.compile(r"^/etc/systemd/system/(?:[^/]+\.wants/)?snap[-.].*-\d+\.mount$"),
-    re.compile(r"^/etc/systemd/system/snap\.[^/]+\.service$"),
-    re.compile(r"^/etc/systemd/system/multi-user\.target\.wants/snap[-.].*-\d+\.mount$"),
-    re.compile(r"^/etc/systemd/system/snapd\.mounts(?:-pre)?\.target\.wants/.*\.mount$"),
-    # Certificate bundle rehashes on every ca-certificates update.
-    re.compile(r"^/etc/ssl/certs/[0-9a-f]{8}\.\d+$"),
-]
-
-
-def is_noise(path: str) -> bool:
-    return any(p.match(path) for p in NOISE_PATTERNS)
+# Paths that change constantly and carry no integrity value, plus the
+# machine-generated churn each platform produces.
+SKIP_PREFIXES = tuple()
+CRITICAL_PATHS, CRITICAL_DIRS = osdetect.critical_paths()
+NOISE_PATTERNS = osdetect.noise_patterns()
 
 MAX_FILE_BYTES = 8 * 1024 * 1024   # skip anything larger; nothing in /etc should be
 MAX_FILES = 8000                    # hard ceiling so a bad path cannot hang the agent
 
 
+def is_noise(path: str) -> bool:
+    """Machine-generated churn the platform module told us to ignore."""
+    return any(rx.match(path) for rx in NOISE_PATTERNS)
+
+
 def is_critical(path: str) -> bool:
     if is_noise(path):
         return False
-    return path in CRITICAL_PATHS or path.startswith(CRITICAL_DIRS)
+    # Windows paths are case-insensitive; the platform modules supply their
+    # critical sets already lowered where that matters.
+    p = path if osdetect.PLATFORM != "windows" else path.lower()
+    return p in CRITICAL_PATHS or p.startswith(CRITICAL_DIRS)
 
 
 def sha256_of(path: str):
@@ -203,30 +181,11 @@ def collect_fim(buf, force_full=False):
 # ---------------------------------------------------------------- packages
 
 def collect_packages():
-    """
-    Installed package inventory. The server batches these to OSV rather
-    than the agent doing lookups: one query per unique package across the
-    whole fleet instead of one per host, and no node needs internet access
-    beyond the ingest API.
-    """
+    """Installed software inventory, per platform. Resolved against OSV server-side."""
     try:
-        out = subprocess.run(
-            ["dpkg-query", "-W", "-f=${Package}\\t${Version}\\t${Architecture}\\n"],
-            capture_output=True, text=True, timeout=60,
-        ).stdout
+        return osdetect.collect_packages()
     except Exception:
         return []
-
-    pkgs = []
-    for line in out.splitlines():
-        parts = line.split("\t")
-        if len(parts) >= 2 and parts[0] and parts[1]:
-            pkgs.append({
-                "name": parts[0],
-                "version": parts[1],
-                "arch": parts[2] if len(parts) > 2 else None,
-            })
-    return pkgs
 
 
 if __name__ == "__main__":

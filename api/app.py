@@ -426,10 +426,10 @@ def enroll(body: EnrollBody, request: Request):
         cur = conn.cursor(row_factory=dict_row)
         row = cur.execute(
             """
-            insert into agents (instance_id, provider, account_id, account, region,
-                                instance_type, hostname, os, agent_version,
+            insert into agents (instance_id, provider, platform, account_id, account,
+                                region, instance_type, hostname, os, agent_version,
                                 machine_id, fingerprint, identity_proof, last_seen)
-            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
             on conflict (instance_id) do update set
                 hostname       = excluded.hostname,
                 os             = excluded.os,
@@ -437,6 +437,7 @@ def enroll(body: EnrollBody, request: Request):
                 region         = excluded.region,
                 instance_type  = excluded.instance_type,
                 provider       = excluded.provider,
+                platform       = excluded.platform,
                 account        = excluded.account,
                 machine_id     = coalesce(excluded.machine_id, agents.machine_id),
                 fingerprint    = excluded.fingerprint,
@@ -446,6 +447,7 @@ def enroll(body: EnrollBody, request: Request):
             returning id
             """,
             (str(node_id), provider,
+             ident.get("platform") if ident.get("platform") in ("linux","windows","macos") else "linux",
              ident.get("account") if provider == "aws" else None,
              ident.get("account"), ident.get("region"), ident.get("instance_type"),
              body.hostname, body.os, body.agent_version,
