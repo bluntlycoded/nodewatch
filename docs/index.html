@@ -52,6 +52,16 @@ tailwind.config = { theme: { extend: {
   ::-webkit-scrollbar-thumb { background:var(--c-rule) }
   ::-webkit-scrollbar-track { background:transparent }
   @media (prefers-reduced-motion:reduce){ .rise,.live::after{animation:none!important} }
+  /* Print drops the chrome so a report prints as a document, not a screenshot
+     of an application. */
+  @media print {
+    body { background:#fff !important }
+    #rail, #scrim, #page-actions, .no-print { display:none !important }
+    #app { display:block !important }
+    main { margin:0 !important }
+    section, table { break-inside:avoid }
+    a[href]:after { content:"" }
+  }
 </style>
 <script>
   // Runs before paint. Falls back to in-memory if storage is unavailable.
@@ -348,6 +358,14 @@ tailwind.config = { theme: { extend: {
         <input id="m-notes" placeholder="What this node is for"
                class="mt-1 w-full border border-rule px-3 py-2 text-sm focus:border-signal outline-none">
       </div>
+      <div>
+        <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Role</label>
+        <select id="m-role" class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+          <option value="server">Server — offline is an incident</option>
+          <option value="desktop">Desktop — offline overnight is normal</option>
+        </select>
+      </div>
+
       <label class="flex items-center gap-2 cursor-pointer">
         <input id="m-muted" type="checkbox" class="accent-ink">
         <span class="text-sm">Mute alerts for this node</span>
@@ -402,7 +420,8 @@ let state = {
   hosts:[], metrics:{}, series:{}, alerts:[], ports:[], auth:[],
   checks:[], recipients:[], rules:[], fim:[], tokens:[], history:[], vulns:[],
   role:'viewer', channels:[], userEvents:[], dashUsers:[], audit:[], me:null,
-  navOpen:null, checkKind:null,
+  navOpen:null, checkKind:null, reportKind:'availability', reportDays:30,
+  reportRows:[], reportFindings:[], reportLoading:false, nettools:[],
   probes:[], matrix:[], availability:[], mttr:[], latency:[],
   hostDetail:{ checks:[], packages:[], vulns:[], users:[], ports:[], fim:[], history:[] },
 };
@@ -525,6 +544,7 @@ async function enter(){
     const [page,arg]=h.split('?');
     if(page==='checks'){ state.page='checks'; state.checkKind=arg||null; }
     else if(page==='activity'){ state.page='activity'; state.tab=arg||'ports'; }
+    else if(page==='report'){ state.page='report'; state.reportKind=arg||'availability'; }
     else if(page.startsWith('todo:')||PAGES.some(([k])=>k===page)) state.page=page;
   }
   applyThemeLabel();
@@ -545,7 +565,7 @@ const NAV = [
     ['posture',      'Security Overview',     {}],
     ['todo:app-ov',  'Application Overview',  {todo:'app-ov'}],
     ['todo:db-ov',   'Database Overview',     {todo:'db-ov'}],
-    ['todo:desk-ov', 'Desktop Overview',      {todo:'desktop'}],
+    ['desktops',     'Desktop Overview',      {}],
     ['todo:net-ov',  'Network Overview',      {todo:'net-ov'}],
     ['todo:link-ov', 'Link Overview',         {todo:'link'}],
   ]],
@@ -555,7 +575,7 @@ const NAV = [
     ['todo:ilo',       'HP iLO Monitoring',   {todo:'ilo'}],
     ['todo:proxmox',   'Proxmox Monitoring',  {todo:'proxmox'}],
     ['todo:nutanix',   'Nutanix Monitoring',  {todo:'nutanix'}],
-    ['todo:desktop',   'Desktop Monitoring',  {todo:'desktop'}],
+    ['desktops',       'Desktop Monitoring',  {}],
     ['todo:snmp',      'SNMP Monitoring',     {todo:'snmp'}],
     ['todo:link',      'Link Monitoring',     {todo:'link'}],
     ['todo:topology',  'Topology Map',        {todo:'topology'}],
@@ -589,15 +609,15 @@ const NAV = [
     ['todo:escalation', 'Escalation Policies', {todo:'escalation'}],
   ]],
   ['Reports', [
-    ['todo:rep-avail', 'Availability Report',      {todo:'rep-avail'}],
-    ['todo:rep-perf',  'Performance Report',       {todo:'rep-perf'}],
-    ['todo:rep-sec',   'Security Posture Report',  {todo:'rep-sec'}],
+    ['report?availability', 'Availability Report',     {}],
+    ['report?performance',  'Performance Report',      {}],
+    ['report?posture',      'Security Posture Report', {}],
   ]],
   ['Administration', [
     ['users',         'Users',         {admin:true}],
     ['settings',      'Settings',      {}],
     ['todo:ipam',     'IPAM',          {todo:'ipam'}],
-    ['todo:nettools', 'Network Tools', {todo:'nettools'}],
+    ['nettools',      'Network Tools', {}],
     ['todo:automation','Automation',   {todo:'automation'}],
     ['todo:bsm',      'Business Service Mapping', {todo:'bsm'}],
   ]],
@@ -730,6 +750,7 @@ const GROUP_BADGE = { Dashboards:'servers', Monitoring:'servers',
 function currentRoute(){
   if(state.page==='checks' && state.checkKind) return 'checks?'+state.checkKind;
   if(state.page==='activity') return 'activity?'+state.tab;
+  if(state.page==='report') return 'report?'+state.reportKind;
   return state.page;
 }
 
@@ -737,6 +758,10 @@ function goRoute(route){
   const [page, arg] = route.split('?');
   if(page==='checks'){ state.checkKind = arg || null; }
   else if(page==='activity'){ state.tab = arg || 'ports'; }
+  else if(page==='report'){
+    state.reportKind = arg || 'availability';
+    state.reportRows = []; loadReport();
+  }
   else if(page.startsWith('todo:')){ /* handled by page dispatch */ }
   state.page = page;
   location.hash = '#/' + route;
@@ -1078,6 +1103,250 @@ function pageChecks(){
         : empty('No outages recorded in the last 30 days.')))}
     </div>
   </div>`;
+}
+
+// ═══════════════════════════ page: reports
+const REPORTS = {
+  availability: { title:'Availability Report', rpc:'report_availability',
+    sub:'Uptime, downtime and recovery time per monitored object',
+    cols:[['name','Name'],['object_kind','Type'],['category','Category'],['site','Site'],
+          ['uptime_pct','Uptime %',1],['downtime_min','Downtime (min)',1],
+          ['outages','Outages',1],['mttr_min','MTTR (min)',1],['worst_min','Worst (min)',1]] },
+  performance: { title:'Performance Report', rpc:'report_performance',
+    sub:'Resource usage per host, average and 95th percentile',
+    cols:[['name','Name'],['platform','OS'],['site','Site'],['samples','Samples',1],
+          ['cpu_avg','CPU avg',1],['cpu_p95','CPU p95',1],['cpu_max','CPU max',1],
+          ['mem_avg','Mem avg',1],['mem_max','Mem max',1],
+          ['disk_max','Disk max',1],['uptime_days','Uptime (d)',1]] },
+  posture: { title:'Security Posture Report', rpc:'report_posture',
+    sub:'Configuration, vulnerabilities and privileged activity per host',
+    cols:[['name','Name'],['platform','OS'],['provider','Where'],['trust','Trust',1],
+          ['posture_pct','Posture %',1],['checks_fail','Failing',1],
+          ['checks_fail_high','High',1],['vulns_severe','Severe CVE',1],
+          ['priv_changes','Priv changes',1],['critical_files','Critical files',1],
+          ['failed_logins','Failed logins',1],['identity_proof','Identity']] },
+};
+
+async function loadReport(){
+  const spec = REPORTS[state.reportKind];
+  if(!spec) return;
+  state.reportLoading = true; render();
+  try {
+    const { data, error } = await sb.rpc(spec.rpc, { p_days: state.reportDays });
+    if (error) throw error;
+    state.reportRows = data || [];
+    if (state.reportKind === 'posture') {
+      const f = await sb.rpc('report_findings');
+      state.reportFindings = f.data || [];
+    }
+  } catch(e) {
+    $('err').textContent = 'Could not generate the report: ' + (e.message || e);
+    state.reportRows = [];
+  }
+  state.reportLoading = false; render();
+}
+
+function pageReport(){
+  const spec = REPORTS[state.reportKind];
+  if(!spec) return card(empty('Unknown report.'));
+  const rows = state.reportRows;
+
+  const periods = [7,30,90].map(d=>`
+    <button data-days="${d}" class="font-mono text-[10px] uppercase tracking-[.12em] px-2.5 py-1.5 border border-rule -ml-px
+      ${state.reportDays===d?'bg-ink text-paper border-ink':'text-muted hover:text-ink'}">${d}d</button>`).join('');
+
+  const kinds = Object.entries(REPORTS).map(([k,v])=>`
+    <button data-report="${k}" class="font-mono text-[11px] uppercase tracking-[.14em] px-4 py-2.5 border border-b-0 -mb-px
+      ${state.reportKind===k?'bg-paper border-rule text-ink':'border-transparent text-muted hover:text-ink'}">
+      ${esc(v.title.replace(' Report',''))}</button>`).join('');
+
+  const fmt = (v, num) => v==null ? '—' : (num ? String(v) : esc(String(v)));
+
+  return `
+  <div class="space-y-4">
+    <div class="flex items-center gap-1 border-b border-rule">${kinds}</div>
+
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <p class="text-sm text-muted max-w-xl">${esc(spec.sub)}.
+        Generated ${new Date().toLocaleString()} from ${rows.length} monitored object${rows.length===1?'':'s'}.</p>
+      <div class="flex items-center gap-2">
+        <div class="flex">${periods}</div>
+        <button id="r-csv" class="font-mono text-[11px] uppercase tracking-[.14em] border border-ink px-3 py-1.5 hover:bg-ink hover:text-paper transition-colors">CSV</button>
+        <button id="r-print" class="font-mono text-[11px] uppercase tracking-[.14em] border border-rule px-3 py-1.5 hover:border-ink transition-colors">Print</button>
+      </div>
+    </div>
+
+    ${state.reportLoading ? card(empty('Generating…')) : rows.length ? card(`
+      <div class="overflow-x-auto">
+        <table class="w-full text-[13px] whitespace-nowrap">
+          <thead><tr class="border-b border-rule">
+            ${spec.cols.map(([k,label,num])=>`
+              <th class="font-mono text-[9px] uppercase tracking-[.14em] text-muted font-normal
+                         px-3 py-2 ${num?'text-right':'text-left'}">${esc(label)}</th>`).join('')}
+          </tr></thead>
+          <tbody class="divide-y divide-hairline">
+            ${rows.map(r=>`<tr>
+              ${spec.cols.map(([k,,num])=>`
+                <td class="px-3 py-1.5 ${num?'text-right font-mono tabular-nums':''}"
+                    ${k==='uptime_pct'?`style="color:${r[k]==null?'var(--c-muted)':r[k]>=99.9?HEX.healthy:r[k]>=99?HEX.degraded:HEX.down}"`:''}
+                    ${k==='trust'?`style="color:${trustColour(r[k])}"`:''}
+                    ${(k==='checks_fail_high'||k==='vulns_severe'||k==='priv_changes'||k==='critical_files')&&r[k]>0?`style="color:${HEX.down}"`:''}
+                  >${fmt(r[k], num)}</td>`).join('')}
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>`) : card(empty('No data for this period yet.'))}
+
+    ${state.reportKind==='posture' && state.reportFindings.length ? card(
+      sectionHead('Open findings', `<span class="font-mono text-[10px] text-muted">${state.reportFindings.length}</span>`)
+      + `<div class="divide-y divide-hairline max-h-96 overflow-y-auto">${state.reportFindings.map(f=>`
+        <div class="flex items-center gap-3 px-4 py-2">
+          <span class="font-mono text-[10px] uppercase tracking-[.12em] w-14 shrink-0
+            ${f.severity==='high'?'text-down':f.severity==='medium'?'text-degraded':'text-muted'}">${esc(f.severity)}</span>
+          <span class="text-[13px] truncate flex-1">${esc(f.title)}</span>
+          <span class="font-mono text-[11px] text-muted truncate w-40">${esc(f.detail||'')}</span>
+          <span class="font-mono text-[11px] text-muted truncate w-32 text-right">${esc(f.name)}</span>
+        </div>`).join('')}</div>`) : ''}
+  </div>`;
+}
+
+function reportCsv(){
+  const spec = REPORTS[state.reportKind];
+  const head = spec.cols.map(([,l])=>l).join(',');
+  const esc2 = v => v==null ? '' : /[",\n]/.test(String(v)) ? '"'+String(v).replace(/"/g,'""')+'"' : String(v);
+  const body = state.reportRows.map(r=>spec.cols.map(([k])=>esc2(r[k])).join(',')).join('\n');
+  const blob = new Blob([head+'\n'+body], {type:'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `${state.reportKind}-report-${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+// ═══════════════════════════ page: desktops
+function pageDesktops(){
+  const d = state.hosts.filter(h=>h.role==='desktop');
+  const s = state.hosts.filter(h=>h.role==='server');
+  if(!d.length) return `
+    <div class="space-y-4">
+      ${card(empty('No machines are classified as desktops yet.'))}
+      <div class="bg-paper border border-rule px-5 py-4">
+        <p class="text-sm text-muted leading-relaxed">
+          Desktops run the same agent as servers. Install it on a laptop or workstation,
+          then open that machine and set its role — Windows and macOS hosts are guessed
+          as desktops at enrolment, but only a person knows for certain.
+          ${s.length?`You currently have ${s.length} machine${s.length===1?'':'s'} classified as servers.`:''}
+        </p>
+      </div>
+    </div>`;
+
+  const off = d.filter(x=>x.status==='down').length;
+  return `
+  <div class="space-y-4">
+    <div class="bg-paper border border-rule px-4 sm:px-5 py-3 flex flex-wrap items-center gap-x-6 gap-y-3">
+      <div class="flex items-baseline gap-1.5">
+        <span class="text-lg font-semibold tabular-nums">${d.length}</span>
+        <span class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">desktops</span>
+      </div>
+      ${['macos','windows','linux'].map(p=>{
+        const n = d.filter(x=>x.platform===p).length;
+        return n?`<div class="flex items-baseline gap-1.5">
+          <span class="text-lg font-semibold tabular-nums">${n}</span>
+          <span class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">${PLATFORM_LABEL[p]}</span>
+        </div>`:'';}).join('')}
+      <div class="flex items-baseline gap-1.5">
+        <span class="text-lg font-semibold tabular-nums" style="color:${off?HEX.down:'var(--c-ink)'}">${off}</span>
+        <span class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">offline</span>
+      </div>
+      <span class="flex-1"></span>
+      <span class="font-mono text-[10px] text-muted hidden sm:inline">
+        A desktop offline overnight is normal; a server offline is not.
+      </span>
+    </div>
+    <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">${d.map(serverCard).join('')}</div>
+  </div>`;
+}
+
+// ═══════════════════════════ page: network tools
+const NETTOOLS = {
+  ping:       { label:'Ping',       ph:'8.8.8.8',        hint:'ICMP reachability and round-trip time.' },
+  traceroute: { label:'Traceroute', ph:'8.8.8.8',        hint:'Path to the target, hop by hop.' },
+  dns:        { label:'DNS',        ph:'example.com',    hint:'Resolve a name. Record type is selectable.' },
+  portscan:   { label:'Port scan',  ph:'10.0.0.1',       hint:'Connect to a bounded list of TCP ports. This is an active probe — only scan what you are responsible for.' },
+  http:       { label:'HTTP',       ph:'https://example.com/health', hint:'Fetch a URL and report status, timing and redirects.' },
+};
+
+function pageNetTools(){
+  const admin = isAdmin();
+  const jobs = state.nettools;
+  return `
+  <div class="space-y-4">
+    ${admin ? card(`
+      <div class="px-4 sm:px-5 py-4 space-y-3">
+        <div id="n-kinds" class="grid grid-cols-3 sm:grid-cols-5 gap-2"></div>
+        <p id="n-hint" class="text-xs text-muted"></p>
+        <div class="flex flex-wrap gap-2">
+          <input id="n-target" placeholder="target"
+                 class="flex-1 min-w-[14rem] border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+          <input id="n-opts" placeholder="ports or record type (optional)"
+                 class="w-56 border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+          <button id="n-run" class="bg-ink text-paper px-5 text-sm hover:bg-signal transition-colors">Run</button>
+        </div>
+        <p id="n-msg" class="text-sm text-down min-h-[1.25rem]"></p>
+      </div>`) : `<div class="bg-paper border border-rule px-5 py-3">
+        <p class="text-sm text-muted">Viewers can read results. Running a tool requires an admin,
+        because a port scan is an active probe rather than a lookup.</p></div>`}
+
+    ${jobs.length ? `<div class="space-y-3">${jobs.map(j=>`
+      ${card(`
+        <div class="px-4 sm:px-5 py-2.5 border-b border-hairline flex flex-wrap items-center gap-3">
+          <span class="font-mono text-[10px] uppercase tracking-[.12em] w-20 shrink-0">${esc(NETTOOLS[j.tool]?.label||j.tool)}</span>
+          <span class="font-mono text-sm truncate flex-1">${esc(j.target)}</span>
+          <span class="font-mono text-[10px] uppercase tracking-[.12em] shrink-0
+            ${j.status==='done'?'text-healthy':j.status==='failed'?'text-down':'text-signal'}">${esc(j.status)}</span>
+          ${j.duration_ms!=null?`<span class="font-mono text-[11px] text-muted tabular-nums">${j.duration_ms} ms</span>`:''}
+          <span class="font-mono text-[11px] text-muted tabular-nums">${ago(j.created_at)}</span>
+        </div>
+        ${j.output?`<pre class="px-4 sm:px-5 py-3 font-mono text-[11px] leading-relaxed overflow-x-auto max-h-72 whitespace-pre-wrap">${esc(j.output)}</pre>`
+                  :'<p class="px-5 py-3 text-sm text-muted">Waiting for the probe host…</p>'}`)}
+    `).join('')}</div>` : card(empty('No diagnostics run yet.'))}
+  </div>`;
+}
+
+let netTool = 'ping';
+function renderNetKinds(){
+  if(!$('n-kinds')) return;
+  $('n-kinds').innerHTML = Object.entries(NETTOOLS).map(([k,v])=>`
+    <button data-ntool="${k}" class="border px-2 py-2 font-mono text-[10px] uppercase tracking-[.1em] transition-colors
+      ${netTool===k?'border-ink bg-ground':'border-rule hover:border-ink'}">${v.label}</button>`).join('');
+  $('n-kinds').querySelectorAll('[data-ntool]').forEach(b =>
+    b.onclick=()=>{ netTool=b.dataset.ntool; renderNetKinds(); });
+  $('n-hint').textContent = NETTOOLS[netTool].hint;
+  $('n-target').placeholder = NETTOOLS[netTool].ph;
+  $('n-opts').placeholder = netTool==='portscan' ? '22,80,443 (optional)'
+                          : netTool==='dns' ? 'A, MX, TXT (optional)'
+                          : netTool==='ping' ? 'count, default 4' : 'not used';
+}
+
+async function runNetTool(){
+  const target = $('n-target').value.trim();
+  $('n-msg').textContent = '';
+  if(!target){ $('n-msg').textContent='Enter a target.'; return; }
+  const raw = $('n-opts').value.trim();
+  const options = !raw ? {}
+    : netTool==='portscan' ? { ports: raw }
+    : netTool==='dns' ? { type: raw }
+    : netTool==='ping' ? { count: parseInt(raw,10)||4 } : {};
+  const { data:{ user } } = await sb.auth.getUser();
+  const { error } = await sb.from('nettool_jobs')
+    .insert({ tool: netTool, target, options, requested_by: user?.email || 'dashboard' });
+  if(error){
+    $('n-msg').textContent = /row-level security/i.test(error.message)
+      ? 'Only an admin can run diagnostics.' : error.message;
+    return;
+  }
+  $('n-target').value = '';
+  refresh();
 }
 
 // ═══════════════════════════ page: host detail
@@ -1602,6 +1871,9 @@ const TITLES = {
   host:['Server','Everything collected from this host'],
   servers:['Servers','Select a server to see its detail'],
   checks:['Checks','Agentless ping, port and URL monitoring'],
+  desktops:['Desktops','End-user machines - laptops and workstations'],
+  nettools:['Network Tools','Diagnostics run from the probe host'],
+  report:['Report','Generated from collected telemetry'],
   activity:['Activity','Port, account and sign-in events'],
   users:['Users','Who can sign in, and what they may change'],
   alerts:['Alerts','What fired, and whether it was delivered'],
@@ -1636,6 +1908,9 @@ function render(){
     state.page==='servers'  ? pageServers()  :
     state.page.startsWith('todo:') ? pageTodo() :
     state.page==='checks'   ? pageChecks()   :
+    state.page==='desktops' ? pageDesktops() :
+    state.page==='nettools' ? pageNetTools() :
+    state.page==='report'   ? pageReport()   :
     state.page==='alerts'   ? pageAlerts()   :
     state.page==='activity' ? pageActivity() :
     state.page==='posture'  ? pagePosture()  :
@@ -2170,7 +2445,7 @@ async function refresh(){
   try{
     const since=new Date(Date.now()-20*60*1000).toISOString();
     const [hosts,latest,hist,ports,auth,checks,users,alerts,recips,rules,tokens,fim,vulns,pkgs,chans,audit,
-           probes,matrix,avail,mttr,latency]=await Promise.all([
+           probes,matrix,avail,mttr,latency,nettools]=await Promise.all([
       sb.from('agent_overview').select('*').order('label'),
       sb.from('agent_latest_metrics').select('*'),
       sb.from('metrics').select('agent_id,ts,cpu_pct').gte('ts',since).order('ts'),
@@ -2200,11 +2475,13 @@ async function refresh(){
       sb.from('availability_summary').select('*'),
       sb.from('mttr_summary').select('*').order('mttr_s',{ascending:false}),
       sb.from('probe_latency').select('*'),
+      sb.from('nettool_jobs').select('id,tool,target,status,output,duration_ms,created_at')
+        .order('created_at',{ascending:false}).limit(12),
     ]);
     // Token and audit reads are admin-only under RLS, so a viewer legitimately
     // gets empty results there. Only treat the shared reads as fatal.
     const bad=[hosts,latest,hist,ports,auth,checks,users,alerts,recips,rules,fim,vulns,pkgs,chans,
-               probes,matrix,avail,mttr,latency].find(r=>r.error);
+               probes,matrix,avail,mttr,latency,nettools].find(r=>r.error);
     if(bad) throw bad.error;
 
     state.hosts=hosts.data; state.ports=ports.data; state.auth=auth.data;
@@ -2213,7 +2490,7 @@ async function refresh(){
     state.channels=chans.data||[]; state.audit=audit.data||[];
     state.probes=probes.data||[]; state.matrix=matrix.data||[];
     state.availability=avail.data||[]; state.mttr=mttr.data||[];
-    state.latency=latency.data||[];
+    state.latency=latency.data||[]; state.nettools=nettools.data||[];
     state.fim=fim.data||[];
 
     // Attach affected hosts to each finding. Done client-side because the
