@@ -91,65 +91,51 @@ tailwind.config = { theme: { extend: {
 </div>
 
 <!-- ════════════════════ app ════════════════════ -->
-<div id="app" class="hidden min-h-screen">
+<div id="app" class="hidden min-h-screen lg:flex">
 
-  <!-- masthead -->
-  <header class="sticky top-0 z-40 bg-paper border-b border-rule">
-    <div class="flex items-center gap-2 px-3 sm:px-5 h-14">
-      <button id="railopen" class="lg:hidden font-mono text-lg leading-none px-1" aria-label="Menu">☰</button>
-      <a href="#/dashboard" class="flex items-center gap-2 shrink-0">
-        <span class="w-6 h-6 border-2 border-signal rounded-full grid place-items-center">
-          <span class="w-2 h-2 rounded-full bg-signal"></span>
-        </span>
-        <span class="text-lg font-semibold tracking-tight">nodewatch</span>
-      </a>
-      <nav id="topnav" class="hidden lg:flex items-center gap-0.5 ml-4 flex-1 min-w-0"></nav>
-      <div class="ml-auto flex items-center gap-4 shrink-0">
-        <span id="whoami" class="font-mono text-[11px] text-muted hidden md:inline"></span>
-        <button id="theme" class="font-mono text-[10px] uppercase tracking-[.14em] text-muted hover:text-ink">
-          <span id="theme-label">Dark</span>
-        </button>
-        <button id="signout"
-          class="font-mono text-[11px] uppercase tracking-[.14em] bg-signal text-white px-3 py-1.5 hover:bg-ink transition-colors">
-          Logout
-        </button>
-      </div>
-    </div>
-    <!-- mega dropdown -->
-    <div id="mega" class="hidden absolute left-0 right-0 bg-paper border-b border-rule shadow-lg"></div>
-  </header>
-
-  <!-- mobile drawer -->
+  <!-- nav rail: fixed drawer under lg, static column at lg and up -->
   <div id="scrim" class="hidden lg:hidden fixed inset-0 bg-ink/50 z-30"></div>
   <aside id="rail"
-    class="fixed lg:hidden top-0 left-0 z-40 h-screen w-72 bg-paper border-r border-rule
-           overflow-y-auto -translate-x-full transition-transform duration-200">
-    <div class="px-5 py-4 border-b border-rule flex items-center justify-between">
-      <span class="text-lg font-semibold tracking-tight">nodewatch</span>
-      <button id="railclose" class="font-mono text-xs text-muted px-1">✕</button>
+    class="fixed lg:sticky top-0 left-0 z-40 h-screen w-56 shrink-0 bg-paper border-r border-rule
+           flex flex-col -translate-x-full lg:translate-x-0 transition-transform duration-200">
+    <div class="px-5 py-5 border-b border-rule flex items-start justify-between">
+      <div>
+        <h1 class="text-xl font-semibold tracking-tight leading-none">nodewatch</h1>
+        <p class="font-mono text-[9px] tracking-[.2em] uppercase text-muted mt-1">fleet telemetry</p>
+        <p id="whoami" class="font-mono text-[9px] text-muted mt-1.5 truncate"></p>
+      </div>
+      <button id="railclose" class="lg:hidden font-mono text-xs text-muted hover:text-ink px-1" aria-label="Close menu">✕</button>
     </div>
-    <nav id="nav" class="py-2"></nav>
+    <nav id="nav" class="flex-1 py-2 overflow-y-auto"></nav>
+    <div class="border-t border-rule px-5 py-3 space-y-2">
+      <button id="theme" class="w-full flex items-center justify-between font-mono text-[10px] uppercase tracking-[.14em] text-muted hover:text-ink">
+        <span id="theme-label">Dark mode</span>
+        <span id="theme-dot" class="w-8 h-4 border border-rule relative inline-block">
+          <span id="theme-knob" class="absolute top-0.5 left-0.5 w-3 h-3 bg-muted transition-all"></span>
+        </span>
+      </button>
+      <p class="font-mono text-[10px] text-muted tabular-nums">updated <span id="clock">—</span></p>
+      <button id="signout" class="font-mono text-[10px] uppercase tracking-[.14em] text-muted hover:text-signal">Sign out</button>
+    </div>
   </aside>
 
-  <div class="px-3 sm:px-5 py-4">
-    <div class="flex flex-wrap items-end justify-between gap-3 mb-4">
-      <div>
-        <h1 id="page-title" class="text-2xl font-semibold tracking-tight leading-none">Enterprise Dashboard</h1>
-        <p id="page-sub" class="font-mono text-[10px] text-muted mt-1.5"></p>
+  <!-- page -->
+  <main class="flex-1 min-w-0">
+    <header class="sticky top-0 z-20 bg-ground/95 backdrop-blur border-b border-rule">
+      <div class="px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-3">
+        <div class="flex items-center gap-3 min-w-0">
+          <button id="railopen" class="lg:hidden font-mono text-lg leading-none px-1 -ml-1" aria-label="Open menu">☰</button>
+          <div class="min-w-0">
+          <h2 id="page-title" class="text-lg sm:text-xl font-semibold tracking-tight leading-none truncate">Servers</h2>
+          <p id="page-sub" class="font-mono text-[10px] text-muted mt-1 truncate"></p>
+          </div>
+        </div>
+        <div id="page-actions" class="flex items-center gap-2 shrink-0"></div>
       </div>
-      <div class="flex items-center gap-3">
-        <span class="font-mono text-[10px] text-muted hidden sm:inline">
-          Cross-platform health, live incidents and availability.
-        </span>
-        <span class="flex items-center gap-1.5 font-mono text-[11px] text-muted tabular-nums">
-          <span class="w-1.5 h-1.5 rounded-full bg-healthy"></span><span id="clock">—</span>
-        </span>
-        <div id="page-actions" class="flex items-center gap-2"></div>
-      </div>
-    </div>
-    <div id="page"></div>
-    <p id="err" class="mt-4 font-mono text-xs text-down"></p>
-  </div>
+    </header>
+    <div id="page" class="px-4 sm:px-6 lg:px-8 py-5 sm:py-6"></div>
+    <p id="err" class="px-4 sm:px-6 lg:px-8 pb-6 font-mono text-xs text-down"></p>
+  </main>
 </div>
 
 <!-- ════════════════════ add server ════════════════════ -->
@@ -404,14 +390,14 @@ function themeColour(name){
 const HEX = new Proxy({}, { get: (_, k) => themeColour(String(k)) });
 
 const PAGES = [
-  ['dashboard','Dashboard'], ['servers','Servers'], ['checks','Checks'], ['alerts','Alerts'], ['activity','Activity'],
+  ['servers','Servers'], ['checks','Checks'], ['alerts','Alerts'], ['activity','Activity'],
   ['posture','Posture'], ['vulns','Vulnerabilities'], ['settings','Settings'],
   ['users','Users', true],   // third element: admin only
 ];
 const INGEST_HINT = 'http://172.31.30.90:8000';
 
 let state = {
-  page:'dashboard', tab:'ports', filter:'all', query:'', alertFilter:'all',
+  page:'servers', tab:'ports', filter:'all', query:'', alertFilter:'all',
   host:null, hostTab:'checks',
   hosts:[], metrics:{}, series:{}, alerts:[], ports:[], auth:[],
   checks:[], recipients:[], rules:[], fim:[], tokens:[], history:[], vulns:[],
@@ -535,7 +521,6 @@ async function enter(){
   const h=(location.hash||'').replace('#/','');
   if (h.startsWith('host/')) { state.page='host'; state.host=h.slice(5); }
   else if (h==='overview'||h==='nodes') state.page='servers';
-  else if (h==='dashboard') state.page='dashboard';
   else if (h) {
     const [page,arg]=h.split('?');
     if(page==='checks'){ state.page='checks'; state.checkKind=arg||null; }
@@ -554,84 +539,67 @@ sb.auth.getSession().then(({data})=>{ if(data.session) enter(); });
 // page explains what the feature would collect, rather than being a dead
 // link or a fake screen.
 const NAV = [
-  ['Dashboards', null, [
-    [null, [
-      ['dashboard',    'Enterprise Dashboard', {}],
-      ['servers',      'Server Overview',      {}],
-      ['checks',       'Synthetic Overview',   {}],
-      ['posture',      'Security Overview',    {}],
-      ['todo:app-ov',  'Application Overview', {todo:'app-ov'}],
-      ['todo:db-ov',   'DB Overview',          {todo:'db-ov'}],
-      ['todo:desk-ov', 'Desktop Overview',     {todo:'desk-ov'}],
-      ['todo:net-ov',  'Network Overview',     {todo:'net-ov'}],
-      ['todo:link-ov', 'Link Overview',        {todo:'link-ov'}],
-    ]],
+  ['Dashboards', [
+    ['servers',      'Server Overview',       {}],
+    ['checks',       'Synthetic Overview',    {}],
+    ['posture',      'Security Overview',     {}],
+    ['todo:app-ov',  'Application Overview',  {todo:'app-ov'}],
+    ['todo:db-ov',   'Database Overview',     {todo:'db-ov'}],
+    ['todo:desk-ov', 'Desktop Overview',      {todo:'desktop'}],
+    ['todo:net-ov',  'Network Overview',      {todo:'net-ov'}],
+    ['todo:link-ov', 'Link Overview',         {todo:'link'}],
   ]],
-  ['Monitoring', null, [
-    ['Hardware', [
-      ['todo:idrac', 'iDRAC Monitoring',  {todo:'idrac'}],
-      ['todo:ilo',   'HP iLO Monitoring', {todo:'ilo'}],
-    ]],
-    ['Hypervisor', [
-      ['todo:proxmox', 'Proxmox Monitoring', {todo:'proxmox'}],
-      ['todo:nutanix', 'Nutanix Monitoring', {todo:'nutanix'}],
-    ]],
-    ['Operating system', [
-      ['servers',      'Server Monitoring',  {}],
-      ['todo:desktop', 'Desktop Monitoring', {todo:'desktop'}],
-    ]],
-    ['Database', [
-      ['todo:mssql',    'SQL Server Monitoring', {todo:'mssql'}],
-      ['todo:oracle',   'Oracle DB Monitoring',  {todo:'oracle'}],
-      ['todo:postgres', 'PostgreSQL Monitoring', {todo:'postgres'}],
-      ['todo:mysql',    'MySQL Monitoring',      {todo:'mysql'}],
-    ]],
-    ['Network', [
-      ['todo:snmp',     'SNMP Monitoring', {todo:'snmp'}],
-      ['todo:link',     'Link Monitoring', {todo:'link'}],
-      ['todo:topology', 'Topology Map',    {todo:'topology'}],
-    ]],
-    ['Application', [
-      ['todo:iis',    'IIS Monitoring',    {todo:'iis'}],
-      ['todo:tomcat', 'Tomcat Monitoring', {todo:'tomcat'}],
-      ['todo:jboss',  'JBoss Monitoring',  {todo:'jboss'}],
-    ]],
-    ['Synthetic', [
-      ['checks?port', 'Port Monitoring', {}],
-      ['checks?ping', 'Ping Monitoring', {}],
-      ['checks?url',  'URL Monitoring',  {}],
-    ]],
-    ['Security', [
-      ['posture',        'Posture Checks',  {}],
-      ['vulns',          'Vulnerabilities', {}],
-      ['activity?files', 'File Integrity',  {}],
-      ['activity?users', 'Account Changes', {}],
-      ['activity?auth',  'Sign-ins',        {}],
-    ]],
+  ['Monitoring', [
+    ['servers',        'Server Monitoring',   {}],
+    ['todo:idrac',     'iDRAC Monitoring',    {todo:'idrac'}],
+    ['todo:ilo',       'HP iLO Monitoring',   {todo:'ilo'}],
+    ['todo:proxmox',   'Proxmox Monitoring',  {todo:'proxmox'}],
+    ['todo:nutanix',   'Nutanix Monitoring',  {todo:'nutanix'}],
+    ['todo:desktop',   'Desktop Monitoring',  {todo:'desktop'}],
+    ['todo:snmp',      'SNMP Monitoring',     {todo:'snmp'}],
+    ['todo:link',      'Link Monitoring',     {todo:'link'}],
+    ['todo:topology',  'Topology Map',        {todo:'topology'}],
   ]],
-  ['Alerting', null, [
-    [null, [
-      ['alerts',          'Alerts',              {}],
-      ['settings',        'Channels',            {}],
-      ['todo:escalation', 'Escalation Policies', {todo:'escalation'}],
-    ]],
+  ['Synthetic', [
+    ['checks?ping', 'Ping Monitoring', {}],
+    ['checks?port', 'Port Monitoring', {}],
+    ['checks?url',  'URL Monitoring',  {}],
   ]],
-  ['Automation', 'todo:automation', null],
-  ['Monitoring Reports', null, [
-    [null, [
-      ['todo:rep-avail', 'Availability Report',     {todo:'rep-avail'}],
-      ['todo:rep-perf',  'Performance Report',      {todo:'rep-perf'}],
-      ['todo:rep-sec',   'Security Posture Report', {todo:'rep-sec'}],
-    ]],
+  ['Database', [
+    ['todo:postgres', 'PostgreSQL Monitoring', {todo:'postgres'}],
+    ['todo:mysql',    'MySQL Monitoring',      {todo:'mysql'}],
+    ['todo:mssql',    'SQL Server Monitoring', {todo:'mssql'}],
+    ['todo:oracle',   'Oracle DB Monitoring',  {todo:'oracle'}],
   ]],
-  ['BSM',           'todo:bsm',      null],
-  ['IPAM',          'todo:ipam',     null],
-  ['Network Tools', 'todo:nettools', null],
-  ['Administration', null, [
-    [null, [
-      ['users',    'Users',    {admin:true}],
-      ['settings', 'Settings', {}],
-    ]],
+  ['Application', [
+    ['todo:tomcat', 'Tomcat Monitoring', {todo:'tomcat'}],
+    ['todo:jboss',  'JBoss Monitoring',  {todo:'jboss'}],
+    ['todo:iis',    'IIS Monitoring',    {todo:'iis'}],
+  ]],
+  ['Security', [
+    ['posture',        'Posture',         {}],
+    ['vulns',          'Vulnerabilities', {}],
+    ['activity?files', 'File Integrity',  {}],
+    ['activity?users', 'Account Changes', {}],
+    ['activity?auth',  'Sign-ins',        {}],
+  ]],
+  ['Alerting', [
+    ['alerts',   'Alerts',        {}],
+    ['settings', 'Channels',      {}],
+    ['todo:escalation', 'Escalation Policies', {todo:'escalation'}],
+  ]],
+  ['Reports', [
+    ['todo:rep-avail', 'Availability Report',      {todo:'rep-avail'}],
+    ['todo:rep-perf',  'Performance Report',       {todo:'rep-perf'}],
+    ['todo:rep-sec',   'Security Posture Report',  {todo:'rep-sec'}],
+  ]],
+  ['Administration', [
+    ['users',         'Users',         {admin:true}],
+    ['settings',      'Settings',      {}],
+    ['todo:ipam',     'IPAM',          {todo:'ipam'}],
+    ['todo:nettools', 'Network Tools', {todo:'nettools'}],
+    ['todo:automation','Automation',   {todo:'automation'}],
+    ['todo:bsm',      'Business Service Mapping', {todo:'bsm'}],
   ]],
 ];
 
@@ -670,14 +638,17 @@ const TODO_SPEC = {
 
 // ═══════════════════════════ theme
 function applyThemeLabel(){
-  if ($('theme-label')) $('theme-label').textContent = currentTheme()==='dark' ? 'Light' : 'Dark';
+  const dark = currentTheme() === 'dark';
+  if ($('theme-label')) $('theme-label').textContent = dark ? 'Light mode' : 'Dark mode';
+  if ($('theme-knob'))  $('theme-knob').style.left = dark ? '1.125rem' : '0.125rem';
 }
 function currentTheme(){ return document.documentElement.getAttribute('data-theme') || 'light'; }
 function applyTheme(t){
   document.documentElement.setAttribute('data-theme', t);
   try { localStorage.setItem('nw-theme', t); } catch(e) { /* private mode */ }
   const dark = t === 'dark';
-  if ($('theme-label')) $('theme-label').textContent = dark ? 'Light' : 'Dark';
+  if ($('theme-label')) $('theme-label').textContent = dark ? 'Light mode' : 'Dark mode';
+  if ($('theme-knob'))  $('theme-knob').style.left = dark ? '1.125rem' : '0.125rem';
   // Inline SVG and status colours are set from JS, so re-render after a swap.
   if (state.hosts.length) render();
 }
@@ -705,89 +676,57 @@ function badges(){
 }
 const isAdmin = () => state.role === 'admin';
 
-let megaOpen = null;
-
 function renderNav(){
-  const b = badges();
+  const b=badges();
+  // Which group is open. Default to whichever contains the current page, so
+  // arriving by deep link does not present a collapsed tree.
+  if(!state.navOpen){
+    state.navOpen = NAV.find(([,items]) =>
+      items.some(([route]) => route.split('?')[0] === state.page))?.[0] || 'Dashboards';
+  }
 
-  $('topnav').innerHTML = NAV.map(([label, direct, cols])=>{
-    const active = megaOpen === label;
-    const badge = GROUP_BADGE[label] ? b[GROUP_BADGE[label]] : 0;
+  $('nav').innerHTML = NAV.map(([group, items])=>{
+    const visible = items.filter(([,,opt]) => !opt.admin || isAdmin());
+    if(!visible.length) return '';
+    const open = state.navOpen === group;
+    const groupBadge = GROUP_BADGE[group] ? b[GROUP_BADGE[group]] : 0;
     return `
-      <button data-menu="${esc(label)}"
-        class="px-3 py-1.5 text-[13px] whitespace-nowrap transition-colors rounded-sm
-               ${active?'bg-ground text-signal':'text-ink hover:text-signal'}">
-        ${esc(label)}${cols?' <span class="text-[9px] align-middle">▾</span>':''}
-        ${badge?`<span class="ml-1 font-mono text-[10px] text-down">${badge}</span>`:''}
-      </button>`;
+    <div class="border-b border-hairline last:border-0">
+      <button data-group="${esc(group)}"
+        class="w-full flex items-center justify-between px-5 py-2.5 font-mono text-[10px]
+               uppercase tracking-[.16em] ${open?'text-ink':'text-muted'} hover:text-ink">
+        <span>${esc(group)}</span>
+        <span class="flex items-center gap-2">
+          ${groupBadge?`<span class="text-down">${groupBadge}</span>`:''}
+          <span class="text-[9px]">${open?'▾':'▸'}</span>
+        </span>
+      </button>
+      ${open?`<div class="pb-1">${visible.map(([route,label,opt])=>{
+        const active = route === currentRoute();
+        return `
+        <button data-route="${esc(route)}"
+          class="w-full text-left pl-7 pr-4 py-1.5 flex items-center justify-between
+                 text-[12px] border-l-2 transition-colors
+                 ${active?'border-ink bg-ground text-ink':'border-transparent text-muted hover:text-ink'}">
+          <span class="truncate">${esc(label)}</span>
+          ${opt.todo?'<span class="font-mono text-[8px] uppercase tracking-[.1em] text-muted border border-rule px-1 shrink-0">soon</span>':''}
+        </button>`;}).join('')}</div>`:''}
+    </div>`;
   }).join('');
 
-  $('topnav').querySelectorAll('[data-menu]').forEach(el =>
-    el.onclick = (e) => {
-      e.stopPropagation();
-      const [label, direct, cols] = NAV.find(([l])=>l===el.dataset.menu);
-      if (!cols) { megaOpen=null; renderMega(); goRoute(direct); return; }
-      megaOpen = megaOpen === label ? null : label;
-      renderNav(); renderMega();
-    });
+  $('nav').querySelectorAll('[data-group]').forEach(el =>
+    el.onclick=()=>{ state.navOpen = state.navOpen===el.dataset.group ? null : el.dataset.group; renderNav(); });
 
-  // Mobile drawer: the same tree, flattened into an accordion.
-  $('nav').innerHTML = NAV.map(([label, direct, cols])=>{
-    if(!cols) return `
-      <button data-route="${esc(direct)}" class="w-full text-left px-5 py-2.5 text-[13px] text-ink hover:text-signal">
-        ${esc(label)}</button>`;
-    const items = cols.flatMap(([,list])=>list).filter(([,,opt])=>!opt.admin||isAdmin());
-    return `
-      <div class="border-b border-hairline">
-        <p class="px-5 pt-3 pb-1 font-mono text-[9px] uppercase tracking-[.18em] text-muted">${esc(label)}</p>
-        ${items.map(([route,text,opt])=>`
-          <button data-route="${esc(route)}"
-            class="w-full text-left pl-7 pr-4 py-1.5 text-[13px] flex items-center justify-between
-                   ${route===currentRoute()?'text-signal':'text-muted hover:text-ink'}">
-            <span class="truncate">${esc(text)}</span>
-            ${opt.todo?'<span class="font-mono text-[8px] uppercase text-muted border border-rule px-1">soon</span>':''}
-          </button>`).join('')}
-      </div>`;
-  }).join('');
-
-  document.querySelectorAll('#nav [data-route]').forEach(el =>
+  $('nav').querySelectorAll('[data-route]').forEach(el =>
     el.onclick=()=>{ goRoute(el.dataset.route); closeRail(); });
 }
 
-function renderMega(){
-  const entry = megaOpen && NAV.find(([l])=>l===megaOpen);
-  if(!entry || !entry[2]){ $('mega').classList.add('hidden'); return; }
-  const cols = entry[2];
-  $('mega').innerHTML = `
-    <div class="px-5 py-5 grid gap-x-8 gap-y-5"
-         style="grid-template-columns:repeat(auto-fit,minmax(190px,1fr))">
-      ${cols.map(([heading, items])=>{
-        const visible = items.filter(([,,opt])=>!opt.admin||isAdmin());
-        if(!visible.length) return '';
-        return `
-        <div>
-          ${heading?`<p class="font-mono text-[9px] uppercase tracking-[.18em] text-signal border-b border-hairline pb-1.5 mb-2">${esc(heading)}</p>`:''}
-          ${visible.map(([route,text,opt])=>`
-            <button data-route="${esc(route)}"
-              class="w-full text-left py-1.5 text-[13px] flex items-center justify-between gap-2
-                     ${route===currentRoute()?'text-signal':'text-ink hover:text-signal'}">
-              <span class="truncate">${esc(text)}</span>
-              ${opt.todo?'<span class="font-mono text-[8px] uppercase tracking-[.1em] text-muted border border-rule px-1 shrink-0">soon</span>':''}
-            </button>`).join('')}
-        </div>`;
-      }).join('')}
-    </div>`;
-  $('mega').classList.remove('hidden');
-  $('mega').querySelectorAll('[data-route]').forEach(el =>
-    el.onclick=()=>{ megaOpen=null; renderMega(); renderNav(); goRoute(el.dataset.route); });
-}
+// Groups that carry a count of things needing attention.
+const GROUP_BADGE = { Dashboards:'servers', Monitoring:'servers',
+                      Synthetic:'checks', Security:'posture', Alerting:'alerts' };
 
-// Clicking anywhere else closes the dropdown, as a menu bar should.
-document.addEventListener('click', ()=>{ if(megaOpen){ megaOpen=null; renderMega(); renderNav(); } });
-$('mega').addEventListener('click', e=>e.stopPropagation());
-
-const GROUP_BADGE = { Dashboards:'servers', Monitoring:'servers', Alerting:'alerts' };
-
+// A route is "page" or "page?filter". The filter selects a tab or a probe
+// kind, so one page can back several menu entries without duplicating it.
 function currentRoute(){
   if(state.page==='checks' && state.checkKind) return 'checks?'+state.checkKind;
   if(state.page==='activity') return 'activity?'+state.tab;
@@ -795,10 +734,10 @@ function currentRoute(){
 }
 
 function goRoute(route){
-  if(!route) return;
   const [page, arg] = route.split('?');
   if(page==='checks'){ state.checkKind = arg || null; }
   else if(page==='activity'){ state.tab = arg || 'ports'; }
+  else if(page.startsWith('todo:')){ /* handled by page dispatch */ }
   state.page = page;
   location.hash = '#/' + route;
   render();
@@ -808,197 +747,6 @@ window.addEventListener('hashchange', ()=>{
   const h=(location.hash||'').replace('#/','');
   if (PAGES.some(([k])=>k===h) && h!==state.page) { state.page=h; render(); }
 });
-
-// ═══════════════════════════ page: enterprise dashboard
-// Panel layout mirrors the reference NMS: a KPI strip, then three columns of
-// cards. Panels with no data source yet say so plainly instead of being
-// hidden, so the shape of what is still missing stays visible.
-function panel(title, sub, body, extra=''){
-  return `<section class="bg-paper border border-rule">
-    <div class="px-4 py-2.5 border-b border-hairline flex items-baseline justify-between gap-3">
-      <div class="min-w-0">
-        <h3 class="text-[13px] font-semibold tracking-tight truncate">${title}</h3>
-        ${sub?`<p class="font-mono text-[9px] text-muted mt-0.5 truncate">${sub}</p>`:''}
-      </div>${extra}
-    </div>
-    ${body}
-  </section>`;
-}
-const noData = t => `<p class="px-4 py-8 text-center text-[13px] text-muted">${t}</p>`;
-
-// Small arc gauge, as the reference uses for per-host CPU and memory.
-function gauge(pct, colour){
-  const r=15, c=2*Math.PI*r, v=Math.max(0,Math.min(100,pct??0));
-  return `<svg viewBox="0 0 40 40" class="w-10 h-10 -rotate-90">
-    <circle cx="20" cy="20" r="${r}" fill="none" stroke="${themeColour('hairline')}" stroke-width="4"/>
-    <circle cx="20" cy="20" r="${r}" fill="none" stroke="${colour}" stroke-width="4"
-            stroke-dasharray="${(v/100*c).toFixed(1)} ${c.toFixed(1)}" stroke-linecap="butt"/>
-  </svg>`;
-}
-
-function pageDashboard(){
-  const h = state.hosts.filter(x=>x.agent_version);
-  const p = state.probes;
-  const day = Date.now()-86400000, week = Date.now()-7*86400000;
-
-  const monitored = h.length + p.length;
-  const critical  = h.filter(x=>x.status==='down').length + p.filter(x=>x.status==='down').length;
-  // A host that is already critical must not also be counted at risk, or the
-  // health percentage subtracts it twice.
-  const atRisk    = h.filter(x=>x.status!=='down' && (x.status==='degraded'||x.needs_reverification)).length
-                  + p.filter(x=>x.status==='stale').length;
-  const healthPct = monitored ? Math.round(100*(monitored-critical-atRisk)/monitored) : 100;
-  const a24 = state.alerts.filter(a=>new Date(a.created_at)>day).length;
-  const a7  = state.alerts.filter(a=>new Date(a.created_at)>week).length;
-  const mttrAll = state.mttr.length
-    ? Math.round(state.mttr.reduce((x,m)=>x+m.mttr_s,0)/state.mttr.length) : null;
-
-  const kpi=(label,value,colour,big)=>`
-    <div class="bg-paper border border-rule px-4 py-3 flex items-center gap-3 min-w-[8.5rem]
-                ${big?'border-l-4':''}" ${big?`style="border-left-color:${colour}"`:''}>
-      <div>
-        <p class="text-2xl font-semibold tabular-nums leading-none" style="color:${colour||'var(--c-ink)'}">${value}</p>
-        <p class="font-mono text-[9px] tracking-[.16em] uppercase text-muted mt-1">${label}</p>
-      </div>
-    </div>`;
-
-  // ── column 1 ──
-  const disk = Object.entries(state.metrics)
-    .map(([id,m])=>({ name:(state.hosts.find(x=>x.id===id)||{}).label||'—', pct:m.disk_pct }))
-    .filter(x=>x.pct!=null && x.pct>=70).sort((a,b)=>b.pct-a.pct);
-
-  const linkPanel = panel('Link utilisation','Top 10 by bandwidth',
-    noData('No links with bandwidth data. Needs SNMP polling.'));
-
-  const respPanel = panel('Response times','Avg &amp; P95 · 1h',
-    state.latency.length
-      ? `<div class="divide-y divide-hairline">${state.latency.map(l=>`
-          <div class="flex items-center gap-3 px-4 py-2">
-            <span class="text-[13px] truncate flex-1">${esc(l.name)}</span>
-            <span class="font-mono text-[11px] tabular-nums text-muted w-16 text-right">${l.avg_ms} ms</span>
-            <span class="font-mono text-[11px] tabular-nums w-16 text-right"
-                  style="color:${l.p95_ms>1000?HEX.down:l.p95_ms>300?HEX.degraded:HEX.healthy}">p95 ${l.p95_ms}</span>
-          </div>`).join('')}</div>`
-      : noData('No response-time problems in the last hour.'));
-
-  const diskPanel = panel('Disk pressure','Servers over 70% used',
-    disk.length
-      ? `<div class="px-4 py-3 space-y-2">${disk.map(d=>`
-          <div>
-            <div class="flex justify-between font-mono text-[11px] mb-1">
-              <span class="truncate">${esc(d.name)}</span>
-              <span class="tabular-nums" style="color:${d.pct>=90?HEX.down:HEX.degraded}">${d.pct.toFixed(1)}%</span>
-            </div>
-            <div class="h-1.5 bg-hairline"><div class="h-1.5"
-                 style="width:${d.pct}%;background:${d.pct>=90?HEX.down:HEX.degraded}"></div></div>
-          </div>`).join('')}</div>`
-      : noData('No server above 70% disk usage.'));
-
-  // ── column 2 ──
-  const byCat = {};
-  state.availability.forEach(a=>{
-    const band = a.object_kind==='host' ? 'Infrastructure' : 'Synthetic';
-    (byCat[band] ||= []).push(a);
-  });
-  const avg = (rows,k)=>{
-    const v = rows.map(r=>r[k]).filter(x=>x!=null);
-    return v.length ? Math.round(v.reduce((a,b)=>a+b,0)/v.length) : null;
-  };
-  const availPanel = panel('Availability','24h · 7d · 30d',
-    Object.keys(byCat).length
-      ? `<table class="w-full text-[13px]">
-          <thead><tr class="font-mono text-[9px] uppercase tracking-[.14em] text-muted">
-            <th class="text-left px-4 py-2 font-normal"></th>
-            <th class="text-right px-2 py-2 font-normal">24h</th>
-            <th class="text-right px-2 py-2 font-normal">7d</th>
-            <th class="text-right px-2 py-2 font-normal">30d</th>
-            <th class="text-right px-4 py-2 font-normal">MTTR</th>
-          </tr></thead>
-          <tbody class="divide-y divide-hairline">
-          ${Object.entries(byCat).map(([band,rows])=>`
-            <tr>
-              <td class="px-4 py-2 truncate">${band}</td>
-              ${['avail_24h','avail_7d','avail_30d'].map(k=>{
-                const v=avg(rows,k);
-                return `<td class="text-right px-2 py-2 font-mono tabular-nums"
-                  style="color:${v==null?'var(--c-muted)':v>=99?HEX.healthy:v>=95?HEX.degraded:HEX.down}">${v??'—'}</td>`;
-              }).join('')}
-              <td class="text-right px-4 py-2 font-mono tabular-nums text-muted">
-                ${band==='Infrastructure'&&mttrAll?fmtDur(mttrAll):'—'}</td>
-            </tr>`).join('')}
-          </tbody></table>`
-      : noData('Not enough history yet.'));
-
-  const appPanel = panel('App performance','Error rate',
-    noData('No data. Needs application monitoring.'));
-
-  // ── column 3 ──
-  const matrix = panel('Environment health matrix','Grouped by category',
-    state.matrix.length ? `<div class="px-4 py-3 space-y-3">${
-      Object.entries(state.matrix.reduce((acc,m)=>{ (acc[m.band] ||= []).push(m); return acc; },{}))
-        .map(([band,rows])=>`
-        <div class="flex flex-wrap items-center gap-2">
-          <span class="font-mono text-[9px] uppercase tracking-[.16em] text-signal w-24 shrink-0">${esc(band)}</span>
-          ${rows.map(m=>`
-            <div class="border border-rule px-2.5 py-1.5 min-w-[6.5rem]"
-                 style="border-left:3px solid ${m.pct>=100?HEX.healthy:m.pct>=80?HEX.degraded:HEX.down}">
-              <p class="text-[11px] font-medium truncate">${esc(m.category)}</p>
-              <p class="font-mono text-[10px] text-muted">${m.total} tot
-                <span style="color:${m.pct>=100?HEX.healthy:m.pct>=80?HEX.degraded:HEX.down}">${m.pct??0}%</span></p>
-            </div>`).join('')}
-        </div>`).join('')}</div>`
-      : noData('Nothing monitored yet.'));
-
-  const top = Object.entries(state.metrics)
-    .map(([id,m])=>({ name:(state.hosts.find(x=>x.id===id)||{}).label||'—',
-                      cpu:m.cpu_pct??0, mem:m.mem_pct??0 }))
-    .sort((a,b)=>(b.cpu+b.mem)-(a.cpu+a.mem)).slice(0,10);
-
-  const cpuPanel = panel('CPU &amp; memory','Top 10 by usage',
-    top.length
-      ? `<div class="px-4 py-3 grid grid-cols-2 xl:grid-cols-2 gap-2">${top.map(t=>`
-          <div class="border border-rule px-3 py-2">
-            <p class="font-mono text-[10px] truncate mb-1">${esc(t.name)}</p>
-            <div class="flex items-center gap-2">
-              <div class="relative">${gauge(t.cpu, t.cpu>=80?HEX.down:HEX.healthy)}
-                <span class="absolute inset-0 grid place-items-center font-mono text-[9px] tabular-nums">${Math.round(t.cpu)}</span>
-              </div>
-              <div class="relative">${gauge(t.mem, t.mem>=85?HEX.down:HEX.healthy)}
-                <span class="absolute inset-0 grid place-items-center font-mono text-[9px] tabular-nums">${Math.round(t.mem)}</span>
-              </div>
-            </div>
-            <p class="font-mono text-[8px] uppercase tracking-[.12em] text-muted mt-1">cpu &nbsp; mem</p>
-          </div>`).join('')}</div>`
-      : noData('No metrics yet.'));
-
-  const dbPanel = panel('Database pressure','Connection pool %',
-    noData('No data. Needs database monitoring.'));
-
-  return `
-  <div class="space-y-4">
-    <div class="flex flex-wrap gap-3">
-      <div class="bg-signal text-white px-5 py-3 flex items-center gap-3 min-w-[9rem]">
-        <span class="w-8 h-8 rounded-full border-2 border-white/60"></span>
-        <div>
-          <p class="text-2xl font-semibold tabular-nums leading-none">${healthPct}%</p>
-          <p class="font-mono text-[9px] tracking-[.16em] uppercase opacity-80 mt-1">health</p>
-        </div>
-      </div>
-      ${kpi('monitored', monitored)}
-      ${kpi('offline', critical, critical?HEX.down:null, true)}
-      ${kpi('at risk', atRisk, atRisk?HEX.degraded:null, true)}
-      ${kpi('alerts 24h', a24)}
-      ${kpi('alerts 7d', a7)}
-      ${kpi('mttr 30d', mttrAll?fmtDur(mttrAll):'—')}
-    </div>
-
-    <div class="grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
-      <div class="space-y-4">${linkPanel}${respPanel}${diskPanel}</div>
-      <div class="space-y-4">${availPanel}${appPanel}</div>
-      <div class="space-y-4">${matrix}${cpuPanel}${dbPanel}</div>
-    </div>
-  </div>`;
-}
 
 // ═══════════════════════════ page: servers (landing)
 function pageServers(){
@@ -1043,7 +791,7 @@ function pageServers(){
       ${pill('servers',h.length)}
       ${pill('healthy',c.healthy,'var(--c-healthy)')}
       ${pill('degraded',c.degraded,c.degraded?'var(--c-degraded)':null)}
-      ${pill('down',c.down,c.down?'var(--c-down)':null)}
+      ${pill('offline',c.down,c.down?'var(--c-down)':null)}
       ${c.pending?pill('pending',c.pending,'var(--c-pending)'):''}
       ${pill('mean trust',avg??'—',trustColour(avg))}
       <span class="flex-1"></span>
@@ -1106,8 +854,8 @@ function matrixPanel(){
 function serverCard(r){
   const st=HEX[r.status]?r.status:'down', m=state.metrics[r.id]||{};
   const off = r.status==='down';
-  // An offline host is dimmed and banded in red. Its metrics are last-known
-  // and therefore stale, so they are muted rather than presented as current.
+  // An offline host is banded and dimmed. Its readings are last-known and
+  // therefore stale, so they are muted rather than shown as current.
   return `<article data-agent="${r.id}" tabindex="0" role="button"
     aria-label="Open ${esc(r.label)}"
     class="bg-paper border rise cursor-pointer transition-colors flex flex-col
@@ -1374,7 +1122,7 @@ function pageHost(){
         Last seen ${new Date(r.last_seen).toLocaleString()}.</span>
       <span class="flex-1"></span>
       <span class="font-mono text-[11px] text-muted">
-        The host may be powered off, disconnected, or the agent stopped — the difference is not observable from here.
+        Powered off, disconnected, or the agent stopped — not observable from here.
       </span>
     </div>`:''}
 
@@ -1849,7 +1597,6 @@ function openHost(id){
 
 const TITLES = {
   host:['Server','Everything collected from this host'],
-  dashboard:['Enterprise Dashboard','Cross-platform health, live incidents and availability'],
   servers:['Servers','Select a server to see its detail'],
   checks:['Checks','Agentless ping, port and URL monitoring'],
   activity:['Activity','Port, account and sign-in events'],
@@ -1863,7 +1610,7 @@ const TITLES = {
 
 function render(){
   renderNav();
-  let [title,sub] = TITLES[state.page] || TITLES.dashboard;
+  let [title,sub] = TITLES[state.page] || TITLES.servers;
   if(state.page.startsWith('todo:')){
     const spec = TODO_SPEC[state.page.slice(5)];
     if(spec){ title = spec[0]; sub = 'Planned — not built yet'; }
@@ -1883,7 +1630,6 @@ function render(){
     : '';
 
   $('page').innerHTML =
-    state.page==='dashboard'? pageDashboard():
     state.page==='servers'  ? pageServers()  :
     state.page.startsWith('todo:') ? pageTodo() :
     state.page==='checks'   ? pageChecks()   :
