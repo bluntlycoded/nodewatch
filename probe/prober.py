@@ -14,6 +14,7 @@ Checks run concurrently in a thread pool, so one unreachable target with a
 import logging
 import os
 import re
+import shutil
 import socket
 import subprocess
 import time
@@ -135,6 +136,157 @@ def run_one(p: dict) -> tuple[str, bool, int | None, str]:
     return p["id"], ok, ms, detail
 
 
+# ---------------------------------------------------------------- net tools
+
+# On-demand diagnostics requested from the dashboard. They run here because
+# the probe host is the only machine with a route to internal targets.
+#
+# Every tool is bounded: a fixed argument list built from validated input,
+# never a shell string, and a hard timeout. A diagnostic tool that accepted
+# arbitrary arguments would be a remote shell with extra steps.
+
+TARGET_RE = re.compile(r"^[A-Za-z0-9._:\-\[\]]{1,253}$")
+URL_RE = re.compile(r"^https?://[^\s\"\'<>]{1,500}$")
+
+NETTOOL_TIMEOUT = 60
+PORTSCAN_MAX = 64
+
+
+def valid_target(t: str, tool: str) -> bool:
+    if tool == "http":
+        return bool(URL_RE.match(t))
+    # A hostname or IP only. Rejecting the leading dash matters as much as
+    # rejecting metacharacters: "--help" or "-f" would otherwise be read as
+    # a flag by ping, dig or traceroute rather than as a target.
+    if t.startswith("-"):
+        return False
+    return bool(TARGET_RE.match(t))
+
+
+def tool_ping(target, opts):
+    n = min(int(opts.get("count", 4)), 10)
+    return ["ping", "-c", str(n), "-W", "2", "-n", target]
+
+
+def tool_traceroute(target, opts):
+    hops = min(int(opts.get("max_hops", 20)), 30)
+    if shutil.which("traceroute"):
+        return ["traceroute", "-n", "-w", "2", "-q", "1", "-m", str(hops), target]
+    if shutil.which("tracepath"):
+        return ["tracepath", "-n", "-m", str(hops), target]
+    return None
+
+
+def tool_dns(target, opts):
+    rtype = str(opts.get("type", "A")).upper()
+    if rtype not in ("A", "AAAA", "MX", "TXT", "NS", "CNAME", "SOA", "PTR"):
+        rtype = "A"
+    if shutil.which("dig"):
+        return ["dig", "+short", "+time=3", "+tries=1", target, rtype]
+    return ["getent", "hosts", target]
+
+
+def tool_http(target, opts):
+    return ["curl", "-sS", "-o", "/dev/null", "-L", "--max-time", "15",
+            "-w", "status=%{http_code} time=%{time_total}s size=%{size_download}B "
+                  "redirects=%{num_redirects} ip=%{remote_ip}\n", target]
+
+
+def run_portscan(target, opts):
+    """
+    Written in Python rather than shelling out to nmap: no extra dependency,
+    and the port list stays bounded to something a monitoring tool should be
+    doing rather than a general scanner.
+    """
+    raw = opts.get("ports") or "22,80,443,3389,5432,3306,8080,8443"
+    ports = []
+    for part in str(raw).split(","):
+        part = part.strip()
+        if part.isdigit() and 1 <= int(part) <= 65535:
+            ports.append(int(part))
+        if len(ports) >= PORTSCAN_MAX:
+            break
+    if not ports:
+        return "no valid ports requested"
+
+    lines = []
+    for port in ports:
+        t0 = time.monotonic()
+        try:
+            with socket.create_connection((target, port), timeout=1.5):
+                lines.append(f"{port:>6}/tcp  open      {int((time.monotonic()-t0)*1000)} ms")
+        except socket.timeout:
+            lines.append(f"{port:>6}/tcp  filtered")
+        except ConnectionRefusedError:
+            lines.append(f"{port:>6}/tcp  closed")
+        except OSError as e:
+            lines.append(f"{port:>6}/tcp  error     {e}")
+    return "\n".join(lines)
+
+
+BUILDERS = {"ping": tool_ping, "traceroute": tool_traceroute,
+            "dns": tool_dns, "http": tool_http}
+
+
+def run_nettool(job: dict) -> tuple[bool, str, int]:
+    tool, target = job["tool"], (job["target"] or "").strip()
+    opts = job.get("options") or {}
+    t0 = time.monotonic()
+
+    if not valid_target(target, tool):
+        return False, "target rejected: expected a hostname, IP or URL", 0
+
+    if tool == "portscan":
+        try:
+            return True, run_portscan(target, opts), int((time.monotonic()-t0)*1000)
+        except Exception as e:
+            return False, str(e)[:500], int((time.monotonic()-t0)*1000)
+
+    builder = BUILDERS.get(tool)
+    if not builder:
+        return False, f"unknown tool {tool}", 0
+    try:
+        cmd = builder(target, opts)
+    except (TypeError, ValueError) as e:
+        return False, f"bad options: {e}", 0
+    if cmd is None:
+        return False, f"{tool} is not installed on the probe host", 0
+
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True,
+                             timeout=NETTOOL_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return False, f"timed out after {NETTOOL_TIMEOUT}s", NETTOOL_TIMEOUT * 1000
+    except FileNotFoundError:
+        return False, f"{cmd[0]} is not installed on the probe host", 0
+
+    out = (res.stdout or "") + (res.stderr or "")
+    return res.returncode == 0, out[:8000].strip() or "(no output)", \
+           int((time.monotonic() - t0) * 1000)
+
+
+def drain_nettools(conn):
+    """Claim queued jobs before running them, so two cycles cannot overlap."""
+    jobs = conn.execute(
+        """update nettool_jobs set status = 'running', started_at = now()
+            where id in (select id from nettool_jobs where status = 'queued'
+                          order by created_at limit 3)
+        returning id::text, tool, target, options"""
+    ).fetchall()
+    if not jobs:
+        return 0
+    for j in jobs:
+        ok, output, ms = run_nettool(j)
+        conn.execute(
+            """update nettool_jobs
+                  set status = %s, output = %s, duration_ms = %s, finished_at = now()
+                where id = %s""",
+            ("done" if ok else "failed", output, ms, j["id"]),
+        )
+        log.info("nettool %s %s -> %s", j["tool"], j["target"], "ok" if ok else "failed")
+    return len(jobs)
+
+
 # ---------------------------------------------------------------- loop
 
 def due(probes: list[dict]) -> list[dict]:
@@ -182,6 +334,8 @@ def main():
 
                     failed = sum(1 for _, ok, _, _ in results if not ok)
                     log.info("checked %d, %d failing", len(results), failed)
+
+                drain_nettools(conn)
 
                 # Forget probes that have been deleted, so the dict cannot
                 # grow without bound over a long uptime.
