@@ -1957,6 +1957,36 @@ function bind(){
   }
   if ($('addserver')) $('addserver').onclick=openAdd;
   if ($('s-newchan')) $('s-newchan').onclick=()=>openChan();
+
+  // ── checks ──
+  if ($('k-new')) $('k-new').onclick = () => openCheck(null);
+
+  document.querySelectorAll('[data-kedit]').forEach(el =>
+    el.onclick = () => openCheck(state.probes.find(x => x.id === el.dataset.kedit)));
+
+  document.querySelectorAll('[data-kdel]').forEach(el =>
+    el.onclick = async () => {
+      if (!confirm(`Remove the check "${el.dataset.name}"? Its history goes with it.`)) return;
+      const { error } = await sb.from('probes').delete().eq('id', el.dataset.kdel);
+      if (error) { $('err').textContent = error.message; return; }
+      refresh();
+    });
+
+  // ── reports ──
+  document.querySelectorAll('[data-report]').forEach(el =>
+    el.onclick = () => goRoute('report?' + el.dataset.report));
+
+  document.querySelectorAll('[data-days]').forEach(el =>
+    el.onclick = () => { state.reportDays = parseInt(el.dataset.days, 10); loadReport(); });
+
+  if ($('r-csv'))   $('r-csv').onclick   = reportCsv;
+  if ($('r-print')) $('r-print').onclick = () => window.print();
+
+  // ── network tools ──
+  if ($('n-kinds'))  renderNetKinds();
+  if ($('n-run'))    $('n-run').onclick = runNetTool;
+  if ($('n-target')) $('n-target').addEventListener('keydown',
+    e => { if (e.key === 'Enter') runNetTool(); });
   if ($('u-new'))     $('u-new').onclick=addUser;
 
   document.querySelectorAll('[data-delete]').forEach(el =>
