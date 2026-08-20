@@ -237,6 +237,37 @@ tailwind.config = { theme: { extend: {
                  class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
         </div>
       </div>
+      <div id="k-credwrap" class="hidden space-y-3">
+        <div class="grid sm:grid-cols-2 gap-3">
+          <div>
+            <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Username</label>
+            <input id="k-user" autocomplete="off" spellcheck="false"
+                   class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+          </div>
+          <div>
+            <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Password</label>
+            <input id="k-pass" type="password" autocomplete="new-password"
+                   class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+          </div>
+        </div>
+        <div class="grid sm:grid-cols-2 gap-3">
+          <div>
+            <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Database (optional)</label>
+            <input id="k-db" placeholder="postgres"
+                   class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+          </div>
+          <div>
+            <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">SSL mode</label>
+            <select id="k-ssl" class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+              <option value="prefer">prefer</option>
+              <option value="require">require</option>
+              <option value="disable">disable</option>
+            </select>
+          </div>
+        </div>
+        <p class="text-xs text-muted">Credentials are stored server-side and are never sent to a viewer's browser.</p>
+      </div>
+
       <div id="k-urlwrap" class="hidden grid sm:grid-cols-2 gap-3">
         <div>
           <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Expect status (optional)</label>
@@ -420,7 +451,7 @@ let state = {
   hosts:[], metrics:{}, series:{}, alerts:[], ports:[], auth:[],
   checks:[], recipients:[], rules:[], fim:[], tokens:[], history:[], vulns:[],
   role:'viewer', channels:[], userEvents:[], dashUsers:[], audit:[], me:null,
-  navOpen:null, checkKind:null, reportKind:'availability', reportDays:30,
+  navOpen:null, checkKind:null, dbKind:null, databases:[], reportKind:'availability', reportDays:30,
   reportRows:[], reportFindings:[], reportLoading:false, nettools:[],
   probes:[], matrix:[], availability:[], mttr:[], latency:[],
   hostDetail:{ checks:[], packages:[], vulns:[], users:[], ports:[], fim:[], history:[] },
@@ -543,6 +574,7 @@ async function enter(){
   else if (h) {
     const [page,arg]=h.split('?');
     if(page==='checks'){ state.page='checks'; state.checkKind=arg||null; }
+    else if(page==='databases'){ state.page='databases'; state.dbKind=arg||null; }
     else if(page==='activity'){ state.page='activity'; state.tab=arg||'ports'; }
     else if(page==='report'){ state.page='report'; state.reportKind=arg||'availability'; }
     else if(page.startsWith('todo:')||PAGES.some(([k])=>k===page)) state.page=page;
@@ -564,7 +596,7 @@ const NAV = [
     ['checks',       'Synthetic Overview',    {}],
     ['posture',      'Security Overview',     {}],
     ['todo:app-ov',  'Application Overview',  {todo:'app-ov'}],
-    ['todo:db-ov',   'Database Overview',     {todo:'db-ov'}],
+    ['databases',    'Database Overview',    {}],
     ['desktops',     'Desktop Overview',      {}],
     ['todo:net-ov',  'Network Overview',      {todo:'net-ov'}],
     ['todo:link-ov', 'Link Overview',         {todo:'link'}],
@@ -586,8 +618,8 @@ const NAV = [
     ['checks?url',  'URL Monitoring',  {}],
   ]],
   ['Database', [
-    ['todo:postgres', 'PostgreSQL Monitoring', {todo:'postgres'}],
-    ['todo:mysql',    'MySQL Monitoring',      {todo:'mysql'}],
+    ['databases?postgres', 'PostgreSQL Monitoring', {}],
+    ['databases?mysql',    'MySQL Monitoring',      {}],
     ['todo:mssql',    'SQL Server Monitoring', {todo:'mssql'}],
     ['todo:oracle',   'Oracle DB Monitoring',  {todo:'oracle'}],
   ]],
@@ -751,12 +783,14 @@ function currentRoute(){
   if(state.page==='checks' && state.checkKind) return 'checks?'+state.checkKind;
   if(state.page==='activity') return 'activity?'+state.tab;
   if(state.page==='report') return 'report?'+state.reportKind;
+  if(state.page==='databases' && state.dbKind) return 'databases?'+state.dbKind;
   return state.page;
 }
 
 function goRoute(route){
   const [page, arg] = route.split('?');
   if(page==='checks'){ state.checkKind = arg || null; }
+  else if(page==='databases'){ state.dbKind = arg || null; }
   else if(page==='activity'){ state.tab = arg || 'ports'; }
   else if(page==='report'){
     state.reportKind = arg || 'availability';
@@ -1004,9 +1038,13 @@ function pageTodo(){
 
 // ═══════════════════════════ page: checks
 const CHECK_KINDS = {
-  ping: { label:'Ping',    hint:'ICMP reachability. Some devices and cloud gateways drop ICMP by policy and will never answer.' },
-  port: { label:'TCP port',hint:'Opens a connection and closes it. Proves the service is listening, not that it is healthy.' },
-  url:  { label:'URL',     hint:'HTTP GET. Optionally assert a status code or that the body contains some text.' },
+  ping:     { label:'Ping',    hint:'ICMP reachability. Some devices and cloud gateways drop ICMP by policy and will never answer.' },
+  port:     { label:'TCP port',hint:'Opens a connection and closes it. Proves the service is listening, not that it is healthy.' },
+  url:      { label:'URL',     hint:'HTTP GET. Optionally assert a status code or that the body contains some text.' },
+  postgres: { label:'PostgreSQL', creds:true,
+              hint:'Connects and reads pg_stat_*. Use a role with pg_monitor and nothing more — monitoring should never be able to write.' },
+  mysql:    { label:'MySQL',      creds:true,
+              hint:'Reads SHOW GLOBAL STATUS. Needs PROCESS and REPLICATION CLIENT; SELECT only for the size query.' },
 };
 
 function pageChecks(){
@@ -1102,6 +1140,146 @@ function pageChecks(){
           </div>`).join('')}</div>`
         : empty('No outages recorded in the last 30 days.')))}
     </div>
+  </div>`;
+}
+
+// ═══════════════════════════ page: databases
+const DB_ENGINE = { postgres:'PostgreSQL', mysql:'MySQL' };
+
+function bytes(n){
+  if(n==null) return '—';
+  const u=['B','KB','MB','GB','TB']; let i=0, v=Number(n);
+  while(v>=1024 && i<u.length-1){ v/=1024; i++; }
+  return (i?v.toFixed(1):v) + ' ' + u[i];
+}
+
+function bar(pct, danger=85){
+  const v = Math.max(0, Math.min(100, pct ?? 0));
+  const col = v>=danger?HEX.down : v>=danger*0.75?HEX.degraded : HEX.healthy;
+  return `<div class="h-1.5 bg-hairline"><div class="h-1.5" style="width:${v}%;background:${col}"></div></div>`;
+}
+
+function pageDatabases(){
+  const admin = isAdmin();
+  const rows = state.dbKind
+    ? state.databases.filter(d=>d.kind===state.dbKind)
+    : state.databases;
+
+  if(!rows.length) return `
+    <div class="space-y-4">
+      ${card(empty(state.databases.length
+        ? `No ${DB_ENGINE[state.dbKind]||''} databases are monitored.`
+        : 'No databases monitored yet.'))}
+      ${admin?`<div class="bg-paper border border-rule px-5 py-4 space-y-2">
+        <p class="text-sm text-muted leading-relaxed">
+          Add one from <span class="font-mono text-[12px]">Checks</span> — choose PostgreSQL or MySQL
+          and give it a read-only account. A monitoring agent has no business being able to write,
+          so grant only what the metrics need:</p>
+        <pre class="border border-rule bg-ground px-3 py-2 font-mono text-[11px] whitespace-pre-wrap">-- PostgreSQL
+CREATE ROLE nodewatch LOGIN PASSWORD '...';
+GRANT pg_monitor TO nodewatch;
+
+-- MySQL
+CREATE USER 'nodewatch'@'%' IDENTIFIED BY '...';
+GRANT PROCESS, REPLICATION CLIENT, SELECT ON *.* TO 'nodewatch'@'%';</pre>
+      </div>`:''}
+    </div>`;
+
+  const up = rows.filter(d=>d.status==='up').length;
+  const worst = rows.reduce((a,d)=>Math.max(a, d.pressure ?? 0), 0);
+
+  return `
+  <div class="space-y-4">
+    <div class="bg-paper border border-rule px-4 sm:px-5 py-3 flex flex-wrap items-center gap-x-6 gap-y-3">
+      <div class="flex items-baseline gap-1.5">
+        <span class="text-lg font-semibold tabular-nums">${rows.length}</span>
+        <span class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">databases</span>
+      </div>
+      <div class="flex items-baseline gap-1.5">
+        <span class="text-lg font-semibold tabular-nums" style="color:${HEX.healthy}">${up}</span>
+        <span class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">up</span>
+      </div>
+      <div class="flex items-baseline gap-1.5">
+        <span class="text-lg font-semibold tabular-nums"
+              style="color:${worst>=70?HEX.down:worst>=40?HEX.degraded:HEX.healthy}">${worst}</span>
+        <span class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">peak pressure</span>
+      </div>
+      <span class="flex-1"></span>
+      <span class="font-mono text-[10px] text-muted hidden lg:inline">
+        Pressure weights connection saturation above cache misses: one refuses work, the other only slows it.
+      </span>
+    </div>
+
+    <div class="grid gap-4 lg:grid-cols-2">${rows.map(d=>{
+      const down = d.status!=='up';
+      return `
+      <section class="bg-paper border rise ${down?'border-down':'border-rule'}"
+               ${down?`style="border-left:3px solid ${HEX.down}"`:''}>
+        <div class="px-4 py-3 border-b border-hairline flex items-start justify-between gap-3">
+          <div class="min-w-0">
+            <div class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full shrink-0"
+                    style="background:${down?HEX.down:HEX.healthy}"></span>
+              <h3 class="font-semibold tracking-tight truncate">${esc(d.name)}</h3>
+              <span class="font-mono text-[9px] uppercase tracking-[.12em] text-muted border border-rule px-1 shrink-0">
+                ${esc(DB_ENGINE[d.kind]||d.kind)}</span>
+            </div>
+            <p class="font-mono text-[10px] text-muted mt-1 truncate">
+              ${esc(d.host||d.target||'—')}${d.port?':'+d.port:''}${d.dbname?' / '+esc(d.dbname):''}
+              ${d.site?' · '+esc(d.site):''}
+            </p>
+          </div>
+          <div class="text-right shrink-0">
+            <p class="text-2xl font-semibold tabular-nums leading-none"
+               style="color:${d.pressure>=70?HEX.down:d.pressure>=40?HEX.degraded:HEX.healthy}">${d.pressure ?? '—'}</p>
+            <p class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">pressure</p>
+          </div>
+        </div>
+
+        ${down ? `<p class="px-4 py-6 text-sm text-down">${esc(d.detail || 'unreachable')}</p>` : `
+        <div class="px-4 py-3 space-y-3">
+          <div>
+            <div class="flex justify-between font-mono text-[10px] mb-1">
+              <span class="text-muted uppercase tracking-[.14em]">connections</span>
+              <span class="tabular-nums">${d.connections ?? '—'} / ${d.max_connections ?? '—'}
+                <span class="text-muted">${d.conn_pct!=null?`(${d.conn_pct}%)`:''}</span></span>
+            </div>
+            ${bar(d.conn_pct)}
+          </div>
+          <div>
+            <div class="flex justify-between font-mono text-[10px] mb-1">
+              <span class="text-muted uppercase tracking-[.14em]">cache hit</span>
+              <span class="tabular-nums">${d.cache_hit_pct!=null?d.cache_hit_pct+'%':'—'}</span>
+            </div>
+            <div class="h-1.5 bg-hairline"><div class="h-1.5"
+                 style="width:${d.cache_hit_pct ?? 0}%;background:${(d.cache_hit_pct ?? 100)>=95?HEX.healthy:(d.cache_hit_pct ?? 0)>=90?HEX.degraded:HEX.down}"></div></div>
+          </div>
+          <dl class="grid grid-cols-4 border-t border-hairline pt-2.5 divide-x divide-hairline">
+            ${[['size', bytes(d.size_bytes)],
+               ['uptime', d.uptime_s!=null?fmtDur(d.uptime_s):'—'],
+               [d.kind==='mysql'?'slow q':'longest q',
+                d.kind==='mysql' ? (d.slow_queries ?? '—')
+                                 : (d.longest_query_s!=null?d.longest_query_s+'s':'—')],
+               [d.kind==='mysql'?'qps':'lag',
+                d.kind==='mysql' ? (d.qps ?? '—')
+                                 : (d.replication_lag_s!=null?d.replication_lag_s+'s':'—')]
+              ].map(([k,v])=>`
+              <div class="px-2 first:pl-0">
+                <dt class="font-mono text-[8px] tracking-[.14em] uppercase text-muted">${k}</dt>
+                <dd class="font-mono text-[13px] tabular-nums mt-0.5">${v}</dd>
+              </div>`).join('')}
+          </dl>
+          ${d.extra?`<p class="font-mono text-[10px] text-muted truncate">
+            ${Object.entries(d.extra).slice(0,4).map(([k,v])=>`${esc(k)} ${esc(String(v))}`).join(' · ')}
+          </p>`:''}
+        </div>`}
+
+        <div class="border-t border-hairline px-4 py-1.5 flex items-center justify-between">
+          <span class="font-mono text-[10px] text-muted">every ${d.interval_s}s</span>
+          <span class="font-mono text-[10px] text-muted tabular-nums">
+            ${d.measured_at?ago(d.measured_at)+' ago':'no measurement yet'}</span>
+        </div>
+      </section>`;}).join('')}</div>
   </div>`;
 }
 
@@ -1871,6 +2049,7 @@ const TITLES = {
   host:['Server','Everything collected from this host'],
   servers:['Servers','Select a server to see its detail'],
   checks:['Checks','Agentless ping, port and URL monitoring'],
+  databases:['Databases','PostgreSQL and MySQL health'],
   desktops:['Desktops','End-user machines - laptops and workstations'],
   nettools:['Network Tools','Diagnostics run from the probe host'],
   report:['Report','Generated from collected telemetry'],
@@ -1908,6 +2087,7 @@ function render(){
     state.page==='servers'  ? pageServers()  :
     state.page.startsWith('todo:') ? pageTodo() :
     state.page==='checks'   ? pageChecks()   :
+    state.page==='databases'? pageDatabases():
     state.page==='desktops' ? pageDesktops() :
     state.page==='nettools' ? pageNetTools() :
     state.page==='report'   ? pageReport()   :
@@ -2171,8 +2351,13 @@ function openCheck(row){
   $('k-interval').value = String(row?.interval_s || 60);
   $('k-timeout').value  = String(row?.timeout_ms || 5000);
   $('k-enabled').checked = row ? !!row.enabled : true;
+  $('k-user').value = ''; $('k-pass').value = ''; $('k-db').value = '';
+  $('k-ssl').value = 'prefer';
   $('k-msg').textContent = '';
   renderCheckKinds();
+  // probe_secrets is admin-only under RLS, so this returns nothing for a
+  // viewer rather than leaking a password into the form.
+  if (row && CHECK_KINDS[row.kind]?.creds) loadCheckCreds(row.id);
   $('checkmodal').classList.remove('hidden'); $('checkmodal').classList.add('flex');
   setTimeout(()=>$('k-name').focus(), 40);
 }
@@ -2190,12 +2375,25 @@ function renderCheckKinds(){
 
   $('k-hint').textContent = CHECK_KINDS[checkKind].hint;
   // Port only applies to a port check; the URL assertions only to a URL check.
-  $('k-portwrap').classList.toggle('hidden', checkKind !== 'port');
+  const isDb = !!CHECK_KINDS[checkKind].creds;
+  $('k-portwrap').classList.toggle('hidden', checkKind !== 'port' && !isDb);
   $('k-urlwrap').classList.toggle('hidden', checkKind !== 'url');
-  $('k-targetlabel').textContent =
-    checkKind === 'url' ? 'URL' : checkKind === 'port' ? 'Host or IP' : 'Host or IP';
+  $('k-credwrap').classList.toggle('hidden', !isDb);
+  $('k-targetlabel').textContent = checkKind === 'url' ? 'URL' : 'Host or IP';
   $('k-target').placeholder =
     checkKind === 'url' ? 'https://example.com/health' : '10.0.0.1';
+  if (isDb && !$('k-port').value) {
+    $('k-port').value = checkKind === 'postgres' ? 5432 : 3306;
+  }
+}
+
+async function loadCheckCreds(id){
+  const { data } = await sb.from('probe_secrets').select('config').eq('probe_id', id).maybeSingle();
+  const c = data?.config || {};
+  $('k-user').value = c.user || '';
+  $('k-pass').value = c.password || '';
+  $('k-db').value   = c.dbname || '';
+  $('k-ssl').value  = c.sslmode || 'prefer';
 }
 
 $('k-save').onclick = async () => {
@@ -2206,9 +2404,10 @@ $('k-save').onclick = async () => {
   if(checkKind==='url' && !/^https?:\/\//i.test(target)){
     $('k-msg').textContent='A URL check needs a full http:// or https:// address.'; return;
   }
-  const port = checkKind==='port' ? parseInt($('k-port').value,10) : null;
-  if(checkKind==='port' && (!port || port<1 || port>65535)){
-    $('k-msg').textContent='A port check needs a port between 1 and 65535.'; return;
+  const needsPort = checkKind==='port' || !!CHECK_KINDS[checkKind].creds;
+  const port = needsPort ? parseInt($('k-port').value,10) : null;
+  if(needsPort && (!port || port<1 || port>65535)){
+    $('k-msg').textContent='This check needs a port between 1 and 65535.'; return;
   }
 
   const patch = {
@@ -2223,9 +2422,33 @@ $('k-save').onclick = async () => {
     enabled: $('k-enabled').checked,
   };
 
-  const { error } = editingCheck
-    ? await sb.from('probes').update(patch).eq('id', editingCheck.id)
-    : await sb.from('probes').insert(patch);
+  const isDb = !!CHECK_KINDS[checkKind].creds;
+  if(isDb && !$('k-user').value.trim()){
+    $('k-msg').textContent = 'A database check needs a username.'; return;
+  }
+
+  let error, probeId = editingCheck?.id;
+  if (editingCheck) {
+    ({ error } = await sb.from('probes').update(patch).eq('id', editingCheck.id));
+  } else {
+    const res = await sb.from('probes').insert(patch).select('id').single();
+    error = res.error; probeId = res.data?.id;
+  }
+
+  if(!error && isDb && probeId){
+    ({ error } = await sb.from('probe_secrets').upsert({
+      probe_id: probeId,
+      config: {
+        host: $('k-target').value.trim(),
+        port: parseInt($('k-port').value,10) || (checkKind==='postgres'?5432:3306),
+        user: $('k-user').value.trim(),
+        password: $('k-pass').value,
+        dbname: $('k-db').value.trim() || null,
+        sslmode: $('k-ssl').value,
+      },
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'probe_id' }));
+  }
 
   if(error){
     $('k-msg').textContent =
@@ -2475,7 +2698,7 @@ async function refresh(){
   try{
     const since=new Date(Date.now()-20*60*1000).toISOString();
     const [hosts,latest,hist,ports,auth,checks,users,alerts,recips,rules,tokens,fim,vulns,pkgs,chans,audit,
-           probes,matrix,avail,mttr,latency,nettools]=await Promise.all([
+           probes,matrix,avail,mttr,latency,nettools,databases]=await Promise.all([
       sb.from('agent_overview').select('*').order('label'),
       sb.from('agent_latest_metrics').select('*'),
       sb.from('metrics').select('agent_id,ts,cpu_pct').gte('ts',since).order('ts'),
@@ -2507,11 +2730,12 @@ async function refresh(){
       sb.from('probe_latency').select('*'),
       sb.from('nettool_jobs').select('id,tool,target,status,output,duration_ms,created_at')
         .order('created_at',{ascending:false}).limit(12),
+      sb.from('database_overview').select('*').order('name'),
     ]);
     // Token and audit reads are admin-only under RLS, so a viewer legitimately
     // gets empty results there. Only treat the shared reads as fatal.
     const bad=[hosts,latest,hist,ports,auth,checks,users,alerts,recips,rules,fim,vulns,pkgs,chans,
-               probes,matrix,avail,mttr,latency,nettools].find(r=>r.error);
+               probes,matrix,avail,mttr,latency,nettools,databases].find(r=>r.error);
     if(bad) throw bad.error;
 
     state.hosts=hosts.data; state.ports=ports.data; state.auth=auth.data;
@@ -2520,7 +2744,7 @@ async function refresh(){
     state.channels=chans.data||[]; state.audit=audit.data||[];
     state.probes=probes.data||[]; state.matrix=matrix.data||[];
     state.availability=avail.data||[]; state.mttr=mttr.data||[];
-    state.latency=latency.data||[]; state.nettools=nettools.data||[];
+    state.latency=latency.data||[]; state.nettools=nettools.data||[]; state.databases=databases.data||[];
     state.fim=fim.data||[];
 
     // Attach affected hosts to each finding. Done client-side because the
