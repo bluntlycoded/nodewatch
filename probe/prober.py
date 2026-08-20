@@ -11,6 +11,7 @@ Checks run concurrently in a thread pool, so one unreachable target with a
 5-second timeout does not delay the rest of the cycle.
 """
 
+import json
 import logging
 import os
 import re
@@ -120,20 +121,222 @@ def check_url(p: dict) -> tuple[bool, int | None, str]:
     return True, ms, f"status {code}"
 
 
-CHECKS = {"ping": check_ping, "port": check_port, "url": check_url}
+# ---------------------------------------------------------------- databases
+#
+# Database checks return a set of measurements rather than a single verdict,
+# so they write to db_metrics as well as probe_results. Both connect with a
+# read-only account: a monitoring agent has no business being able to write.
+
+DB_CONNECT_TIMEOUT = 8
 
 
-def run_one(p: dict) -> tuple[str, bool, int | None, str]:
+def _pct(num, den):
+    """
+    Postgres returns bigint sums as Decimal, which will not multiply with a
+    float. Coercing both sides keeps the helper engine-agnostic.
+    """
+    try:
+        num, den = float(num or 0), float(den or 0)
+    except (TypeError, ValueError):
+        return None
+    return round(100.0 * num / den, 2) if den else None
+
+
+def check_postgres(p) -> tuple[bool, int | None, str]:
+    cfg = p.get("config") or {}
+    dsn = {
+        "host": cfg.get("host") or p["target"],
+        "port": int(cfg.get("port") or p.get("port") or 5432),
+        "user": cfg.get("user"),
+        "password": cfg.get("password"),
+        "dbname": cfg.get("dbname") or "postgres",
+        "sslmode": cfg.get("sslmode") or "prefer",
+        "connect_timeout": DB_CONNECT_TIMEOUT,
+    }
+    if not dsn["user"]:
+        return False, None, "no credentials configured"
+
+    t0 = time.monotonic()
+    try:
+        with psycopg.connect(**dsn, row_factory=dict_row) as c:
+            ms = int((time.monotonic() - t0) * 1000)
+
+            conns = c.execute("""
+                select count(*) filter (where state is not null)          as total,
+                       count(*) filter (where state = 'active')           as active,
+                       count(*) filter (where state = 'idle in transaction') as idle_tx,
+                       coalesce(max(extract(epoch from (now() - query_start)))
+                                filter (where state = 'active'), 0)       as longest
+                  from pg_stat_activity where backend_type = 'client backend'
+            """).fetchone()
+
+            maxc = int(c.execute("show max_connections").fetchone()["max_connections"])
+
+            db = c.execute("""
+                select coalesce(sum(blks_hit), 0)      as hit,
+                       coalesce(sum(blks_read), 0)     as read,
+                       coalesce(sum(xact_commit), 0)   as commits,
+                       coalesce(sum(xact_rollback), 0) as rollbacks,
+                       coalesce(sum(deadlocks), 0)     as deadlocks,
+                       coalesce(sum(temp_files), 0)    as temp_files
+                  from pg_stat_database where datname is not null
+            """).fetchone()
+
+            size = c.execute("select pg_database_size(current_database()) as b").fetchone()["b"]
+            up = c.execute("""
+                select extract(epoch from (now() - pg_postmaster_start_time()))::bigint as s
+            """).fetchone()["s"]
+
+            # Lag only exists on a replica; in_recovery tells us which we are.
+            lag = None
+            rec = c.execute("select pg_is_in_recovery() as r").fetchone()["r"]
+            if rec:
+                lag = c.execute("""
+                    select coalesce(extract(epoch from
+                        (now() - pg_last_xact_replay_timestamp())), 0)::float as lag
+                """).fetchone()["lag"]
+
+            metrics = {
+                "connections": conns["total"],
+                "max_connections": maxc,
+                "conn_pct": _pct(conns["total"], maxc),
+                "cache_hit_pct": _pct(db["hit"], db["hit"] + db["read"]),
+                "slow_queries": None,
+                "longest_query_s": round(float(conns["longest"] or 0), 2),
+                "replication_lag_s": round(lag, 2) if lag is not None else None,
+                "size_bytes": int(size or 0),
+                "uptime_s": int(up or 0),
+                "qps": None,
+                # int() throughout: Postgres returns bigint sums as Decimal,
+                # which json.dumps refuses and jsonb cannot take.
+                "extra": {
+                    "active": int(conns["active"] or 0),
+                    "idle_in_transaction": int(conns["idle_tx"] or 0),
+                    "deadlocks": int(db["deadlocks"] or 0),
+                    "rollbacks": int(db["rollbacks"] or 0),
+                    "temp_files": int(db["temp_files"] or 0),
+                    "is_replica": bool(rec),
+                },
+            }
+    except psycopg.OperationalError as e:
+        return False, None, str(e).strip().splitlines()[0][:200]
+    except Exception as e:
+        return False, None, f"{type(e).__name__}: {e}"[:200]
+
+    p["_metrics"] = metrics
+    return True, ms, (f"{metrics['connections']}/{maxc} connections, "
+                      f"{metrics['cache_hit_pct']}% cache hit")
+
+
+def check_mysql(p) -> tuple[bool, int | None, str]:
+    cfg = p.get("config") or {}
+    if not cfg.get("user"):
+        return False, None, "no credentials configured"
+    try:
+        import pymysql
+    except ImportError:
+        return False, None, "pymysql is not installed on the probe host"
+
+    t0 = time.monotonic()
+    try:
+        conn = pymysql.connect(
+            host=cfg.get("host") or p["target"],
+            port=int(cfg.get("port") or p.get("port") or 3306),
+            user=cfg.get("user"), password=cfg.get("password") or "",
+            database=cfg.get("dbname") or None,
+            connect_timeout=DB_CONNECT_TIMEOUT, read_timeout=DB_CONNECT_TIMEOUT,
+        )
+    except Exception as e:
+        return False, None, str(e)[:200]
+
+    ms = int((time.monotonic() - t0) * 1000)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("show global status")
+            status = {k: v for k, v in cur.fetchall()}
+            cur.execute("show global variables like 'max_connections'")
+            maxc = int(dict(cur.fetchall()).get("max_connections", 0) or 0)
+
+            def num(key, default=0):
+                try:
+                    return int(status.get(key, default))
+                except (TypeError, ValueError):
+                    return default
+
+            reads = num("Innodb_buffer_pool_reads")
+            reqs = num("Innodb_buffer_pool_read_requests")
+            up = num("Uptime")
+            questions = num("Questions")
+            conns_now = num("Threads_connected")
+
+            # Replication lag is only meaningful on a replica, and the
+            # statement needs REPLICATION CLIENT rather than SELECT.
+            lag = None
+            try:
+                cur.execute("show replica status")
+                row = cur.fetchone()
+                if row is None:
+                    cur.execute("show slave status")   # pre-8.0.22 naming
+                    row = cur.fetchone()
+                if row:
+                    cur.execute("select 1")            # clear any pending result
+                    lag = None
+            except Exception:
+                pass
+
+            cur.execute("""
+                select coalesce(sum(data_length + index_length), 0)
+                  from information_schema.tables
+            """)
+            size = int(cur.fetchone()[0] or 0)
+
+            metrics = {
+                "connections": conns_now,
+                "max_connections": maxc,
+                "conn_pct": _pct(conns_now, maxc),
+                "cache_hit_pct": _pct(reqs - reads, reqs) if reqs else None,
+                "slow_queries": num("Slow_queries"),
+                "longest_query_s": None,
+                "replication_lag_s": lag,
+                "size_bytes": size,
+                "uptime_s": up,
+                # Averaged since start rather than instantaneous: a delta
+                # would need state the prober deliberately does not keep.
+                "qps": round(questions / up, 2) if up else None,
+                "extra": {
+                    "aborted_connects": num("Aborted_connects"),
+                    "threads_running": num("Threads_running"),
+                    "table_locks_waited": num("Table_locks_waited"),
+                    "max_used_connections": num("Max_used_connections"),
+                },
+            }
+    except Exception as e:
+        return False, ms, f"{type(e).__name__}: {e}"[:200]
+    finally:
+        conn.close()
+
+    p["_metrics"] = metrics
+    return True, ms, (f"{conns_now}/{maxc} connections, "
+                      f"{metrics['cache_hit_pct']}% buffer hit, "
+                      f"{metrics['slow_queries']} slow queries")
+
+
+CHECKS = {"ping": check_ping, "port": check_port, "url": check_url,
+          "postgres": check_postgres, "mysql": check_mysql}
+
+
+def run_one(p: dict) -> tuple[str, bool, int | None, str, dict | None]:
     fn = CHECKS.get(p["kind"])
     if not fn:
-        return p["id"], False, None, f"unknown probe kind {p['kind']}"
+        return p["id"], False, None, f"unknown probe kind {p['kind']}", None
     try:
         ok, ms, detail = fn(p)
     except Exception as e:
         # A bug in one check must not take the runner down.
         log.exception("probe %s raised", p["name"])
         ok, ms, detail = False, None, f"probe error: {e}"[:200]
-    return p["id"], ok, ms, detail
+    # Database checks attach a measurement set; the others do not.
+    return p["id"], ok, ms, detail, p.get("_metrics")
 
 
 # ---------------------------------------------------------------- net tools
@@ -308,9 +511,12 @@ def main():
         try:
             with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
                 probes = conn.execute(
-                    "select id::text, kind, name, target, port, interval_s, "
-                    "timeout_ms, expect_status, expect_text "
-                    "from probes where enabled"
+                    """select p.id::text, p.kind, p.name, p.target, p.port,
+                              p.interval_s, p.timeout_ms, p.expect_status,
+                              p.expect_text, s.config
+                         from probes p
+                         left join probe_secrets s on s.probe_id = p.id
+                        where p.enabled"""
                 ).fetchall()
 
                 batch = due(probes)
@@ -325,14 +531,34 @@ def main():
                         """insert into probe_results (probe_id, ts, ok, latency_ms, detail)
                            values (%s, %s, %s, %s, %s)
                            on conflict (probe_id, ts) do nothing""",
-                        [(pid, ts, ok, ms, detail) for pid, ok, ms, detail in results],
+                        [(pid, ts, ok, ms, detail) for pid, ok, ms, detail, _ in results],
                     )
+
+                    # Database measurements go to their own table. One
+                    # round trip for the cycle, same as probe_results.
+                    dbrows = [
+                        (pid, ts, m.get("connections"), m.get("max_connections"),
+                         m.get("conn_pct"), m.get("cache_hit_pct"),
+                         m.get("slow_queries"), m.get("longest_query_s"),
+                         m.get("replication_lag_s"), m.get("size_bytes"),
+                         m.get("uptime_s"), m.get("qps"), json.dumps(m.get("extra") or {}))
+                        for pid, ok, _, _, m in results if ok and m
+                    ]
+                    if dbrows:
+                        conn.cursor().executemany(
+                            """insert into db_metrics (probe_id, ts, connections,
+                                   max_connections, conn_pct, cache_hit_pct,
+                                   slow_queries, longest_query_s, replication_lag_s,
+                                   size_bytes, uptime_s, qps, extra)
+                               values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                               on conflict (probe_id, ts) do nothing""",
+                            dbrows)
 
                     now = time.monotonic()
                     for p in batch:
                         _last_run[p["id"]] = now
 
-                    failed = sum(1 for _, ok, _, _ in results if not ok)
+                    failed = sum(1 for _, ok, _, _, _ in results if not ok)
                     log.info("checked %d, %d failing", len(results), failed)
 
                 drain_nettools(conn)
