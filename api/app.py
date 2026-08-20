@@ -464,7 +464,7 @@ def enroll(body: EnrollBody, request: Request):
 @app.post("/v1/ingest")
 def ingest(body: IngestBody, authorization: str | None = Header(default=None)):
     agent_id = agent_from_token(authorization)
-    counts = {"heartbeat": 0, "auth": 0, "ports": 0, "port_changes": 0, "checks": 0, "users": 0, "user_changes": 0, "fim": 0, "packages": 0}
+    counts = {"heartbeat": 0, "auth": 0, "ports": 0, "port_changes": 0, "checks": 0, "users": 0, "user_changes": 0, "fim": 0, "packages": 0, "interfaces": 0}
 
     with pool.connection() as conn:
         for ev in body.events:
@@ -511,6 +511,10 @@ def ingest(body: IngestBody, authorization: str | None = Header(default=None)):
                 counts["user_changes"] += diff_users(
                     conn, agent_id, ts, ev.data.get("accounts", [])
                 )
+
+            elif ev.kind == "interfaces":
+                counts["interfaces"] += sync_interfaces(
+                    conn, agent_id, ts, ev.data.get("interfaces", []))
 
             elif ev.kind == "fim":
                 counts["fim"] += sync_fim(conn, agent_id, ts, ev.data)
@@ -803,4 +807,50 @@ def sync_packages(conn, agent_id: str, ts: datetime, packages: list) -> int:
         "delete from host_packages where agent_id = %s and name <> all(%s)",
         (agent_id, [p["name"] for p in packages if p.get("name")]),
     )
+    return len(rows)
+
+
+def sync_interfaces(conn, agent_id: str, ts: datetime, ifaces: list) -> int:
+    """
+    Current interface state plus a counter sample. State is upserted so the
+    inventory reflects now; counters are appended so throughput can be
+    derived from consecutive samples server-side.
+    """
+    if not ifaces:
+        return 0
+
+    rows = [(agent_id, i.get("name"), bool(i.get("is_up")), i.get("speed_mbps"),
+             i.get("mtu"), i.get("ipv4"), i.get("mac"), ts)
+            for i in ifaces if i.get("name")]
+
+    conn.cursor().executemany(
+        """
+        insert into net_interfaces (agent_id, name, is_up, speed_mbps, mtu,
+                                    ipv4, mac, last_seen)
+        values (%s, %s, %s, %s, %s, %s, %s, %s)
+        on conflict (agent_id, name) do update set
+            is_up = excluded.is_up, speed_mbps = excluded.speed_mbps,
+            mtu = excluded.mtu, ipv4 = excluded.ipv4, mac = excluded.mac,
+            last_seen = excluded.last_seen
+        """, rows)
+
+    conn.cursor().executemany(
+        """
+        insert into net_traffic (agent_id, name, ts, bytes_sent, bytes_recv,
+                                 packets_sent, packets_recv,
+                                 errin, errout, dropin, dropout)
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        on conflict (agent_id, name, ts) do nothing
+        """,
+        [(agent_id, i.get("name"), ts, i.get("bytes_sent"), i.get("bytes_recv"),
+          i.get("packets_sent"), i.get("packets_recv"), i.get("errin"),
+          i.get("errout"), i.get("dropin"), i.get("dropout"))
+         for i in ifaces if i.get("name")])
+
+    # An interface that disappeared was removed or renamed; leaving it would
+    # show a phantom NIC as permanently down.
+    conn.execute(
+        "delete from net_interfaces where agent_id = %s and name <> all(%s)",
+        (agent_id, [i["name"] for i in ifaces if i.get("name")]))
+
     return len(rows)
