@@ -1,0 +1,2 @@
+psycopg[binary,pool]>=3.1
+pymysql>=1.1
