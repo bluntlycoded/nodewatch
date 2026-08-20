@@ -160,6 +160,10 @@ tailwind.config = { theme: { extend: {
     </div>
     <div class="px-6 py-5 space-y-5">
       <div>
+        <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Operating system</label>
+        <div id="a-platforms" class="grid grid-cols-3 gap-2 mt-2"></div>
+      </div>
+      <div>
         <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Where does it run</label>
         <div id="a-providers" class="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2"></div>
       </div>
@@ -451,7 +455,8 @@ let state = {
   hosts:[], metrics:{}, series:{}, alerts:[], ports:[], auth:[],
   checks:[], recipients:[], rules:[], fim:[], tokens:[], history:[], vulns:[],
   role:'viewer', channels:[], userEvents:[], dashUsers:[], audit:[], me:null,
-  navOpen:null, checkKind:null, dbKind:null, databases:[], reportKind:'availability', reportDays:30,
+  navOpen:null, checkKind:null, dbKind:null, databases:[],
+  netView:null, interfaces:[], reportKind:'availability', reportDays:30,
   reportRows:[], reportFindings:[], reportLoading:false, nettools:[],
   probes:[], matrix:[], availability:[], mttr:[], latency:[],
   hostDetail:{ checks:[], packages:[], vulns:[], users:[], ports:[], fim:[], history:[] },
@@ -574,6 +579,7 @@ async function enter(){
   else if (h) {
     const [page,arg]=h.split('?');
     if(page==='checks'){ state.page='checks'; state.checkKind=arg||null; }
+    else if(page==='network'){ state.page='network'; state.netView=arg||null; }
     else if(page==='databases'){ state.page='databases'; state.dbKind=arg||null; }
     else if(page==='activity'){ state.page='activity'; state.tab=arg||'ports'; }
     else if(page==='report'){ state.page='report'; state.reportKind=arg||'availability'; }
@@ -598,8 +604,8 @@ const NAV = [
     ['todo:app-ov',  'Application Overview',  {todo:'app-ov'}],
     ['databases',    'Database Overview',    {}],
     ['desktops',     'Desktop Overview',      {}],
-    ['todo:net-ov',  'Network Overview',      {todo:'net-ov'}],
-    ['todo:link-ov', 'Link Overview',         {todo:'link'}],
+    ['network',      'Network Overview',      {}],
+    ['network?links','Link Overview',         {}],
   ]],
   ['Monitoring', [
     ['servers',        'Server Monitoring',   {}],
@@ -609,7 +615,7 @@ const NAV = [
     ['todo:nutanix',   'Nutanix Monitoring',  {todo:'nutanix'}],
     ['desktops',       'Desktop Monitoring',  {}],
     ['todo:snmp',      'SNMP Monitoring',     {todo:'snmp'}],
-    ['todo:link',      'Link Monitoring',     {todo:'link'}],
+    ['network?links',  'Link Monitoring',     {}],
     ['todo:topology',  'Topology Map',        {todo:'topology'}],
   ]],
   ['Synthetic', [
@@ -784,12 +790,14 @@ function currentRoute(){
   if(state.page==='activity') return 'activity?'+state.tab;
   if(state.page==='report') return 'report?'+state.reportKind;
   if(state.page==='databases' && state.dbKind) return 'databases?'+state.dbKind;
+  if(state.page==='network' && state.netView) return 'network?'+state.netView;
   return state.page;
 }
 
 function goRoute(route){
   const [page, arg] = route.split('?');
   if(page==='checks'){ state.checkKind = arg || null; }
+  else if(page==='network'){ state.netView = arg || null; }
   else if(page==='databases'){ state.dbKind = arg || null; }
   else if(page==='activity'){ state.tab = arg || 'ports'; }
   else if(page==='report'){
@@ -1140,6 +1148,97 @@ function pageChecks(){
           </div>`).join('')}</div>`
         : empty('No outages recorded in the last 30 days.')))}
     </div>
+  </div>`;
+}
+
+// ═══════════════════════════ page: network
+function bps(n){
+  if(n==null) return '—';
+  const bits = Number(n) * 8;
+  const u=['bps','Kbps','Mbps','Gbps']; let i=0, v=bits;
+  while(v>=1000 && i<u.length-1){ v/=1000; i++; }
+  return (i?v.toFixed(1):Math.round(v)) + ' ' + u[i];
+}
+
+function pageNetwork(){
+  const links = state.netView === 'links';
+  const rows = links
+    ? state.interfaces.filter(i=>i.is_up)
+        .sort((a,b)=>((b.tx_bps||0)+(b.rx_bps||0))-((a.tx_bps||0)+(a.rx_bps||0)))
+    : state.interfaces;
+
+  if(!rows.length) return `
+    <div class="space-y-4">
+      ${card(empty('No interface data yet. Agents report their interfaces every minute.'))}
+      <div class="bg-paper border border-rule px-5 py-4">
+        <p class="text-sm text-muted leading-relaxed">
+          These figures come from the agents themselves, so they cover every host running one
+          and need no SNMP credentials. Switches, routers and appliances that cannot run an
+          agent still need SNMP polling, which is not built yet.
+        </p>
+      </div>
+    </div>`;
+
+  const up = state.interfaces.filter(i=>i.is_up).length;
+  const errs = state.interfaces.reduce((a,i)=>a+Number(i.errors_1h||0),0);
+  const drops = state.interfaces.reduce((a,i)=>a+Number(i.drops_1h||0),0);
+  const total = state.interfaces.reduce((a,i)=>a+(Number(i.tx_bps||0)+Number(i.rx_bps||0)),0);
+
+  const pill=(label,v,colour)=>`
+    <div class="flex items-baseline gap-1.5">
+      <span class="text-lg font-semibold tabular-nums" style="color:${colour||'var(--c-ink)'}">${v}</span>
+      <span class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">${label}</span>
+    </div>`;
+
+  return `
+  <div class="space-y-4">
+    <div class="bg-paper border border-rule px-4 sm:px-5 py-3 flex flex-wrap items-center gap-x-6 gap-y-3">
+      ${pill('interfaces', state.interfaces.length)}
+      ${pill('up', up, HEX.healthy)}
+      ${pill('throughput', bps(total))}
+      ${pill('errors 1h', errs, errs?HEX.down:null)}
+      ${pill('drops 1h', drops, drops?HEX.degraded:null)}
+      <span class="flex-1"></span>
+      <span class="font-mono text-[10px] text-muted hidden lg:inline">
+        Agent-reported. Switches need SNMP, which is not built yet.
+      </span>
+    </div>
+
+    ${card(`<div class="overflow-x-auto">
+      <table class="w-full text-[13px] whitespace-nowrap">
+        <thead><tr class="border-b border-rule">
+          ${[['Host',0],['Interface',0],['State',0],['IPv4',0],['Speed',1],
+             ['TX',1],['RX',1],['Util %',1],['Errors 1h',1],['Drops 1h',1]]
+            .map(([l,n])=>`<th class="font-mono text-[9px] uppercase tracking-[.14em] text-muted
+              font-normal px-3 py-2 ${n?'text-right':'text-left'}">${l}</th>`).join('')}
+        </tr></thead>
+        <tbody class="divide-y divide-hairline">
+          ${rows.map(i=>`<tr>
+            <td class="px-3 py-1.5 truncate max-w-[10rem]">${esc(i.host)}</td>
+            <td class="px-3 py-1.5 font-mono">${esc(i.name)}</td>
+            <td class="px-3 py-1.5">
+              <span class="font-mono text-[10px] uppercase tracking-[.1em]"
+                    style="color:${i.is_up?HEX.healthy:HEX.muted}">${i.is_up?'up':'down'}</span></td>
+            <td class="px-3 py-1.5 font-mono text-[11px] text-muted">${esc(i.ipv4||'—')}</td>
+            <td class="px-3 py-1.5 text-right font-mono tabular-nums text-muted">
+              ${i.speed_mbps?i.speed_mbps+' Mb':'—'}</td>
+            <td class="px-3 py-1.5 text-right font-mono tabular-nums">${bps(i.tx_bps)}</td>
+            <td class="px-3 py-1.5 text-right font-mono tabular-nums">${bps(i.rx_bps)}</td>
+            <td class="px-3 py-1.5 text-right font-mono tabular-nums"
+                style="color:${i.util_pct==null?'var(--c-muted)':i.util_pct>=80?HEX.down:i.util_pct>=50?HEX.degraded:HEX.healthy}">
+              ${i.util_pct!=null?i.util_pct+'%':'—'}</td>
+            <td class="px-3 py-1.5 text-right font-mono tabular-nums"
+                style="color:${Number(i.errors_1h)>0?HEX.down:'var(--c-muted)'}">${i.errors_1h ?? 0}</td>
+            <td class="px-3 py-1.5 text-right font-mono tabular-nums"
+                style="color:${Number(i.drops_1h)>0?HEX.degraded:'var(--c-muted)'}">${i.drops_1h ?? 0}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table></div>`)}
+
+    <p class="font-mono text-[10px] text-muted">
+      Utilisation is blank where the driver reports no link speed, which is normal on virtual NICs.
+      A blank is not zero.
+    </p>
   </div>`;
 }
 
@@ -2049,6 +2148,7 @@ const TITLES = {
   host:['Server','Everything collected from this host'],
   servers:['Servers','Select a server to see its detail'],
   checks:['Checks','Agentless ping, port and URL monitoring'],
+  network:['Network','Interfaces reported by the agents'],
   databases:['Databases','PostgreSQL and MySQL health'],
   desktops:['Desktops','End-user machines - laptops and workstations'],
   nettools:['Network Tools','Diagnostics run from the probe host'],
@@ -2087,6 +2187,7 @@ function render(){
     state.page==='servers'  ? pageServers()  :
     state.page.startsWith('todo:') ? pageTodo() :
     state.page==='checks'   ? pageChecks()   :
+    state.page==='network'  ? pageNetwork()  :
     state.page==='databases'? pageDatabases():
     state.page==='desktops' ? pageDesktops() :
     state.page==='nettools' ? pageNetTools() :
@@ -2270,19 +2371,41 @@ const PROVIDERS = [
   ['generic','On-premise','No cloud identity, so a token is required'],
 ];
 let addProvider='aws';
+let addPlatform='linux';
+
+// Each OS has its own installer: a shell script for Linux and macOS, a
+// PowerShell script for Windows. The modal used to assume Linux, which made
+// the Windows and macOS agents undiscoverable.
+const PLATFORMS = [
+  ['linux',   'Linux',   'Debian, Ubuntu, RHEL — anything with systemd'],
+  ['windows', 'Windows', 'Server 2016+ or Windows 10/11, elevated PowerShell'],
+  ['macos',   'macOS',   'Ventura or later, installed as a launchd daemon'],
+];
 
 function openAdd(){
   addProvider='aws';
   $('a-name').value=''; $('a-site').value='';
   $('a-ingest').value = localStorage_get('nw-ingest') || INGEST_HINT;
   $('a-out').classList.add('hidden'); $('a-msg').textContent='';
-  renderProviders();
+  renderPlatforms(); renderProviders();
   $('addmodal').classList.remove('hidden'); $('addmodal').classList.add('flex');
 }
 function closeAdd(){ $('addmodal').classList.add('hidden'); $('addmodal').classList.remove('flex'); }
 
 function localStorage_get(k){ try { return localStorage.getItem(k); } catch(e){ return null; } }
 function localStorage_set(k,v){ try { localStorage.setItem(k,v); } catch(e){} }
+
+function renderPlatforms(){
+  $('a-platforms').innerHTML = PLATFORMS.map(([k,label])=>`
+    <button data-plat="${k}" class="border px-2 py-2 font-mono text-[10px] uppercase tracking-[.1em] transition-colors
+      ${addPlatform===k?'border-ink bg-ground':'border-rule hover:border-ink'}">${label}</button>`).join('');
+  $('a-platforms').querySelectorAll('[data-plat]').forEach(b =>
+    b.onclick=()=>{ addPlatform=b.dataset.plat;
+                    // Windows and macOS have no cloud metadata worth using.
+                    if(addPlatform!=='linux') addProvider='generic';
+                    renderPlatforms(); renderProviders();
+                    $('a-out').classList.add('hidden'); });
+}
 
 function renderProviders(){
   $('a-providers').innerHTML = PROVIDERS.map(([k,label])=>`
@@ -2294,7 +2417,8 @@ function renderProviders(){
     b.onclick=()=>{ addProvider=b.dataset.prov; renderProviders();
                     $('a-out').classList.add('hidden'); });
   const meta = PROVIDERS.find(([k])=>k===addProvider);
-  $('a-note').textContent = meta ? meta[2] : '';
+  const pmeta = PLATFORMS.find(([k])=>k===addPlatform);
+  $('a-note').textContent = [pmeta && pmeta[2], meta && meta[2]].filter(Boolean).join(' · ');
 }
 
 $('a-gen').onclick = async () => {
@@ -2310,17 +2434,38 @@ $('a-gen').onclick = async () => {
     { p_label: label, p_hours: 24 });
   if (error) { $('a-msg').textContent = error.message; return; }
 
-  const env = [`NW_INGEST_URL=${ingest}`, `NW_ENROLL_TOKEN=${token}`];
-  if (addProvider !== 'aws') env.push(`NW_PROVIDER=${addProvider}`);
   const site = $('a-site').value.trim();
-  if (site) env.push(`NW_SITE="${site}"`);
+  const base = 'https://raw.githubusercontent.com/bluntlycoded/nodewatch/main/agent';
 
-  $('a-cmd').textContent =
-    `curl -fsSL https://raw.githubusercontent.com/bluntlycoded/nodewatch/main/agent/install.sh -o /tmp/nw.sh\n` +
-    `sudo ${env.join(' \\\n     ')} \\\n     bash /tmp/nw.sh`;
+  if (addPlatform === 'windows') {
+    // Environment variables first, then the installer, so the token is set
+    // before the script reads it.
+    const lines = [
+      `$env:NW_INGEST_URL='${ingest}'`,
+      `$env:NW_ENROLL_TOKEN='${token}'`,
+    ];
+    if (site) lines.push(`$env:NW_SITE='${site.replace(/'/g, "''")}'`);
+    lines.push(`irm ${base}/install.ps1 | iex`);
+    $('a-cmd').textContent = lines.join('\n');
+  } else {
+    const script = addPlatform === 'macos' ? 'install-macos.sh' : 'install.sh';
+    const env = [`NW_INGEST_URL=${ingest}`, `NW_ENROLL_TOKEN=${token}`];
+    if (addPlatform !== 'linux' || addProvider !== 'aws') env.push(`NW_PROVIDER=${addProvider}`);
+    if (site) env.push(`NW_SITE="${site}"`);
+    $('a-cmd').textContent =
+      `curl -fsSL ${base}/${script} -o /tmp/nw.sh\n` +
+      `sudo ${env.join(' \\\n     ')} \\\n     bash /tmp/nw.sh`;
+  }
+
   $('a-note').textContent =
-    'The token is single use and expires in 24 hours. The server appears here within about two minutes of the agent starting.'
-    + (addProvider==='generic' ? ' On-premise hosts must present this token; there is no cloud identity to fall back on.' : '');
+    (addPlatform === 'windows'
+      ? 'Run in an elevated PowerShell — the Security event log and BitLocker state are not readable otherwise. '
+      : addPlatform === 'macos'
+      ? 'Run with sudo. Grant Full Disk Access to the agent if posture checks report needing root. '
+      : '')
+    + 'The token is single use and expires in 24 hours. The machine appears here within about two minutes.'
+    + (addProvider === 'generic'
+       ? ' A host with no cloud identity must present this token.' : '');
   $('a-out').classList.remove('hidden');
   refresh();
 };
@@ -2698,7 +2843,7 @@ async function refresh(){
   try{
     const since=new Date(Date.now()-20*60*1000).toISOString();
     const [hosts,latest,hist,ports,auth,checks,users,alerts,recips,rules,tokens,fim,vulns,pkgs,chans,audit,
-           probes,matrix,avail,mttr,latency,nettools,databases]=await Promise.all([
+           probes,matrix,avail,mttr,latency,nettools,databases,ifaces]=await Promise.all([
       sb.from('agent_overview').select('*').order('label'),
       sb.from('agent_latest_metrics').select('*'),
       sb.from('metrics').select('agent_id,ts,cpu_pct').gte('ts',since).order('ts'),
@@ -2731,11 +2876,12 @@ async function refresh(){
       sb.from('nettool_jobs').select('id,tool,target,status,output,duration_ms,created_at')
         .order('created_at',{ascending:false}).limit(12),
       sb.from('database_overview').select('*').order('name'),
+      sb.from('network_overview').select('*').order('host'),
     ]);
     // Token and audit reads are admin-only under RLS, so a viewer legitimately
     // gets empty results there. Only treat the shared reads as fatal.
     const bad=[hosts,latest,hist,ports,auth,checks,users,alerts,recips,rules,fim,vulns,pkgs,chans,
-               probes,matrix,avail,mttr,latency,nettools,databases].find(r=>r.error);
+               probes,matrix,avail,mttr,latency,nettools,databases,ifaces].find(r=>r.error);
     if(bad) throw bad.error;
 
     state.hosts=hosts.data; state.ports=ports.data; state.auth=auth.data;
@@ -2744,7 +2890,7 @@ async function refresh(){
     state.channels=chans.data||[]; state.audit=audit.data||[];
     state.probes=probes.data||[]; state.matrix=matrix.data||[];
     state.availability=avail.data||[]; state.mttr=mttr.data||[];
-    state.latency=latency.data||[]; state.nettools=nettools.data||[]; state.databases=databases.data||[];
+    state.latency=latency.data||[]; state.nettools=nettools.data||[]; state.databases=databases.data||[]; state.interfaces=ifaces.data||[];
     state.fim=fim.data||[];
 
     // Attach affected hosts to each finding. Done client-side because the
