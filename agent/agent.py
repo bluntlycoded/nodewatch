@@ -42,6 +42,7 @@ PORTS_INTERVAL = 60
 AUTH_INTERVAL = 30
 CHECKS_INTERVAL = 120
 USERS_INTERVAL = 60
+INTERFACES_INTERVAL = 60
 FIM_INTERVAL = 300
 PACKAGES_INTERVAL = 21600
 FLUSH_INTERVAL = 15
@@ -301,7 +302,7 @@ def main():
     sess.enroll()
 
     next_run = {"heartbeat": 0.0, "ports": 0.0, "auth": 0.0,
-                "checks": 0.0, "users": 0.0, "fim": 0.0,
+                "checks": 0.0, "users": 0.0, "interfaces": 0.0, "fim": 0.0,
                 "packages": 0.0, "flush": 0.0}
 
     while True:
@@ -330,6 +331,15 @@ def main():
             except Exception as e:
                 log.warning("user collection failed: %s", e)
             next_run["users"] = now + USERS_INTERVAL
+
+        if now >= next_run["interfaces"]:
+            try:
+                ifs = inventory.collect_interfaces()
+                if ifs:
+                    buf.push("interfaces", {"interfaces": ifs})
+            except Exception as e:
+                log.warning("interface collection failed: %s", e)
+            next_run["interfaces"] = now + INTERFACES_INTERVAL
 
         if now >= next_run["fim"]:
             try:
