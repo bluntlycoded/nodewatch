@@ -14,7 +14,10 @@ import hashlib
 import os
 import re
 import stat
+import socket
 import subprocess
+
+import psutil
 
 import osdetect
 import time
@@ -176,6 +179,60 @@ def collect_fim(buf, force_full=False):
         "paths": WATCH_PATHS,
     }
     return events, summary
+
+
+# ---------------------------------------------------------------- interfaces
+
+def collect_interfaces():
+    """
+    Network interfaces as the host sees them. psutil covers Linux, Windows
+    and macOS identically, so this needs no per-platform module.
+
+    Counters are cumulative since boot and are shipped as-is; the server
+    derives throughput from the difference between samples. Computing the
+    rate here would mean the agent holding state across restarts, and a
+    restart would then produce a spike rather than a gap.
+    """
+    try:
+        stats = psutil.net_if_stats()
+        counters = psutil.net_io_counters(pernic=True)
+        addrs = psutil.net_if_addrs()
+    except Exception:
+        return []
+
+    out = []
+    for name, st in stats.items():
+        # Loopback carries no operational signal and would dominate any
+        # "busiest interface" view.
+        if name.startswith(("lo", "Loopback")) or name == "lo0":
+            continue
+
+        io = counters.get(name)
+        ipv4 = next((a.address for a in addrs.get(name, [])
+                     if getattr(a, "family", None) == socket.AF_INET), None)
+        mac = next((a.address for a in addrs.get(name, [])
+                    if str(getattr(a, "family", "")).endswith("AF_LINK")
+                    or str(getattr(a, "family", "")).endswith("AF_PACKET")), None)
+
+        out.append({
+            "name": name[:100],
+            "is_up": bool(st.isup),
+            # 0 means the driver does not report a speed - common on
+            # virtual NICs - which is different from a 0 Mbps link.
+            "speed_mbps": st.speed or None,
+            "mtu": st.mtu,
+            "ipv4": ipv4,
+            "mac": mac,
+            "bytes_sent": getattr(io, "bytes_sent", None) if io else None,
+            "bytes_recv": getattr(io, "bytes_recv", None) if io else None,
+            "packets_sent": getattr(io, "packets_sent", None) if io else None,
+            "packets_recv": getattr(io, "packets_recv", None) if io else None,
+            "errin": getattr(io, "errin", None) if io else None,
+            "errout": getattr(io, "errout", None) if io else None,
+            "dropin": getattr(io, "dropin", None) if io else None,
+            "dropout": getattr(io, "dropout", None) if io else None,
+        })
+    return out
 
 
 # ---------------------------------------------------------------- packages
