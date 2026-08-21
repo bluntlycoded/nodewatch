@@ -456,7 +456,7 @@ let state = {
   checks:[], recipients:[], rules:[], fim:[], tokens:[], history:[], vulns:[],
   role:'viewer', channels:[], userEvents:[], dashUsers:[], audit:[], me:null,
   navOpen:null, checkKind:null, dbKind:null, databases:[],
-  netView:null, interfaces:[], reportKind:'availability', reportDays:30,
+  netView:null, interfaces:[], appKind:null, applications:[], reportKind:'availability', reportDays:30,
   reportRows:[], reportFindings:[], reportLoading:false, nettools:[],
   probes:[], matrix:[], availability:[], mttr:[], latency:[],
   hostDetail:{ checks:[], packages:[], vulns:[], users:[], ports:[], fim:[], history:[] },
@@ -580,6 +580,7 @@ async function enter(){
     const [page,arg]=h.split('?');
     if(page==='checks'){ state.page='checks'; state.checkKind=arg||null; }
     else if(page==='network'){ state.page='network'; state.netView=arg||null; }
+    else if(page==='applications'){ state.page='applications'; state.appKind=arg||null; }
     else if(page==='databases'){ state.page='databases'; state.dbKind=arg||null; }
     else if(page==='activity'){ state.page='activity'; state.tab=arg||'ports'; }
     else if(page==='report'){ state.page='report'; state.reportKind=arg||'availability'; }
@@ -601,7 +602,7 @@ const NAV = [
     ['servers',      'Server Overview',       {}],
     ['checks',       'Synthetic Overview',    {}],
     ['posture',      'Security Overview',     {}],
-    ['todo:app-ov',  'Application Overview',  {todo:'app-ov'}],
+    ['applications', 'Application Overview',  {}],
     ['databases',    'Database Overview',    {}],
     ['desktops',     'Desktop Overview',      {}],
     ['network',      'Network Overview',      {}],
@@ -630,6 +631,8 @@ const NAV = [
     ['todo:oracle',   'Oracle DB Monitoring',  {todo:'oracle'}],
   ]],
   ['Application', [
+    ['applications',       'Applications',      {}],
+    ['applications?nginx', 'Nginx Monitoring',  {}],
     ['todo:tomcat', 'Tomcat Monitoring', {todo:'tomcat'}],
     ['todo:jboss',  'JBoss Monitoring',  {todo:'jboss'}],
     ['todo:iis',    'IIS Monitoring',    {todo:'iis'}],
@@ -791,6 +794,7 @@ function currentRoute(){
   if(state.page==='report') return 'report?'+state.reportKind;
   if(state.page==='databases' && state.dbKind) return 'databases?'+state.dbKind;
   if(state.page==='network' && state.netView) return 'network?'+state.netView;
+  if(state.page==='applications' && state.appKind) return 'applications?'+state.appKind;
   return state.page;
 }
 
@@ -798,6 +802,7 @@ function goRoute(route){
   const [page, arg] = route.split('?');
   if(page==='checks'){ state.checkKind = arg || null; }
   else if(page==='network'){ state.netView = arg || null; }
+  else if(page==='applications'){ state.appKind = arg || null; }
   else if(page==='databases'){ state.dbKind = arg || null; }
   else if(page==='activity'){ state.tab = arg || 'ports'; }
   else if(page==='report'){
@@ -1053,6 +1058,10 @@ const CHECK_KINDS = {
               hint:'Connects and reads pg_stat_*. Use a role with pg_monitor and nothing more — monitoring should never be able to write.' },
   mysql:    { label:'MySQL',      creds:true,
               hint:'Reads SHOW GLOBAL STATUS. Needs PROCESS and REPLICATION CLIENT; SELECT only for the size query.' },
+  prometheus:{ label:'Prometheus', url:true,
+              hint:'Scrapes a /metrics endpoint. Works with FastAPI, Flask, Django, Go services and exporters — anything emitting the text exposition format.' },
+  nginx:    { label:'Nginx',      url:true,
+              hint:'Reads the stub_status endpoint. Enable it with a location block restricted to the probe host.' },
 };
 
 function pageChecks(){
@@ -1148,6 +1157,145 @@ function pageChecks(){
           </div>`).join('')}</div>`
         : empty('No outages recorded in the last 30 days.')))}
     </div>
+  </div>`;
+}
+
+// ═══════════════════════════ page: applications
+const APP_KIND = { prometheus:'Prometheus', nginx:'Nginx' };
+
+function ms(sec){
+  if(sec==null) return '—';
+  const v = Number(sec)*1000;
+  return v>=1000 ? (v/1000).toFixed(2)+' s' : Math.round(v)+' ms';
+}
+
+function pageApplications(){
+  const admin = isAdmin();
+  const rows = state.appKind
+    ? state.applications.filter(a=>a.kind===state.appKind)
+    : state.applications;
+
+  if(!rows.length) return `
+    <div class="space-y-4">
+      ${card(empty('No applications monitored yet.'))}
+      ${admin?`<div class="bg-paper border border-rule px-5 py-4 space-y-3">
+        <p class="text-sm text-muted leading-relaxed">
+          Add one from <span class="font-mono text-[12px]">Checks</span>. Two kinds are supported,
+          and between them they cover most of what a lab runs.</p>
+        <div>
+          <p class="font-mono text-[10px] uppercase tracking-[.16em] text-muted">Prometheus</p>
+          <p class="text-sm text-muted mt-1">Any app exposing <span class="font-mono text-[12px]">/metrics</span>
+            in the text exposition format. For Python apps that means one dependency:</p>
+          <pre class="border border-rule bg-ground px-3 py-2 font-mono text-[11px] mt-2 whitespace-pre-wrap"># FastAPI
+pip install prometheus-fastapi-instrumentator
+Instrumentator().instrument(app).expose(app)
+
+# Django
+pip install django-prometheus   # then add the middleware and urls
+
+# Flask
+pip install prometheus-flask-exporter
+PrometheusMetrics(app)</pre>
+        </div>
+        <div>
+          <p class="font-mono text-[10px] uppercase tracking-[.16em] text-muted">Nginx</p>
+          <p class="text-sm text-muted mt-1">Enable the built-in status endpoint:</p>
+          <pre class="border border-rule bg-ground px-3 py-2 font-mono text-[11px] mt-2 whitespace-pre-wrap">location /nginx_status {
+    stub_status;
+    allow 10.0.0.0/8;   # the probe host
+    deny all;
+}</pre>
+        </div>
+      </div>`:''}
+    </div>`;
+
+  const up = rows.filter(a=>a.status==='up').length;
+  const totalReq = rows.reduce((a,x)=>a+Number(x.requests_1h||0),0);
+  const totalErr = rows.reduce((a,x)=>a+Number(x.errors_1h||0),0);
+  const worstP95 = rows.reduce((a,x)=>Math.max(a, Number(x.p95_avg_1h||0)), 0);
+  const rate = totalReq ? (100*totalErr/totalReq) : null;
+
+  const pill=(label,v,colour)=>`
+    <div class="flex items-baseline gap-1.5">
+      <span class="text-lg font-semibold tabular-nums" style="color:${colour||'var(--c-ink)'}">${v}</span>
+      <span class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">${label}</span>
+    </div>`;
+
+  // Worst first: an overview that leads with the healthy things buries the
+  // one you needed to see.
+  const ordered = [...rows].sort((a,b)=>
+    (b.status!=='up') - (a.status!=='up') ||
+    Number(b.error_rate||0) - Number(a.error_rate||0) ||
+    Number(b.p95_avg_1h||0) - Number(a.p95_avg_1h||0));
+
+  return `
+  <div class="space-y-4">
+    <div class="bg-paper border border-rule px-4 sm:px-5 py-3 flex flex-wrap items-center gap-x-6 gap-y-3">
+      ${pill('applications', rows.length)}
+      ${pill('up', up, HEX.healthy)}
+      ${pill('requests 1h', totalReq.toLocaleString())}
+      ${pill('errors 1h', totalErr, totalErr?HEX.down:null)}
+      ${pill('error rate', rate==null?'—':rate.toFixed(2)+'%',
+             rate==null?null:rate>=5?HEX.down:rate>=1?HEX.degraded:HEX.healthy)}
+      ${pill('worst p95', worstP95?ms(worstP95):'—',
+             worstP95>=2?HEX.down:worstP95>=0.5?HEX.degraded:null)}
+      <span class="flex-1"></span>
+      <span class="font-mono text-[10px] text-muted hidden lg:inline">
+        Error rate counts 5xx only — a 404 is usually the caller's problem.
+      </span>
+    </div>
+
+    <div class="grid gap-4 lg:grid-cols-2">${ordered.map(a=>{
+      const down = a.status!=='up';
+      const er = a.error_rate==null?null:Number(a.error_rate);
+      return `
+      <section class="bg-paper border rise ${down?'border-down':'border-rule'}"
+               ${down?`style="border-left:3px solid ${HEX.down}"`:''}>
+        <div class="px-4 py-3 border-b border-hairline flex items-start justify-between gap-3">
+          <div class="min-w-0">
+            <div class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full shrink-0" style="background:${down?HEX.down:HEX.healthy}"></span>
+              <h3 class="font-semibold tracking-tight truncate">${esc(a.name)}</h3>
+              <span class="font-mono text-[9px] uppercase tracking-[.12em] text-muted border border-rule px-1 shrink-0">
+                ${esc(APP_KIND[a.kind]||a.kind)}</span>
+            </div>
+            <p class="font-mono text-[10px] text-muted mt-1 truncate">${esc(a.target)}</p>
+          </div>
+          <div class="text-right shrink-0">
+            <p class="text-2xl font-semibold tabular-nums leading-none"
+               style="color:${er==null?'var(--c-muted)':er>=5?HEX.down:er>=1?HEX.degraded:HEX.healthy}">
+              ${er==null?'—':er+'%'}</p>
+            <p class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">errors</p>
+          </div>
+        </div>
+
+        ${down ? `<p class="px-4 py-6 text-sm text-down">${esc(a.detail||'unreachable')}</p>` : `
+        <dl class="grid grid-cols-4 divide-x divide-hairline">
+          ${[['req/s', a.rps ?? '—'],
+             ['p95', ms(a.p95_avg_1h ?? a.p95_latency_s)],
+             ['avg', ms(a.avg_latency_s)],
+             [a.kind==='nginx'?'active':'cpu %', a.kind==='nginx'
+                ? (a.active_conns ?? '—') : (a.cpu_pct ?? '—')]
+            ].map(([k,v])=>`
+            <div class="px-3 py-2.5">
+              <dt class="font-mono text-[8px] tracking-[.14em] uppercase text-muted">${k}</dt>
+              <dd class="font-mono text-[13px] tabular-nums mt-0.5">${v}</dd>
+            </div>`).join('')}
+        </dl>
+        <div class="px-4 py-2.5 border-t border-hairline flex flex-wrap gap-x-4 font-mono text-[10px] text-muted">
+          <span>${Number(a.requests_1h||0).toLocaleString()} requests 1h</span>
+          <span style="color:${Number(a.errors_1h)>0?HEX.down:'inherit'}">${a.errors_1h ?? 0} errors</span>
+          ${a.memory_bytes?`<span>${bytes(a.memory_bytes)} rss</span>`:''}
+          ${a.uptime_s?`<span>up ${fmtDur(a.uptime_s)}</span>`:''}
+          ${a.p95_max_1h?`<span>worst p95 ${ms(a.p95_max_1h)}</span>`:''}
+        </div>`}
+
+        <div class="border-t border-hairline px-4 py-1.5 flex items-center justify-between">
+          <span class="font-mono text-[10px] text-muted">every ${a.interval_s}s</span>
+          <span class="font-mono text-[10px] text-muted tabular-nums">
+            ${a.measured_at?ago(a.measured_at)+' ago':'no measurement yet'}</span>
+        </div>
+      </section>`;}).join('')}</div>
   </div>`;
 }
 
@@ -2148,6 +2296,7 @@ const TITLES = {
   host:['Server','Everything collected from this host'],
   servers:['Servers','Select a server to see its detail'],
   checks:['Checks','Agentless ping, port and URL monitoring'],
+  applications:['Applications','Throughput, errors and latency'],
   network:['Network','Interfaces reported by the agents'],
   databases:['Databases','PostgreSQL and MySQL health'],
   desktops:['Desktops','End-user machines - laptops and workstations'],
@@ -2187,6 +2336,7 @@ function render(){
     state.page==='servers'  ? pageServers()  :
     state.page.startsWith('todo:') ? pageTodo() :
     state.page==='checks'   ? pageChecks()   :
+    state.page==='applications'? pageApplications():
     state.page==='network'  ? pageNetwork()  :
     state.page==='databases'? pageDatabases():
     state.page==='desktops' ? pageDesktops() :
@@ -2524,9 +2674,12 @@ function renderCheckKinds(){
   $('k-portwrap').classList.toggle('hidden', checkKind !== 'port' && !isDb);
   $('k-urlwrap').classList.toggle('hidden', checkKind !== 'url');
   $('k-credwrap').classList.toggle('hidden', !isDb);
-  $('k-targetlabel').textContent = checkKind === 'url' ? 'URL' : 'Host or IP';
+  const isUrl = checkKind === 'url' || !!CHECK_KINDS[checkKind].url;
+  $('k-targetlabel').textContent = isUrl ? 'URL' : 'Host or IP';
   $('k-target').placeholder =
-    checkKind === 'url' ? 'https://example.com/health' : '10.0.0.1';
+    checkKind === 'prometheus' ? 'http://10.0.0.5:8000/metrics'
+    : checkKind === 'nginx'    ? 'http://10.0.0.5/nginx_status'
+    : checkKind === 'url'      ? 'https://example.com/health' : '10.0.0.1';
   if (isDb && !$('k-port').value) {
     $('k-port').value = checkKind === 'postgres' ? 5432 : 3306;
   }
@@ -2549,7 +2702,7 @@ $('k-save').onclick = async () => {
   if(checkKind==='url' && !/^https?:\/\//i.test(target)){
     $('k-msg').textContent='A URL check needs a full http:// or https:// address.'; return;
   }
-  const needsPort = checkKind==='port' || !!CHECK_KINDS[checkKind].creds;
+  const needsPort = checkKind==='port' || (!!CHECK_KINDS[checkKind].creds && !CHECK_KINDS[checkKind].url);
   const port = needsPort ? parseInt($('k-port').value,10) : null;
   if(needsPort && (!port || port<1 || port>65535)){
     $('k-msg').textContent='This check needs a port between 1 and 65535.'; return;
@@ -2846,7 +2999,7 @@ async function refresh(){
   try{
     const since=new Date(Date.now()-20*60*1000).toISOString();
     const [hosts,latest,hist,ports,auth,checks,users,alerts,recips,rules,tokens,fim,vulns,pkgs,chans,audit,
-           probes,matrix,avail,mttr,latency,nettools,databases,ifaces]=await Promise.all([
+           probes,matrix,avail,mttr,latency,nettools,databases,ifaces,apps]=await Promise.all([
       sb.from('agent_overview').select('*').order('label'),
       sb.from('agent_latest_metrics').select('*'),
       sb.from('metrics').select('agent_id,ts,cpu_pct').gte('ts',since).order('ts'),
@@ -2880,11 +3033,12 @@ async function refresh(){
         .order('created_at',{ascending:false}).limit(12),
       sb.from('database_overview').select('*').order('name'),
       sb.from('network_overview').select('*').order('host'),
+      sb.from('application_overview').select('*').order('name'),
     ]);
     // Token and audit reads are admin-only under RLS, so a viewer legitimately
     // gets empty results there. Only treat the shared reads as fatal.
     const bad=[hosts,latest,hist,ports,auth,checks,users,alerts,recips,rules,fim,vulns,pkgs,chans,
-               probes,matrix,avail,mttr,latency,nettools,databases,ifaces].find(r=>r.error);
+               probes,matrix,avail,mttr,latency,nettools,databases,ifaces,apps].find(r=>r.error);
     if(bad) throw bad.error;
 
     state.hosts=hosts.data; state.ports=ports.data; state.auth=auth.data;
@@ -2893,7 +3047,7 @@ async function refresh(){
     state.channels=chans.data||[]; state.audit=audit.data||[];
     state.probes=probes.data||[]; state.matrix=matrix.data||[];
     state.availability=avail.data||[]; state.mttr=mttr.data||[];
-    state.latency=latency.data||[]; state.nettools=nettools.data||[]; state.databases=databases.data||[]; state.interfaces=ifaces.data||[];
+    state.latency=latency.data||[]; state.nettools=nettools.data||[]; state.databases=databases.data||[]; state.interfaces=ifaces.data||[]; state.applications=apps.data||[];
     state.fim=fim.data||[];
 
     // Attach affected hosts to each finding. Done client-side because the
