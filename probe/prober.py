@@ -321,14 +321,266 @@ def check_mysql(p) -> tuple[bool, int | None, str]:
                       f"{metrics['slow_queries']} slow queries")
 
 
+# ---------------------------------------------------------------- applications
+
+# Prometheus text exposition format. Parsed structurally rather than by
+# regex over the whole document: sample lines are `name{labels} value`, and
+# label values may contain spaces, braces and escaped quotes.
+PROM_LINE = re.compile(r"""
+    ^(?P<name>[a-zA-Z_:][a-zA-Z0-9_:]*)      # metric name
+    (?:\{(?P<labels>.*)\})?                  # optional label set
+    \s+(?P<value>[^\s]+)                     # value
+    (?:\s+[0-9]+)?$                          # optional timestamp
+""", re.VERBOSE)
+
+LABEL_RE = re.compile(r'([a-zA-Z_][a-zA-Z0-9_]*)="((?:[^"\\]|\\.)*)"')
+
+
+def parse_prometheus(text: str) -> list:
+    """Returns [(name, {labels}, float value)] for every sample line."""
+    out = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        m = PROM_LINE.match(line)
+        if not m:
+            continue
+        try:
+            value = float(m.group("value"))
+        except ValueError:
+            continue          # NaN, +Inf and friends carry no signal here
+        labels = {}
+        if m.group("labels"):
+            for k, v in LABEL_RE.findall(m.group("labels")):
+                labels[k] = v.replace('\\"', '"').replace("\\\\", "\\")
+        out.append((m.group("name"), labels, value))
+    return out
+
+
+# Instrumentation libraries disagree on metric names. Rather than support one
+# framework, match the families each is known to emit and take the first that
+# is present.
+REQUEST_FAMILIES = [
+    "http_requests_total",                              # FastAPI, generic
+    "http_request_total",
+    "flask_http_request_total",                         # flask-exporter
+    "django_http_responses_total_by_status_total",      # django-prometheus
+    "starlette_requests_total",
+    "gunicorn_requests_total",
+]
+DURATION_FAMILIES = [
+    "http_request_duration_seconds",
+    "http_request_duration_highr_seconds",
+    "flask_http_request_duration_seconds",
+    "django_http_requests_latency_seconds_by_view_method",
+    "starlette_request_duration_seconds",
+]
+STATUS_LABELS = ("status", "status_code", "code", "http_status", "response_code")
+
+
+def _status_of(labels: dict) -> str | None:
+    for key in STATUS_LABELS:
+        if key in labels:
+            return str(labels[key])
+    return None
+
+
+def _p95_from_histogram(samples, family) -> float | None:
+    """
+    Linear interpolation within the bucket that crosses the 95th percentile.
+    Histogram buckets are cumulative, so the count in a bucket includes every
+    smaller one; the true value lies between this bucket's bound and the
+    previous one.
+    """
+    buckets = []
+    for name, labels, value in samples:
+        if name == family + "_bucket" and "le" in labels:
+            try:
+                buckets.append((float(labels["le"]), value))
+            except ValueError:
+                continue
+    if not buckets:
+        return None
+
+    merged = {}
+    for le, v in buckets:
+        merged[le] = merged.get(le, 0) + v
+    ordered = sorted(merged.items())
+    total = max(v for _, v in ordered)
+    if total <= 0:
+        return None
+
+    target = 0.95 * total
+    prev_le, prev_count = 0.0, 0.0
+    for le, count in ordered:
+        if count >= target:
+            if le == float("inf"):
+                return prev_le or None
+            if count == prev_count:
+                return le
+            frac = (target - prev_count) / (count - prev_count)
+            return round(prev_le + frac * (le - prev_le), 4)
+        prev_le, prev_count = le, count
+    return None
+
+
+def check_prometheus(p) -> tuple[bool, int | None, str]:
+    cfg = p.get("config") or {}
+    url = p["target"]
+    headers = {"User-Agent": USER_AGENT, "Accept": "text/plain"}
+    if cfg.get("bearer_token"):
+        headers["Authorization"] = "Bearer " + cfg["bearer_token"]
+    elif cfg.get("user"):
+        import base64
+        raw = f"{cfg['user']}:{cfg.get('password','')}".encode()
+        headers["Authorization"] = "Basic " + base64.b64encode(raw).decode()
+
+    req = urllib.request.Request(url, headers=headers)
+    t0 = time.monotonic()
+    try:
+        with urllib.request.urlopen(req, timeout=p["timeout_ms"] / 1000) as r:
+            body = r.read(4 * 1024 * 1024).decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        return False, None, f"status {e.code} from {url}"
+    except urllib.error.URLError as e:
+        return False, None, f"unreachable: {e.reason}"[:200]
+    except Exception as e:
+        return False, None, str(e)[:200]
+
+    ms = int((time.monotonic() - t0) * 1000)
+    samples = parse_prometheus(body)
+    if not samples:
+        return False, ms, "endpoint returned no parseable Prometheus metrics"
+
+    by_name = {}
+    for name, labels, value in samples:
+        by_name.setdefault(name, []).append((labels, value))
+
+    requests_total = errors_total = None
+    for fam in REQUEST_FAMILIES:
+        if fam in by_name:
+            total = err = 0.0
+            for labels, value in by_name[fam]:
+                total += value
+                st = _status_of(labels)
+                # 5xx only: a 404 is usually the client's problem, and
+                # counting it as an application error makes the rate useless.
+                if st and st[:1] == "5":
+                    err += value
+            requests_total, errors_total = int(total), int(err)
+            break
+
+    p95 = None
+    for fam in DURATION_FAMILIES:
+        if fam + "_bucket" in by_name:
+            p95 = _p95_from_histogram(samples, fam)
+            break
+
+    avg = None
+    for fam in DURATION_FAMILIES:
+        if fam + "_sum" in by_name and fam + "_count" in by_name:
+            s_ = sum(v for _, v in by_name[fam + "_sum"])
+            c_ = sum(v for _, v in by_name[fam + "_count"])
+            if c_ > 0:
+                avg = round(s_ / c_, 4)
+            break
+
+    def first(name):
+        vals = by_name.get(name)
+        return vals[0][1] if vals else None
+
+    start = first("process_start_time_seconds")
+    metrics = {
+        "requests_total": requests_total,
+        "errors_total": errors_total,
+        "active_conns": None,
+        "p95_latency_s": p95,
+        "avg_latency_s": avg,
+        "memory_bytes": int(first("process_resident_memory_bytes") or 0) or None,
+        "cpu_seconds": first("process_cpu_seconds_total"),
+        "uptime_s": int(time.time() - start) if start else None,
+        "extra": {
+            "series": len(samples),
+            "families": len(by_name),
+            "open_fds": first("process_open_fds"),
+        },
+    }
+    p["_app_metrics"] = metrics
+
+    detail = f"{len(by_name)} metric families"
+    if requests_total is not None:
+        detail += f", {requests_total} requests"
+        if errors_total:
+            detail += f", {errors_total} 5xx"
+    if p95 is not None:
+        detail += f", p95 {p95}s"
+    return True, ms, detail
+
+
+# nginx stub_status is a fixed five-line block, not Prometheus format:
+#   Active connections: 43
+#   server accepts handled requests
+#    7368 7368 10993
+#   Reading: 0 Writing: 5 Waiting: 38
+NGINX_ACTIVE = re.compile(r"Active connections:\s+(\d+)")
+NGINX_TOTALS = re.compile(r"^\s*(\d+)\s+(\d+)\s+(\d+)\s*$", re.M)
+NGINX_STATES = re.compile(r"Reading:\s+(\d+)\s+Writing:\s+(\d+)\s+Waiting:\s+(\d+)")
+
+
+def check_nginx(p) -> tuple[bool, int | None, str]:
+    req = urllib.request.Request(p["target"], headers={"User-Agent": USER_AGENT})
+    t0 = time.monotonic()
+    try:
+        with urllib.request.urlopen(req, timeout=p["timeout_ms"] / 1000) as r:
+            body = r.read(8192).decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        return False, None, f"status {e.code}"
+    except urllib.error.URLError as e:
+        return False, None, f"unreachable: {e.reason}"[:200]
+    except Exception as e:
+        return False, None, str(e)[:200]
+
+    ms = int((time.monotonic() - t0) * 1000)
+    active = NGINX_ACTIVE.search(body)
+    totals = NGINX_TOTALS.search(body)
+    states = NGINX_STATES.search(body)
+    if not (active and totals):
+        return False, ms, "not an nginx stub_status response"
+
+    accepts, handled, requests = (int(g) for g in totals.groups())
+    p["_app_metrics"] = {
+        "requests_total": requests,
+        # A connection accepted but not handled was dropped, usually at a
+        # resource limit. That is the closest thing stub_status has to an
+        # error count.
+        "errors_total": accepts - handled,
+        "active_conns": int(active.group(1)),
+        "p95_latency_s": None,
+        "avg_latency_s": None,
+        "memory_bytes": None,
+        "cpu_seconds": None,
+        "uptime_s": None,
+        "extra": {
+            "accepts": accepts, "handled": handled,
+            "reading": int(states.group(1)) if states else None,
+            "writing": int(states.group(2)) if states else None,
+            "waiting": int(states.group(3)) if states else None,
+        },
+    }
+    return True, ms, (f"{active.group(1)} active, {requests} requests"
+                      + (f", {accepts - handled} dropped" if accepts != handled else ""))
+
+
 CHECKS = {"ping": check_ping, "port": check_port, "url": check_url,
-          "postgres": check_postgres, "mysql": check_mysql}
+          "postgres": check_postgres, "mysql": check_mysql,
+          "prometheus": check_prometheus, "nginx": check_nginx}
 
 
-def run_one(p: dict) -> tuple[str, bool, int | None, str, dict | None]:
+def run_one(p: dict) -> tuple[str, bool, int | None, str, dict | None, dict | None]:
     fn = CHECKS.get(p["kind"])
     if not fn:
-        return p["id"], False, None, f"unknown probe kind {p['kind']}", None
+        return p["id"], False, None, f"unknown probe kind {p['kind']}", None, None
     try:
         ok, ms, detail = fn(p)
     except Exception as e:
@@ -336,7 +588,7 @@ def run_one(p: dict) -> tuple[str, bool, int | None, str, dict | None]:
         log.exception("probe %s raised", p["name"])
         ok, ms, detail = False, None, f"probe error: {e}"[:200]
     # Database checks attach a measurement set; the others do not.
-    return p["id"], ok, ms, detail, p.get("_metrics")
+    return p["id"], ok, ms, detail, p.get("_metrics"), p.get("_app_metrics")
 
 
 # ---------------------------------------------------------------- net tools
@@ -531,7 +783,7 @@ def main():
                         """insert into probe_results (probe_id, ts, ok, latency_ms, detail)
                            values (%s, %s, %s, %s, %s)
                            on conflict (probe_id, ts) do nothing""",
-                        [(pid, ts, ok, ms, detail) for pid, ok, ms, detail, _ in results],
+                        [(pid, ts, ok, ms, detail) for pid, ok, ms, detail, _, _ in results],
                     )
 
                     # Database measurements go to their own table. One
@@ -542,8 +794,26 @@ def main():
                          m.get("slow_queries"), m.get("longest_query_s"),
                          m.get("replication_lag_s"), m.get("size_bytes"),
                          m.get("uptime_s"), m.get("qps"), json.dumps(m.get("extra") or {}))
-                        for pid, ok, _, _, m in results if ok and m
+                        for pid, ok, _, _, m, _ in results if ok and m
                     ]
+                    approws = [
+                        (pid, ts, a.get("requests_total"), a.get("errors_total"),
+                         a.get("active_conns"), a.get("p95_latency_s"),
+                         a.get("avg_latency_s"), a.get("memory_bytes"),
+                         a.get("cpu_seconds"), a.get("uptime_s"),
+                         json.dumps(a.get("extra") or {}))
+                        for pid, ok, _, _, _, a in results if ok and a
+                    ]
+                    if approws:
+                        conn.cursor().executemany(
+                            """insert into app_metrics (probe_id, ts, requests_total,
+                                   errors_total, active_conns, p95_latency_s,
+                                   avg_latency_s, memory_bytes, cpu_seconds,
+                                   uptime_s, extra)
+                               values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                               on conflict (probe_id, ts) do nothing""",
+                            approws)
+
                     if dbrows:
                         conn.cursor().executemany(
                             """insert into db_metrics (probe_id, ts, connections,
@@ -558,7 +828,7 @@ def main():
                     for p in batch:
                         _last_run[p["id"]] = now
 
-                    failed = sum(1 for _, ok, _, _, _ in results if not ok)
+                    failed = sum(1 for _, ok, _, _, _, _ in results if not ok)
                     log.info("checked %d, %d failing", len(results), failed)
 
                 drain_nettools(conn)
