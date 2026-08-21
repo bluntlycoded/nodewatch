@@ -2750,6 +2750,7 @@ function openModal(row){
   $('m-name').value=row?.display_name||'';
   $('m-notes').value=row?.notes||'';
   $('m-muted').checked=!!row?.muted;
+  $('m-role').value = row?.role || 'server';
   $('m-msg').textContent='';
   modal().classList.remove('hidden'); modal().classList.add('flex');
   if(!adding) loadEmails(row.id); else emailRows=[];
@@ -2795,7 +2796,9 @@ $('m-newmail').addEventListener('keydown',e=>{ if(e.key==='Enter') $('m-addmail'
 $('m-save').onclick=async()=>{
   $('m-msg').textContent='';
   const patch={ display_name:$('m-name').value.trim()||null,
-                notes:$('m-notes').value.trim()||null, muted:$('m-muted').checked };
+                notes:$('m-notes').value.trim()||null,
+                muted:$('m-muted').checked,
+                role:$('m-role').value };
   let error;
   if(editing){ ({error}=await sb.from('agents').update(patch).eq('id',editing.id)); }
   else {
