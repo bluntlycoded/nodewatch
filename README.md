@@ -235,20 +235,4 @@ and escalation policies.
 The dashboard lists these with a page describing what each would collect and
 how it would work, rather than a dead link.
 
----
 
-## Comparison, honestly
-
-Against a mature NMS or SIEM — ManageEngine OpManager, Wazuh, Datadog —
-nodewatch is far narrower. They have thousands of decoders and detection rules,
-compliance mappings, and years of edge cases handled. Two rounds of false
-positives in this project (snapd unit churn, an unreachable cloud gateway) are
-exactly the kind of thing their rule sets already account for.
-
-What nodewatch has that they do not is the trust layer: a continuously decaying,
-explainable per-host score with re-verification thresholds, and cryptographic
-enrolment rather than a shared registration password.
-
-The honest position is not "a free OpManager." It is: *those tools tell you a
-host is reachable and what it is doing; this one quantifies how much to trust
-it, and shows its working.*
