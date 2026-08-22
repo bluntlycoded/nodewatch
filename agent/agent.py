@@ -27,15 +27,32 @@ import identity as ident_mod
 import osdetect
 import inventory
 
+
 # ---------------------------------------------------------------- config
 
-INGEST_URL = os.environ.get("NW_INGEST_URL", "http://100.64.0.1:8000").rstrip("/")
-STATE_DIR = Path(os.environ.get("NW_STATE_DIR", "/var/lib/nodewatch"))
-# Optional single-use enrolment token, issued from the dashboard. Only
-# required when the server is configured with NW_REQUIRE_TOKEN=true.
-ENROLL_TOKEN = os.environ.get("NW_ENROLL_TOKEN", "")
+INGEST_URL = os.environ.get(
+    "NW_INGEST_URL",
+    "http://100.64.0.1:8000"
+).rstrip("/")
+
+STATE_DIR = Path(
+    os.environ.get(
+        "NW_STATE_DIR",
+        "/var/lib/nodewatch"
+    )
+)
+
+# Optional single-use enrolment token, issued from the dashboard.
+# Only required when the server is configured with NW_REQUIRE_TOKEN=true.
+ENROLL_TOKEN = os.environ.get(
+    "NW_ENROLL_TOKEN",
+    ""
+)
+
 AGENT_VERSION = "0.4.0"
+
 DB_PATH = STATE_DIR / "buffer.db"
+
 
 HEARTBEAT_INTERVAL = 15
 PORTS_INTERVAL = 60
@@ -48,16 +65,20 @@ FIM_INTERVAL = 300
 PACKAGES_INTERVAL = 21600
 FLUSH_INTERVAL = 15
 
+
 MAX_BUFFER_ROWS = 10_000
 FLUSH_BATCH = 40
 HTTP_TIMEOUT = 45
 
+
 IMDS = "http://169.254.169.254"
+
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
 )
+
 log = logging.getLogger("nodewatch")
 
 
@@ -67,9 +88,21 @@ class Buffer:
     """Durable local queue. Survives restarts and network outages."""
 
     def __init__(self, path: Path):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(str(path), isolation_level=None)
-        self.db.execute("PRAGMA journal_mode=WAL")
+
+        path.parent.mkdir(
+            parents=True,
+            exist_ok=True
+        )
+
+        self.db = sqlite3.connect(
+            str(path),
+            isolation_level=None
+        )
+
+        self.db.execute(
+            "PRAGMA journal_mode=WAL"
+        )
+
         self.db.execute(
             "CREATE TABLE IF NOT EXISTS queue ("
             " id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -77,50 +110,108 @@ class Buffer:
             " payload TEXT NOT NULL,"
             " ts REAL NOT NULL)"
         )
+
         self.db.execute(
-            "CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)"
+            "CREATE TABLE IF NOT EXISTS meta "
+            "(k TEXT PRIMARY KEY, v TEXT)"
         )
 
-    def push(self, kind: str, payload: dict) -> None:
+    def push(
+        self,
+        kind: str,
+        payload: dict
+    ) -> None:
+
         self.db.execute(
-            "INSERT INTO queue (kind, payload, ts) VALUES (?, ?, ?)",
-            (kind, json.dumps(payload), time.time()),
+            "INSERT INTO queue "
+            "(kind, payload, ts) "
+            "VALUES (?, ?, ?)",
+            (
+                kind,
+                json.dumps(payload),
+                time.time()
+            ),
         )
-        # Drop oldest if we've exceeded the cap, so a long outage can't
-        # fill the disk.
+
+        # Drop oldest if we've exceeded the cap, so a long outage
+        # can't fill the disk.
         self.db.execute(
             "DELETE FROM queue WHERE id NOT IN ("
-            " SELECT id FROM queue ORDER BY id DESC LIMIT ?)",
+            " SELECT id FROM queue "
+            " ORDER BY id DESC LIMIT ?)",
             (MAX_BUFFER_ROWS,),
         )
 
-    def peek(self, limit: int = FLUSH_BATCH):
+    def peek(
+        self,
+        limit: int = FLUSH_BATCH
+    ):
+
         rows = self.db.execute(
-            "SELECT id, kind, payload, ts FROM queue ORDER BY id LIMIT ?",
+            "SELECT id, kind, payload, ts "
+            "FROM queue ORDER BY id LIMIT ?",
             (limit,),
         ).fetchall()
+
         return [
-            {"id": r[0], "kind": r[1], "payload": json.loads(r[2]), "ts": r[3]}
+            {
+                "id": r[0],
+                "kind": r[1],
+                "payload": json.loads(r[2]),
+                "ts": r[3],
+            }
             for r in rows
         ]
 
-    def drop(self, ids) -> None:
+    def drop(
+        self,
+        ids
+    ) -> None:
+
         if not ids:
             return
-        marks = ",".join("?" * len(ids))
-        self.db.execute(f"DELETE FROM queue WHERE id IN ({marks})", ids)
+
+        marks = ",".join(
+            "?" * len(ids)
+        )
+
+        self.db.execute(
+            f"DELETE FROM queue "
+            f"WHERE id IN ({marks})",
+            ids
+        )
 
     def depth(self) -> int:
-        return self.db.execute("SELECT COUNT(*) FROM queue").fetchone()[0]
 
-    def get_meta(self, key: str, default=None):
-        row = self.db.execute("SELECT v FROM meta WHERE k = ?", (key,)).fetchone()
+        return self.db.execute(
+            "SELECT COUNT(*) FROM queue"
+        ).fetchone()[0]
+
+    def get_meta(
+        self,
+        key: str,
+        default=None
+    ):
+
+        row = self.db.execute(
+            "SELECT v FROM meta "
+            "WHERE k = ?",
+            (key,),
+        ).fetchone()
+
         return row[0] if row else default
 
-    def set_meta(self, key: str, value: str) -> None:
+    def set_meta(
+        self,
+        key: str,
+        value: str
+    ) -> None:
+
         self.db.execute(
-            "INSERT INTO meta (k, v) VALUES (?, ?) "
-            "ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+            "INSERT INTO meta (k, v) "
+            "VALUES (?, ?) "
+            "ON CONFLICT(k) "
+            "DO UPDATE SET v = excluded.v",
             (key, value),
         )
 
@@ -128,57 +219,110 @@ class Buffer:
 # ---------------------------------------------------------------- identity
 
 def imds_token() -> str:
+
     r = requests.put(
         f"{IMDS}/latest/api/token",
-        headers={"X-aws-ec2-metadata-token-ttl-seconds": "300"},
+        headers={
+            "X-aws-ec2-metadata-token-ttl-seconds": "300"
+        },
         timeout=2,
     )
+
     r.raise_for_status()
+
     return r.text
 
 
 def instance_identity():
-    """
-    Returns (instance_id, parsed document, raw document text, signed pkcs7).
 
-    The raw text matters: AWS signs those exact bytes, so re-encoding the
-    parsed dict would break signature verification on the server.
     """
+    Returns:
+
+        (instance_id,
+         parsed document,
+         raw document text,
+         signed pkcs7)
+
+    The raw text matters: AWS signs those exact bytes, so
+    re-encoding the parsed dict would break signature
+    verification on the server.
+    """
+
     tok = imds_token()
-    h = {"X-aws-ec2-metadata-token": tok}
+
+    h = {
+        "X-aws-ec2-metadata-token": tok
+    }
+
     resp = requests.get(
-        f"{IMDS}/latest/dynamic/instance-identity/document", headers=h, timeout=2
+        f"{IMDS}/latest/dynamic/"
+        f"instance-identity/document",
+        headers=h,
+        timeout=2,
     )
+
     doc_raw = resp.text
+
     doc = resp.json()
+
     pkcs7 = requests.get(
-        f"{IMDS}/latest/dynamic/instance-identity/pkcs7", headers=h, timeout=2
+        f"{IMDS}/latest/dynamic/"
+        f"instance-identity/pkcs7",
+        headers=h,
+        timeout=2,
     ).text
-    return doc["instanceId"], doc, doc_raw, pkcs7
+
+    return (
+        doc["instanceId"],
+        doc,
+        doc_raw,
+        pkcs7,
+    )
 
 
 class Session:
     """Holds the short-lived JWT and re-enrolls when it expires."""
 
     def __init__(self):
+
         self.token = None
         self.instance_id = None
 
     def enroll(self) -> bool:
+
         """
-        Provider-agnostic. On AWS/GCP/Azure the cloud vouches for the host; on
-        anything else the enrolment token is the only evidence, so a missing
-        token is a hard failure rather than a downgrade.
+        Provider-agnostic.
+
+        On AWS/GCP/Azure the cloud vouches for the host;
+        on anything else the enrolment token is the only
+        evidence, so a missing token is a hard failure
+        rather than a downgrade.
         """
+
         try:
+
             ident = ident_mod.collect_identity()
+
         except Exception as e:
-            log.error("could not establish identity: %s", e)
+
+            log.error(
+                "could not establish identity: %s",
+                e
+            )
+
             return False
 
-        if ident.get("provider") == "generic" and not ENROLL_TOKEN:
-            log.error("this host has no cloud identity, so NW_ENROLL_TOKEN is "
-                      "required. Issue one from the dashboard.")
+        if (
+            ident.get("provider") == "generic"
+            and not ENROLL_TOKEN
+        ):
+
+            log.error(
+                "this host has no cloud identity, so "
+                "NW_ENROLL_TOKEN is required. "
+                "Issue one from the dashboard."
+            )
+
             return False
 
         body = {
@@ -188,198 +332,652 @@ class Session:
             "agent_version": AGENT_VERSION,
             "os": platform_string(),
         }
+
         try:
-            r = requests.post(f"{INGEST_URL}/v1/enroll", json=body, timeout=HTTP_TIMEOUT)
+
+            r = requests.post(
+                f"{INGEST_URL}/v1/enroll",
+                json=body,
+                timeout=HTTP_TIMEOUT,
+            )
+
         except Exception as e:
-            log.warning("enroll request failed: %s", e)
+
+            log.warning(
+                "enroll request failed: %s",
+                e
+            )
+
             return False
 
         if r.status_code != 200:
-            log.error("enroll rejected (%s): %s", r.status_code, r.text[:200])
+
+            log.error(
+                "enroll rejected (%s): %s",
+                r.status_code,
+                r.text[:200],
+            )
+
             return False
 
         data = r.json()
+
         self.token = data["token"]
-        self.instance_id = data.get("agent_id")
-        log.info("enrolled as %s [%s, proof=%s]",
-                 ident.get("node_id"), data.get("provider"),
-                 data.get("identity_proof"))
+
+        self.instance_id = data.get(
+            "agent_id"
+        )
+
+        log.info(
+            "enrolled as %s [%s, proof=%s]",
+            ident.get("node_id"),
+            data.get("provider"),
+            data.get("identity_proof"),
+        )
+
         return True
 
     def headers(self):
-        return {"Authorization": f"Bearer {self.token}"}
+
+        return {
+            "Authorization":
+                f"Bearer {self.token}"
+        }
 
 
 def platform_string() -> str:
-    return osdetect.os_label()
+    """
+    Return a platform label that works on Linux,
+    macOS and Windows.
+
+    osdetect.os_label() is used first because the
+    project already provides platform detection.
+    """
+
+    try:
+
+        label = osdetect.os_label()
+
+        if label:
+            return label
+
+    except Exception as e:
+
+        log.warning(
+            "platform detection failed: %s",
+            e
+        )
+
+    # Fallbacks in case osdetect cannot determine it.
+
+    if sys.platform.startswith("win"):
+
+        return "Windows"
+
+    if sys.platform.startswith("darwin"):
+
+        return "macOS"
+
+    if sys.platform.startswith("linux"):
+
+        return "Linux"
+
+    return sys.platform
 
 
 # ---------------------------------------------------------------- collectors
 
 def collect_metrics() -> dict:
+    """
+    Collect basic host metrics.
+
+    Windows does not implement os.getloadavg(),
+    so load1 is None on Windows instead of crashing
+    the entire agent.
+    """
+
+    load1 = None
+
+    # os.getloadavg() exists on Unix-like platforms,
+    # but NOT on Windows.
+    if hasattr(os, "getloadavg"):
+
+        try:
+
+            load1 = os.getloadavg()[0]
+
+        except (
+            OSError,
+            AttributeError
+        ):
+
+            load1 = None
+
+    # Use the current operating system's filesystem root.
+    #
+    # Linux:
+    #     /
+    #
+    # Windows:
+    #     C:\
+    #
+    # macOS:
+    #     /
+    disk_path = os.path.abspath(
+        os.sep
+    )
+
     return {
-        "cpu_pct": psutil.cpu_percent(interval=1),
+        "cpu_pct": psutil.cpu_percent(
+            interval=1
+        ),
+
         "mem_pct": psutil.virtual_memory().percent,
-        "disk_pct": psutil.disk_usage("/").percent,
-        "load1": os.getloadavg()[0],
-        "uptime_s": int(time.time() - psutil.boot_time()),
-        "proc_count": len(psutil.pids()),
+
+        "disk_pct": psutil.disk_usage(
+            disk_path
+        ).percent,
+
+        "load1": load1,
+
+        "uptime_s": int(
+            time.time()
+            - psutil.boot_time()
+        ),
+
+        "proc_count": len(
+            psutil.pids()
+        ),
     }
 
 
 def collect_ports() -> list:
-    """Full snapshot of listening sockets. The server diffs it."""
+    """
+    Full snapshot of listening sockets.
+    The server diffs it.
+    """
+
     out = []
-    for c in psutil.net_connections(kind="inet"):
+
+    for c in psutil.net_connections(
+        kind="inet"
+    ):
+
         if c.status != psutil.CONN_LISTEN:
+
             continue
+
         proc = None
+
         if c.pid:
+
             try:
-                proc = psutil.Process(c.pid).name()
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
+
+                proc = psutil.Process(
+                    c.pid
+                ).name()
+
+            except (
+                psutil.NoSuchProcess,
+                psutil.AccessDenied
+            ):
+
                 proc = None
+
         bind = c.laddr.ip
+
         out.append(
             {
                 "port": c.laddr.port,
-                "proto": "tcp" if c.type == socket.SOCK_STREAM else "udp",
+
+                "proto": (
+                    "tcp"
+                    if c.type == socket.SOCK_STREAM
+                    else "udp"
+                ),
+
                 "bind_addr": bind,
-                "external": bind in ("0.0.0.0", "::"),
+
+                "external": bind in (
+                    "0.0.0.0",
+                    "::"
+                ),
+
                 "pid": c.pid,
+
                 "process": proc,
             }
         )
+
     return out
 
 
 def collect_auth_events(buf):
-    """Sign-in events, however this platform records them."""
+    """
+    Sign-in events, however this platform records them.
+    """
+
     try:
-        return osdetect.collect_auth_events(buf)
+
+        return osdetect.collect_auth_events(
+            buf
+        )
+
     except Exception as e:
-        log.warning("auth collection failed: %s", e)
+
+        log.warning(
+            "auth collection failed: %s",
+            e
+        )
+
         return []
 
 
 # ---------------------------------------------------------------- shipping
 
-def flush(buf: Buffer, sess: Session) -> None:
+def flush(
+    buf: Buffer,
+    sess: Session
+) -> None:
+
     batch = buf.peek()
+
     if not batch:
-        return
-    if not sess.token and not sess.enroll():
+
         return
 
-    body = {"events": [{"kind": b["kind"], "ts": b["ts"], "data": b["payload"]} for b in batch]}
+    if (
+        not sess.token
+        and not sess.enroll()
+    ):
+
+        return
+
+    body = {
+        "events": [
+            {
+                "kind": b["kind"],
+                "ts": b["ts"],
+                "data": b["payload"],
+            }
+            for b in batch
+        ]
+    }
+
     try:
+
         r = requests.post(
             f"{INGEST_URL}/v1/ingest",
             json=body,
             headers=sess.headers(),
             timeout=HTTP_TIMEOUT,
         )
+
     except Exception as e:
-        log.warning("ship failed (%s), %d queued", e, buf.depth())
+
+        log.warning(
+            "ship failed (%s), %d queued",
+            e,
+            buf.depth(),
+        )
+
         return
 
     if r.status_code == 401:
-        log.info("token expired, re-enrolling")
+
+        log.info(
+            "token expired, re-enrolling"
+        )
+
         sess.token = None
-        return
-    if r.status_code >= 400:
-        log.error("ingest rejected (%s): %s", r.status_code, r.text[:200])
+
         return
 
-    buf.drop([b["id"] for b in batch])
-    log.info("shipped %d events, %d still queued", len(batch), buf.depth())
+    if r.status_code >= 400:
+
+        log.error(
+            "ingest rejected (%s): %s",
+            r.status_code,
+            r.text[:200]
+        )
+
+        return
+
+    buf.drop(
+        [
+            b["id"]
+            for b in batch
+        ]
+    )
+
+    log.info(
+        "shipped %d events, %d still queued",
+        len(batch),
+        buf.depth(),
+    )
 
 
 # ---------------------------------------------------------------- main
 
 def main():
-    buf = Buffer(DB_PATH)
+
+    buf = Buffer(
+        DB_PATH
+    )
+
     sess = Session()
+
     sess.enroll()
 
-    next_run = {"heartbeat": 0.0, "ports": 0.0, "auth": 0.0,
-                "checks": 0.0, "users": 0.0, "interfaces": 0.0, "apps": 0.0, "fim": 0.0,
-                "packages": 0.0, "flush": 0.0}
+    next_run = {
+        "heartbeat": 0.0,
+        "ports": 0.0,
+        "auth": 0.0,
+        "checks": 0.0,
+        "users": 0.0,
+        "interfaces": 0.0,
+        "apps": 0.0,
+        "fim": 0.0,
+        "packages": 0.0,
+        "flush": 0.0,
+    }
 
     while True:
+
         now = time.time()
 
+        # ------------------------------------------------ heartbeat
+
         if now >= next_run["heartbeat"]:
-            buf.push("heartbeat", collect_metrics())
-            next_run["heartbeat"] = now + HEARTBEAT_INTERVAL
+
+            try:
+
+                buf.push(
+                    "heartbeat",
+                    collect_metrics()
+                )
+
+            except Exception as e:
+
+                # A collector failure must NOT kill
+                # the entire agent.
+
+                log.exception(
+                    "heartbeat collection failed: %s",
+                    e
+                )
+
+            next_run["heartbeat"] = (
+                now + HEARTBEAT_INTERVAL
+            )
+
+        # ------------------------------------------------ ports
 
         if now >= next_run["ports"]:
-            buf.push("ports", {"listening": collect_ports()})
-            next_run["ports"] = now + PORTS_INTERVAL
+
+            try:
+
+                buf.push(
+                    "ports",
+                    {
+                        "listening":
+                            collect_ports()
+                    }
+                )
+
+            except Exception as e:
+
+                log.exception(
+                    "port collection failed: %s",
+                    e
+                )
+
+            next_run["ports"] = (
+                now + PORTS_INTERVAL
+            )
+
+        # ------------------------------------------------ auth
 
         if now >= next_run["auth"]:
-            for ev in collect_auth_events(buf):
-                buf.push("auth", ev)
-            next_run["auth"] = now + AUTH_INTERVAL
+
+            try:
+
+                for ev in collect_auth_events(
+                    buf
+                ):
+
+                    buf.push(
+                        "auth",
+                        ev
+                    )
+
+            except Exception as e:
+
+                log.exception(
+                    "auth collection failed: %s",
+                    e
+                )
+
+            next_run["auth"] = (
+                now + AUTH_INTERVAL
+            )
+
+        # ------------------------------------------------ posture checks
 
         if now >= next_run["checks"]:
-            buf.push("checks", {"results": checks.collect_checks()})
-            next_run["checks"] = now + CHECKS_INTERVAL
+
+            try:
+
+                buf.push(
+                    "checks",
+                    {
+                        "results":
+                            checks.collect_checks()
+                    }
+                )
+
+            except Exception as e:
+
+                log.exception(
+                    "checks collection failed: %s",
+                    e
+                )
+
+            next_run["checks"] = (
+                now + CHECKS_INTERVAL
+            )
+
+        # ------------------------------------------------ users
 
         if now >= next_run["users"]:
+
             try:
-                buf.push("users", {"accounts": checks.collect_users()})
+
+                buf.push(
+                    "users",
+                    {
+                        "accounts":
+                            checks.collect_users()
+                    }
+                )
+
             except Exception as e:
-                log.warning("user collection failed: %s", e)
-            next_run["users"] = now + USERS_INTERVAL
+
+                log.warning(
+                    "user collection failed: %s",
+                    e
+                )
+
+            next_run["users"] = (
+                now + USERS_INTERVAL
+            )
+
+        # ------------------------------------------------ interfaces
 
         if now >= next_run["interfaces"]:
+
             try:
-                ifs = inventory.collect_interfaces()
+
+                ifs = (
+                    inventory.collect_interfaces()
+                )
+
                 if ifs:
-                    buf.push("interfaces", {"interfaces": ifs})
+
+                    buf.push(
+                        "interfaces",
+                        {
+                            "interfaces": ifs
+                        }
+                    )
+
             except Exception as e:
-                log.warning("interface collection failed: %s", e)
-            next_run["interfaces"] = now + INTERFACES_INTERVAL
+
+                log.warning(
+                    "interface collection failed: %s",
+                    e
+                )
+
+            next_run["interfaces"] = (
+                now + INTERFACES_INTERVAL
+            )
+
+        # ------------------------------------------------ applications
 
         if now >= next_run["apps"]:
+
             try:
-                apps = osdetect.collect_apps()
+
+                apps = (
+                    osdetect.collect_apps()
+                )
+
                 if apps:
-                    buf.push("apps", {"apps": apps})
+
+                    buf.push(
+                        "apps",
+                        {
+                            "apps": apps
+                        }
+                    )
+
             except Exception as e:
-                log.warning("application collection failed: %s", e)
-            next_run["apps"] = now + APPS_INTERVAL
+
+                log.warning(
+                    "application collection failed: %s",
+                    e
+                )
+
+            next_run["apps"] = (
+                now + APPS_INTERVAL
+            )
+
+        # ------------------------------------------------ FIM
 
         if now >= next_run["fim"]:
+
             try:
-                events, summary = inventory.collect_fim(buf)
-                buf.push("fim", {"events": events, "summary": summary})
+
+                events, summary = (
+                    inventory.collect_fim(
+                        buf
+                    )
+                )
+
+                buf.push(
+                    "fim",
+                    {
+                        "events": events,
+                        "summary": summary,
+                    }
+                )
+
                 if events:
-                    log.info("fim: %d change(s), %d critical",
-                             len(events), sum(1 for e in events if e["critical"]))
+
+                    log.info(
+                        "fim: %d change(s), %d critical",
+                        len(events),
+                        sum(
+                            1
+                            for e in events
+                            if e["critical"]
+                        ),
+                    )
+
             except Exception as e:
-                log.warning("fim collection failed: %s", e)
-            next_run["fim"] = now + FIM_INTERVAL
+
+                log.warning(
+                    "fim collection failed: %s",
+                    e
+                )
+
+            next_run["fim"] = (
+                now + FIM_INTERVAL
+            )
+
+        # ------------------------------------------------ packages
 
         if now >= next_run["packages"]:
+
             try:
-                pkgs = inventory.collect_packages()
+
+                pkgs = (
+                    inventory.collect_packages()
+                )
+
                 if pkgs:
-                    buf.push("packages", {"packages": pkgs})
+
+                    buf.push(
+                        "packages",
+                        {
+                            "packages": pkgs
+                        }
+                    )
+
             except Exception as e:
-                log.warning("package collection failed: %s", e)
-            next_run["packages"] = now + PACKAGES_INTERVAL
+
+                log.warning(
+                    "package collection failed: %s",
+                    e
+                )
+
+            next_run["packages"] = (
+                now + PACKAGES_INTERVAL
+            )
+
+        # ------------------------------------------------ flush
 
         if now >= next_run["flush"]:
-            flush(buf, sess)
-            next_run["flush"] = now + FLUSH_INTERVAL
+
+            try:
+
+                flush(
+                    buf,
+                    sess
+                )
+
+            except Exception as e:
+
+                log.exception(
+                    "flush failed: %s",
+                    e
+                )
+
+            next_run["flush"] = (
+                now + FLUSH_INTERVAL
+            )
 
         time.sleep(1)
 
 
+# ---------------------------------------------------------------- entry point
+
 if __name__ == "__main__":
+
     try:
+
         main()
+
     except KeyboardInterrupt:
+
         sys.exit(0)
