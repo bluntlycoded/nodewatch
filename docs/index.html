@@ -306,7 +306,7 @@ tailwind.config = { theme: { extend: {
         </div>
         <div class="grid sm:grid-cols-2 gap-3">
           <div>
-            <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Database (optional)</label>
+            <label id="k-dblabel" class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Database (optional)</label>
             <input id="k-db" placeholder="postgres"
                    class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
           </div>
@@ -678,8 +678,8 @@ const NAV = [
   ['Database', [
     ['databases?postgres', 'PostgreSQL Monitoring', {}],
     ['databases?mysql',    'MySQL Monitoring',      {}],
-    ['todo:mssql',    'SQL Server Monitoring', {todo:'mssql'}],
-    ['todo:oracle',   'Oracle DB Monitoring',  {todo:'oracle'}],
+    ['databases?mssql',    'SQL Server Monitoring', {}],
+    ['databases?oracle',   'Oracle DB Monitoring',  {}],
   ]],
   ['Application', [
     ['applications',       'Applications',      {}],
@@ -1109,6 +1109,10 @@ const CHECK_KINDS = {
               hint:'Connects and reads pg_stat_*. Use a role with pg_monitor and nothing more — monitoring should never be able to write.' },
   mysql:    { label:'MySQL',      creds:true,
               hint:'Reads SHOW GLOBAL STATUS. Needs PROCESS and REPLICATION CLIENT; SELECT only for the size query.' },
+  mssql:    { label:'SQL Server', creds:true,
+              hint:'Reads the dynamic management views. Needs a login with VIEW SERVER STATE — that grants the DMVs and nothing else, so it cannot read application data.' },
+  oracle:   { label:'Oracle',     creds:true, service:true,
+              hint:'Uses the thin driver, so no Instant Client is needed on the probe host. The account needs SELECT_CATALOG_ROLE, or grants on the individual v$ views.' },
   prometheus:{ label:'Prometheus', url:true,
               hint:'Scrapes a /metrics endpoint. Works with FastAPI, Flask, Django, Go services and exporters — anything emitting the text exposition format.' },
   nginx:    { label:'Nginx',      url:true,
@@ -1595,7 +1599,8 @@ function pageNetwork(){
 }
 
 // ═══════════════════════════ page: databases
-const DB_ENGINE = { postgres:'PostgreSQL', mysql:'MySQL' };
+const DB_ENGINE = { postgres:'PostgreSQL', mysql:'MySQL',
+                    mssql:'SQL Server', oracle:'Oracle' };
 
 function bytes(n){
   if(n==null) return '—';
@@ -1632,7 +1637,15 @@ GRANT pg_monitor TO nodewatch;
 
 -- MySQL
 CREATE USER 'nodewatch'@'%' IDENTIFIED BY '...';
-GRANT PROCESS, REPLICATION CLIENT, SELECT ON *.* TO 'nodewatch'@'%';</pre>
+GRANT PROCESS, REPLICATION CLIENT, SELECT ON *.* TO 'nodewatch'@'%';
+
+-- SQL Server
+CREATE LOGIN nodewatch WITH PASSWORD = '...';
+GRANT VIEW SERVER STATE TO nodewatch;
+
+-- Oracle (thin driver, no Instant Client needed)
+CREATE USER nodewatch IDENTIFIED BY "...";
+GRANT CREATE SESSION, SELECT_CATALOG_ROLE TO nodewatch;</pre>
       </div>`:''}
     </div>`;
 
@@ -1720,9 +1733,20 @@ GRANT PROCESS, REPLICATION CLIENT, SELECT ON *.* TO 'nodewatch'@'%';</pre>
                 <dd class="font-mono text-[13px] tabular-nums mt-0.5">${v}</dd>
               </div>`).join('')}
           </dl>
-          ${d.extra?`<p class="font-mono text-[10px] text-muted truncate">
-            ${Object.entries(d.extra).slice(0,4).map(([k,v])=>`${esc(k)} ${esc(String(v))}`).join(' · ')}
-          </p>`:''}
+          ${d.extra?`<p class="font-mono text-[10px] truncate">
+            ${[
+              d.extra.blocked_sessions ? `<span class="text-down">${d.extra.blocked_sessions} blocked</span>` : null,
+              d.extra.tablespace_worst_pct != null
+                ? `<span style="color:${d.extra.tablespace_worst_pct>=90?HEX.down:'var(--c-muted)'}">tablespace ${d.extra.tablespace_worst_pct}%</span>` : null,
+              d.extra.page_life_expectancy_s != null
+                ? `<span style="color:${d.extra.page_life_expectancy_s<300?HEX.degraded:'var(--c-muted)'}">PLE ${d.extra.page_life_expectancy_s}s</span>` : null,
+              d.extra.databases_offline ? `<span class="text-down">${d.extra.databases_offline} db offline</span>` : null,
+              d.extra.instance ? `<span class="text-muted">${esc(d.extra.instance)} ${esc(d.extra.version||'')}</span>` : null,
+              d.extra.is_replica ? '<span class="text-muted">replica</span>' : null,
+            ].filter(Boolean).join(' <span class="text-muted">·</span> ')}
+          </p>
+          ${d.extra.errors?`<p class="font-mono text-[10px] text-degraded truncate">
+            some metrics unavailable: ${esc(Object.keys(d.extra.errors).join(', '))} — check grants</p>`:''}`:''}
         </div>`}
 
         <div class="border-t border-hairline px-4 py-1.5 flex items-center justify-between">
@@ -2938,7 +2962,14 @@ function renderCheckKinds(){
     : checkKind === 'nginx'    ? 'http://10.0.0.5/nginx_status'
     : checkKind === 'url'      ? 'https://example.com/health' : '10.0.0.1';
   if (isDb && !$('k-port').value) {
-    $('k-port').value = checkKind === 'postgres' ? 5432 : 3306;
+    $('k-port').value = { postgres:5432, mysql:3306, mssql:1433, oracle:1521 }[checkKind] || '';
+  }
+  if ($('k-dblabel')) {
+    // Oracle connects to a service, not a database name, and getting that
+    // wrong is the usual reason a first connection fails.
+    $('k-dblabel').textContent = checkKind === 'oracle' ? 'Service name' : 'Database (optional)';
+    $('k-db').placeholder =
+      checkKind === 'oracle' ? 'ORCLPDB1' : checkKind === 'mssql' ? 'master' : 'postgres';
   }
 }
 
@@ -2999,6 +3030,7 @@ $('k-save').onclick = async () => {
         user: $('k-user').value.trim(),
         password: $('k-pass').value,
         dbname: $('k-db').value.trim() || null,
+        service_name: checkKind==='oracle' ? ($('k-db').value.trim() || null) : undefined,
         sslmode: $('k-ssl').value,
       },
       updated_at: new Date().toISOString(),
