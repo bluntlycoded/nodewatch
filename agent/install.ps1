@@ -21,18 +21,11 @@ $ErrorActionPreference = 'Stop'
 # ============================================================
 
 $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$currentPrincipal = [Security.Principal.WindowsPrincipal]$currentIdentity
 
-$currentPrincipal = New-Object `
-    Security.Principal.WindowsPrincipal(
-        $currentIdentity
-    )
-
-if (-not $currentPrincipal.IsInRole(
-    [Security.Principal.WindowsBuiltInRole]::Administrator
-)) {
+if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     throw 'Run this in an elevated PowerShell (Run as administrator).'
 }
-
 
 # ============================================================
 # CONFIGURATION
