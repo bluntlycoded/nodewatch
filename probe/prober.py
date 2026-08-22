@@ -1161,6 +1161,61 @@ def drain_nettools(conn):
     return len(jobs)
 
 
+# ---------------------------------------------------------------- automation
+
+# Only ever executes runs a human approved, and only outbound HTTP. Nothing
+# here touches a monitored host: nodewatch decides when, an automation
+# platform decides what.
+AUTOMATION_TIMEOUT = 30
+
+
+def run_automation(conn):
+    rows = conn.execute(
+        """update automation_runs set status = 'running'
+            where id in (select id from automation_runs
+                          where status = 'approved'
+                          order by created_at limit 3)
+        returning id::text, request"""
+    ).fetchall()
+    if not rows:
+        return 0
+
+    for r in rows:
+        req = r["request"] or {}
+        url = req.get("url")
+        if not url or not str(url).lower().startswith(("http://", "https://")):
+            conn.execute(
+                """update automation_runs set status='failed', finished_at=now(),
+                       response='no valid url on the rule' where id = %s""", (r["id"],))
+            continue
+
+        body = json.dumps(req.get("body") or {}).encode()
+        headers = {"Content-Type": "application/json", "User-Agent": USER_AGENT}
+        for k, v in (req.get("headers") or {}).items():
+            headers[str(k)] = str(v)
+
+        request = urllib.request.Request(
+            url, data=body, headers=headers,
+            method=(req.get("method") or "POST").upper())
+        try:
+            with urllib.request.urlopen(request, timeout=AUTOMATION_TIMEOUT) as resp:
+                out, code = resp.read(8192).decode("utf-8", "replace"), resp.status
+            status = "done"
+        except urllib.error.HTTPError as e:
+            out, code, status = e.read(4096).decode("utf-8", "replace"), e.code, "failed"
+        except Exception as e:
+            out, code, status = str(e)[:500], None, "failed"
+
+        conn.execute(
+            """update automation_runs
+                  set status = %s, response = %s, http_status = %s, finished_at = now()
+                where id = %s""",
+            (status, out[:4000], code, r["id"]))
+        log.info("automation run %s -> %s", r["id"][:8], status)
+
+    return len(rows)
+
+
 # ---------------------------------------------------------------- topology
 
 # Traceroute is slow and the path rarely changes, so it runs far less often
@@ -1331,6 +1386,7 @@ def main():
 
                 drain_nettools(conn)
                 trace_targets(conn)
+                run_automation(conn)
 
                 # Forget probes that have been deleted, so the dict cannot
                 # grow without bound over a long uptime.
