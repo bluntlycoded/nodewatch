@@ -708,9 +708,7 @@ print("Windows agent smoke test: OK")
 "@
 
 
-$probe = & $VenvPy `
-    -c $probeCode `
-    2>&1
+$probe = & $VenvPy -c $probeCode 2>&1
 
 
 if ($LASTEXITCODE -ne 0) {
