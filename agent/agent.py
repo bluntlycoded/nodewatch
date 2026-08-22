@@ -27,7 +27,6 @@ import identity as ident_mod
 import osdetect
 import inventory
 
-
 # ---------------------------------------------------------------- config
 
 INGEST_URL = os.environ.get(
@@ -43,7 +42,7 @@ STATE_DIR = Path(
 )
 
 # Optional single-use enrolment token, issued from the dashboard.
-# Only required when the server is configured with NW_REQUIRE_TOKEN=true.
+# Required when the server is configured with NW_REQUIRE_TOKEN=true.
 ENROLL_TOKEN = os.environ.get(
     "NW_ENROLL_TOKEN",
     ""
@@ -52,7 +51,6 @@ ENROLL_TOKEN = os.environ.get(
 AGENT_VERSION = "0.4.0"
 
 DB_PATH = STATE_DIR / "buffer.db"
-
 
 HEARTBEAT_INTERVAL = 15
 PORTS_INTERVAL = 60
@@ -65,11 +63,9 @@ FIM_INTERVAL = 300
 PACKAGES_INTERVAL = 21600
 FLUSH_INTERVAL = 15
 
-
 MAX_BUFFER_ROWS = 10_000
 FLUSH_BATCH = 40
 HTTP_TIMEOUT = 45
-
 
 IMDS = "http://169.254.169.254"
 
@@ -88,7 +84,6 @@ class Buffer:
     """Durable local queue. Survives restarts and network outages."""
 
     def __init__(self, path: Path):
-
         path.parent.mkdir(
             parents=True,
             exist_ok=True
@@ -133,12 +128,12 @@ class Buffer:
             ),
         )
 
-        # Drop oldest if we've exceeded the cap, so a long outage
-        # can't fill the disk.
+        # Drop oldest rows if the buffer exceeds the cap.
         self.db.execute(
             "DELETE FROM queue WHERE id NOT IN ("
             " SELECT id FROM queue "
-            " ORDER BY id DESC LIMIT ?)",
+            " ORDER BY id DESC "
+            " LIMIT ?)",
             (MAX_BUFFER_ROWS,),
         )
 
@@ -146,10 +141,11 @@ class Buffer:
         self,
         limit: int = FLUSH_BATCH
     ):
-
         rows = self.db.execute(
             "SELECT id, kind, payload, ts "
-            "FROM queue ORDER BY id LIMIT ?",
+            "FROM queue "
+            "ORDER BY id "
+            "LIMIT ?",
             (limit,),
         ).fetchall()
 
@@ -163,10 +159,7 @@ class Buffer:
             for r in rows
         ]
 
-    def drop(
-        self,
-        ids
-    ) -> None:
+    def drop(self, ids) -> None:
 
         if not ids:
             return
@@ -178,7 +171,7 @@ class Buffer:
         self.db.execute(
             f"DELETE FROM queue "
             f"WHERE id IN ({marks})",
-            ids
+            ids,
         )
 
     def depth(self) -> int:
@@ -212,7 +205,10 @@ class Buffer:
             "VALUES (?, ?) "
             "ON CONFLICT(k) "
             "DO UPDATE SET v = excluded.v",
-            (key, value),
+            (
+                key,
+                value
+            ),
         )
 
 
@@ -237,15 +233,14 @@ def instance_identity():
 
     """
     Returns:
+        (
+            instance_id,
+            parsed document,
+            raw document text,
+            signed pkcs7
+        )
 
-        (instance_id,
-         parsed document,
-         raw document text,
-         signed pkcs7)
-
-    The raw text matters: AWS signs those exact bytes, so
-    re-encoding the parsed dict would break signature
-    verification on the server.
+    The raw text matters because AWS signs those exact bytes.
     """
 
     tok = imds_token()
@@ -256,7 +251,7 @@ def instance_identity():
 
     resp = requests.get(
         f"{IMDS}/latest/dynamic/"
-        f"instance-identity/document",
+        "instance-identity/document",
         headers=h,
         timeout=2,
     )
@@ -267,7 +262,7 @@ def instance_identity():
 
     pkcs7 = requests.get(
         f"{IMDS}/latest/dynamic/"
-        f"instance-identity/pkcs7",
+        "instance-identity/pkcs7",
         headers=h,
         timeout=2,
     ).text
@@ -293,10 +288,8 @@ class Session:
         """
         Provider-agnostic.
 
-        On AWS/GCP/Azure the cloud vouches for the host;
-        on anything else the enrolment token is the only
-        evidence, so a missing token is a hard failure
-        rather than a downgrade.
+        On AWS/GCP/Azure the cloud vouches for the host.
+        On anything else the enrolment token is the only evidence.
         """
 
         try:
@@ -318,8 +311,8 @@ class Session:
         ):
 
             log.error(
-                "this host has no cloud identity, so "
-                "NW_ENROLL_TOKEN is required. "
+                "this host has no cloud identity, "
+                "so NW_ENROLL_TOKEN is required. "
                 "Issue one from the dashboard."
             )
 
@@ -327,7 +320,11 @@ class Session:
 
         body = {
             "identity": ident,
-            "enroll_token": ENROLL_TOKEN or None,
+            "enroll_token": (
+                ENROLL_TOKEN
+                if ENROLL_TOKEN
+                else None
+            ),
             "hostname": socket.gethostname(),
             "agent_version": AGENT_VERSION,
             "os": platform_string(),
@@ -355,7 +352,7 @@ class Session:
             log.error(
                 "enroll rejected (%s): %s",
                 r.status_code,
-                r.text[:200],
+                r.text[:200]
             )
 
             return False
@@ -380,49 +377,15 @@ class Session:
     def headers(self):
 
         return {
-            "Authorization":
+            "Authorization": (
                 f"Bearer {self.token}"
+            )
         }
 
 
 def platform_string() -> str:
-    """
-    Return a platform label that works on Linux,
-    macOS and Windows.
 
-    osdetect.os_label() is used first because the
-    project already provides platform detection.
-    """
-
-    try:
-
-        label = osdetect.os_label()
-
-        if label:
-            return label
-
-    except Exception as e:
-
-        log.warning(
-            "platform detection failed: %s",
-            e
-        )
-
-    # Fallbacks in case osdetect cannot determine it.
-
-    if sys.platform.startswith("win"):
-
-        return "Windows"
-
-    if sys.platform.startswith("darwin"):
-
-        return "macOS"
-
-    if sys.platform.startswith("linux"):
-
-        return "Linux"
-
-    return sys.platform
+    return osdetect.os_label()
 
 
 # ---------------------------------------------------------------- collectors
@@ -431,15 +394,74 @@ def collect_metrics() -> dict:
     """
     Collect basic host metrics.
 
-    Windows does not implement os.getloadavg(),
-    so load1 is None on Windows instead of crashing
-    the entire agent.
+    IMPORTANT:
+    os.getloadavg() is not available on Windows.
+
+    Linux/macOS:
+        load1 = actual 1-minute load average
+
+    Windows:
+        load1 = None
+
+    This keeps the API schema stable while allowing the agent
+    to run correctly on Windows.
     """
+
+    # --------------------------------------------------------
+    # CPU
+    # --------------------------------------------------------
+
+    cpu_pct = psutil.cpu_percent(
+        interval=1
+    )
+
+    # --------------------------------------------------------
+    # Memory
+    # --------------------------------------------------------
+
+    mem_pct = psutil.virtual_memory().percent
+
+    # --------------------------------------------------------
+    # Disk
+    # --------------------------------------------------------
+    #
+    # "/" works on Linux/macOS.
+    # Windows is safer using the system drive.
+
+    if sys.platform.startswith("win"):
+
+        system_drive = os.environ.get(
+            "SystemDrive",
+            "C:"
+        )
+
+        disk_path = system_drive + "\\"
+
+    else:
+
+        disk_path = "/"
+
+    try:
+
+        disk_pct = psutil.disk_usage(
+            disk_path
+        ).percent
+
+    except Exception as e:
+
+        log.warning(
+            "disk usage collection failed: %s",
+            e
+        )
+
+        disk_pct = 0.0
+
+    # --------------------------------------------------------
+    # Load average
+    # --------------------------------------------------------
 
     load1 = None
 
-    # os.getloadavg() exists on Unix-like platforms,
-    # but NOT on Windows.
     if hasattr(os, "getloadavg"):
 
         try:
@@ -447,47 +469,58 @@ def collect_metrics() -> dict:
             load1 = os.getloadavg()[0]
 
         except (
-            OSError,
-            AttributeError
+            AttributeError,
+            OSError
         ):
 
             load1 = None
 
-    # Use the current operating system's filesystem root.
-    #
-    # Linux:
-    #     /
-    #
-    # Windows:
-    #     C:\
-    #
-    # macOS:
-    #     /
-    disk_path = os.path.abspath(
-        os.sep
-    )
+    # --------------------------------------------------------
+    # Uptime
+    # --------------------------------------------------------
 
-    return {
-        "cpu_pct": psutil.cpu_percent(
-            interval=1
-        ),
+    try:
 
-        "mem_pct": psutil.virtual_memory().percent,
-
-        "disk_pct": psutil.disk_usage(
-            disk_path
-        ).percent,
-
-        "load1": load1,
-
-        "uptime_s": int(
+        uptime_s = int(
             time.time()
             - psutil.boot_time()
-        ),
+        )
 
-        "proc_count": len(
+    except Exception as e:
+
+        log.warning(
+            "uptime collection failed: %s",
+            e
+        )
+
+        uptime_s = 0
+
+    # --------------------------------------------------------
+    # Process count
+    # --------------------------------------------------------
+
+    try:
+
+        proc_count = len(
             psutil.pids()
-        ),
+        )
+
+    except Exception as e:
+
+        log.warning(
+            "process count collection failed: %s",
+            e
+        )
+
+        proc_count = 0
+
+    return {
+        "cpu_pct": cpu_pct,
+        "mem_pct": mem_pct,
+        "disk_pct": disk_pct,
+        "load1": load1,
+        "uptime_s": uptime_s,
+        "proc_count": proc_count,
     }
 
 
@@ -499,12 +532,24 @@ def collect_ports() -> list:
 
     out = []
 
-    for c in psutil.net_connections(
-        kind="inet"
-    ):
+    try:
+
+        connections = psutil.net_connections(
+            kind="inet"
+        )
+
+    except Exception as e:
+
+        log.warning(
+            "network connection collection failed: %s",
+            e
+        )
+
+        return out
+
+    for c in connections:
 
         if c.status != psutil.CONN_LISTEN:
-
             continue
 
         proc = None
@@ -524,27 +569,29 @@ def collect_ports() -> list:
 
                 proc = None
 
-        bind = c.laddr.ip
+        try:
+
+            bind = c.laddr.ip
+            port = c.laddr.port
+
+        except Exception:
+
+            continue
 
         out.append(
             {
-                "port": c.laddr.port,
-
+                "port": port,
                 "proto": (
                     "tcp"
                     if c.type == socket.SOCK_STREAM
                     else "udp"
                 ),
-
                 "bind_addr": bind,
-
                 "external": bind in (
                     "0.0.0.0",
                     "::"
                 ),
-
                 "pid": c.pid,
-
                 "process": proc,
             }
         )
@@ -583,7 +630,6 @@ def flush(
     batch = buf.peek()
 
     if not batch:
-
         return
 
     if (
@@ -618,7 +664,7 @@ def flush(
         log.warning(
             "ship failed (%s), %d queued",
             e,
-            buf.depth(),
+            buf.depth()
         )
 
         return
@@ -653,7 +699,7 @@ def flush(
     log.info(
         "shipped %d events, %d still queued",
         len(batch),
-        buf.depth(),
+        buf.depth()
     )
 
 
@@ -686,21 +732,22 @@ def main():
 
         now = time.time()
 
-        # ------------------------------------------------ heartbeat
+        # ----------------------------------------------------
+        # heartbeat
+        # ----------------------------------------------------
 
         if now >= next_run["heartbeat"]:
 
             try:
 
+                metrics = collect_metrics()
+
                 buf.push(
                     "heartbeat",
-                    collect_metrics()
+                    metrics
                 )
 
             except Exception as e:
-
-                # A collector failure must NOT kill
-                # the entire agent.
 
                 log.exception(
                     "heartbeat collection failed: %s",
@@ -708,10 +755,13 @@ def main():
                 )
 
             next_run["heartbeat"] = (
-                now + HEARTBEAT_INTERVAL
+                now
+                + HEARTBEAT_INTERVAL
             )
 
-        # ------------------------------------------------ ports
+        # ----------------------------------------------------
+        # ports
+        # ----------------------------------------------------
 
         if now >= next_run["ports"]:
 
@@ -733,10 +783,13 @@ def main():
                 )
 
             next_run["ports"] = (
-                now + PORTS_INTERVAL
+                now
+                + PORTS_INTERVAL
             )
 
-        # ------------------------------------------------ auth
+        # ----------------------------------------------------
+        # auth
+        # ----------------------------------------------------
 
         if now >= next_run["auth"]:
 
@@ -759,10 +812,13 @@ def main():
                 )
 
             next_run["auth"] = (
-                now + AUTH_INTERVAL
+                now
+                + AUTH_INTERVAL
             )
 
-        # ------------------------------------------------ posture checks
+        # ----------------------------------------------------
+        # checks
+        # ----------------------------------------------------
 
         if now >= next_run["checks"]:
 
@@ -778,16 +834,19 @@ def main():
 
             except Exception as e:
 
-                log.exception(
+                log.warning(
                     "checks collection failed: %s",
                     e
                 )
 
             next_run["checks"] = (
-                now + CHECKS_INTERVAL
+                now
+                + CHECKS_INTERVAL
             )
 
-        # ------------------------------------------------ users
+        # ----------------------------------------------------
+        # users
+        # ----------------------------------------------------
 
         if now >= next_run["users"]:
 
@@ -809,18 +868,19 @@ def main():
                 )
 
             next_run["users"] = (
-                now + USERS_INTERVAL
+                now
+                + USERS_INTERVAL
             )
 
-        # ------------------------------------------------ interfaces
+        # ----------------------------------------------------
+        # interfaces
+        # ----------------------------------------------------
 
         if now >= next_run["interfaces"]:
 
             try:
 
-                ifs = (
-                    inventory.collect_interfaces()
-                )
+                ifs = inventory.collect_interfaces()
 
                 if ifs:
 
@@ -839,18 +899,19 @@ def main():
                 )
 
             next_run["interfaces"] = (
-                now + INTERFACES_INTERVAL
+                now
+                + INTERFACES_INTERVAL
             )
 
-        # ------------------------------------------------ applications
+        # ----------------------------------------------------
+        # applications
+        # ----------------------------------------------------
 
         if now >= next_run["apps"]:
 
             try:
 
-                apps = (
-                    osdetect.collect_apps()
-                )
+                apps = osdetect.collect_apps()
 
                 if apps:
 
@@ -869,26 +930,27 @@ def main():
                 )
 
             next_run["apps"] = (
-                now + APPS_INTERVAL
+                now
+                + APPS_INTERVAL
             )
 
-        # ------------------------------------------------ FIM
+        # ----------------------------------------------------
+        # file integrity monitoring
+        # ----------------------------------------------------
 
         if now >= next_run["fim"]:
 
             try:
 
                 events, summary = (
-                    inventory.collect_fim(
-                        buf
-                    )
+                    inventory.collect_fim(buf)
                 )
 
                 buf.push(
                     "fim",
                     {
                         "events": events,
-                        "summary": summary,
+                        "summary": summary
                     }
                 )
 
@@ -901,7 +963,7 @@ def main():
                             1
                             for e in events
                             if e["critical"]
-                        ),
+                        )
                     )
 
             except Exception as e:
@@ -912,10 +974,13 @@ def main():
                 )
 
             next_run["fim"] = (
-                now + FIM_INTERVAL
+                now
+                + FIM_INTERVAL
             )
 
-        # ------------------------------------------------ packages
+        # ----------------------------------------------------
+        # packages
+        # ----------------------------------------------------
 
         if now >= next_run["packages"]:
 
@@ -942,10 +1007,13 @@ def main():
                 )
 
             next_run["packages"] = (
-                now + PACKAGES_INTERVAL
+                now
+                + PACKAGES_INTERVAL
             )
 
-        # ------------------------------------------------ flush
+        # ----------------------------------------------------
+        # flush
+        # ----------------------------------------------------
 
         if now >= next_run["flush"]:
 
@@ -964,13 +1032,18 @@ def main():
                 )
 
             next_run["flush"] = (
-                now + FLUSH_INTERVAL
+                now
+                + FLUSH_INTERVAL
             )
+
+        # ----------------------------------------------------
+        # loop
+        # ----------------------------------------------------
 
         time.sleep(1)
 
 
-# ---------------------------------------------------------------- entry point
+# ---------------------------------------------------------------- entrypoint
 
 if __name__ == "__main__":
 
@@ -981,3 +1054,11 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
 
         sys.exit(0)
+
+    except Exception:
+
+        log.exception(
+            "nodewatch agent crashed"
+        )
+
+        sys.exit(1)
