@@ -201,6 +201,56 @@ tailwind.config = { theme: { extend: {
   </div>
 </div>
 
+<!-- ════════════════════ subnet ════════════════════ -->
+<div id="submodal" class="hidden fixed inset-0 bg-ink/45 items-center justify-center px-4 z-50">
+  <div class="bg-paper border border-rule w-full max-w-md max-h-[90vh] overflow-y-auto">
+    <div class="flex items-start justify-between border-b border-rule px-6 py-4">
+      <div>
+        <p class="font-mono text-[10px] tracking-[.22em] uppercase text-muted">IPAM</p>
+        <h2 class="text-xl font-semibold tracking-tight mt-0.5">Declare a subnet</h2>
+      </div>
+      <button id="sn-close" class="font-mono text-xs text-muted hover:text-ink px-2">Close</button>
+    </div>
+    <div class="px-6 py-5 space-y-3">
+      <div class="grid sm:grid-cols-2 gap-3">
+        <div>
+          <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">CIDR</label>
+          <input id="sn-cidr" placeholder="10.0.0.0/24" spellcheck="false"
+                 class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+        </div>
+        <div>
+          <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Name</label>
+          <input id="sn-name" placeholder="VIT-AP Lab"
+                 class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+        </div>
+      </div>
+      <div class="grid sm:grid-cols-3 gap-3">
+        <div>
+          <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Site</label>
+          <input id="sn-site" class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+        </div>
+        <div>
+          <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">VLAN</label>
+          <input id="sn-vlan" type="number" class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+        </div>
+        <div>
+          <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Gateway</label>
+          <input id="sn-gw" placeholder="10.0.0.1" class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+        </div>
+      </div>
+      <div>
+        <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Notes</label>
+        <input id="sn-notes" class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+      </div>
+      <p id="sn-msg" class="text-sm text-down min-h-[1.25rem]"></p>
+      <div class="flex gap-2">
+        <button id="sn-save" class="flex-1 bg-ink text-paper py-2.5 text-sm font-medium hover:bg-signal transition-colors">Save subnet</button>
+        <button id="sn-cancel" class="px-5 border border-rule text-sm hover:border-ink transition-colors">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ════════════════════ check ════════════════════ -->
 <div id="checkmodal" class="hidden fixed inset-0 bg-ink/45 items-center justify-center px-4 z-50">
   <div class="bg-paper border border-rule w-full max-w-lg max-h-[90vh] overflow-y-auto">
@@ -456,7 +506,8 @@ let state = {
   checks:[], recipients:[], rules:[], fim:[], tokens:[], history:[], vulns:[],
   role:'viewer', channels:[], userEvents:[], dashUsers:[], audit:[], me:null,
   navOpen:null, checkKind:null, dbKind:null, databases:[],
-  netView:null, interfaces:[], appKind:null, applications:[], reportKind:'availability', reportDays:30,
+  netView:null, interfaces:[], appKind:null, applications:[],
+  subnets:[], ips:[], ipConflicts:[], reportKind:'availability', reportDays:30,
   reportRows:[], reportFindings:[], reportLoading:false, nettools:[],
   probes:[], matrix:[], availability:[], mttr:[], latency:[],
   hostDetail:{ checks:[], packages:[], vulns:[], users:[], ports:[], fim:[], history:[] },
@@ -633,8 +684,8 @@ const NAV = [
   ['Application', [
     ['applications',       'Applications',      {}],
     ['applications?nginx', 'Nginx Monitoring',  {}],
-    ['todo:tomcat', 'Tomcat Monitoring', {todo:'tomcat'}],
-    ['todo:jboss',  'JBoss Monitoring',  {todo:'jboss'}],
+    ['applications?tomcat', 'Tomcat Monitoring', {}],
+    ['applications?jboss',  'JBoss Monitoring',  {}],
     ['todo:iis',    'IIS Monitoring',    {todo:'iis'}],
   ]],
   ['Security', [
@@ -657,7 +708,7 @@ const NAV = [
   ['Administration', [
     ['users',         'Users',         {admin:true}],
     ['settings',      'Settings',      {}],
-    ['todo:ipam',     'IPAM',          {todo:'ipam'}],
+    ['ipam',          'IPAM',          {}],
     ['nettools',      'Network Tools', {}],
     ['todo:automation','Automation',   {todo:'automation'}],
     ['todo:bsm',      'Business Service Mapping', {todo:'bsm'}],
@@ -1062,6 +1113,10 @@ const CHECK_KINDS = {
               hint:'Scrapes a /metrics endpoint. Works with FastAPI, Flask, Django, Go services and exporters — anything emitting the text exposition format.' },
   nginx:    { label:'Nginx',      url:true,
               hint:'Reads the stub_status endpoint. Enable it with a location block restricted to the probe host.' },
+  tomcat:   { label:'Tomcat',     url:true, creds:true,
+              hint:'Reads the manager app XML status. Give the account the manager-status role only — manager-script can deploy and undeploy applications.' },
+  jboss:    { label:'JBoss',      url:true, creds:true,
+              hint:'WildFly or JBoss EAP management API on port 9990. The account comes from add-user.sh in the management realm, not from the application.' },
 };
 
 function pageChecks(){
@@ -1160,8 +1215,110 @@ function pageChecks(){
   </div>`;
 }
 
+// ═══════════════════════════ page: ipam
+const IP_SOURCE = {
+  agent:  ['agent',   'an agent reports this address on one of its interfaces'],
+  probe:  ['probe',   'a check targets this address'],
+  signin: ['sign-in', 'a sign-in was seen from this address'],
+  sweep:  ['sweep',   'discovered by a ping sweep'],
+  manual: ['manual',  'entered by hand'],
+};
+
+function pageIpam(){
+  const admin = isAdmin();
+  const subs = state.subnets;
+  const ips = state.ips;
+  const conflicts = state.ipConflicts;
+  const unclaimed = ips.filter(i=>i.unclaimed);
+
+  return `
+  <div class="space-y-4">
+    <div class="bg-paper border border-rule px-4 sm:px-5 py-3 flex flex-wrap items-center gap-x-6 gap-y-3">
+      ${[['subnets', subs.length, null],
+         ['addresses', ips.length, null],
+         ['managed', ips.filter(i=>i.source==='agent').length, HEX.healthy],
+         ['unclaimed', unclaimed.length, unclaimed.length?HEX.degraded:null],
+         ['conflicts', conflicts.length, conflicts.length?HEX.down:null]]
+        .map(([l,v,c])=>`
+        <div class="flex items-baseline gap-1.5">
+          <span class="text-lg font-semibold tabular-nums" style="color:${c||'var(--c-ink)'}">${v}</span>
+          <span class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">${l}</span>
+        </div>`).join('')}
+      <span class="flex-1"></span>
+      ${admin?`<button id="ip-new" class="font-mono text-[11px] uppercase tracking-[.14em] border border-ink px-3 py-1.5 hover:bg-ink hover:text-paper transition-colors">Add subnet</button>`:''}
+    </div>
+
+    ${conflicts.length ? `<div class="border px-4 py-3" style="border-color:${HEX.down};background:${HEX.down}10">
+      <p class="font-mono text-[11px] uppercase tracking-[.16em] mb-2" style="color:${HEX.down}">Address conflicts</p>
+      ${conflicts.map(c=>`<p class="text-sm">
+        <span class="font-mono">${esc(c.ip)}</span> is claimed by ${c.mac_count} different MAC addresses
+        <span class="text-muted">— ${esc((c.hosts||[]).join(', '))}</span>
+      </p>`).join('')}
+      <p class="font-mono text-[10px] text-muted mt-2">
+        Either a duplicate assignment, or something on the network is answering for an address that is not its own.
+      </p>
+    </div>`:''}
+
+    ${subs.length ? card(sectionHead('Subnets') + `<div class="divide-y divide-hairline">${subs.map(s=>`
+      <div class="px-4 sm:px-5 py-3">
+        <div class="flex flex-wrap items-baseline gap-3">
+          <span class="font-mono text-sm">${esc(s.cidr)}</span>
+          <span class="text-sm font-medium">${esc(s.name)}</span>
+          ${s.vlan?`<span class="font-mono text-[10px] text-muted">VLAN ${s.vlan}</span>`:''}
+          ${s.site?`<span class="font-mono text-[10px] text-muted">${esc(s.site)}</span>`:''}
+          ${s.gateway?`<span class="font-mono text-[10px] text-muted">gw ${esc(s.gateway)}</span>`:''}
+          <span class="flex-1"></span>
+          <span class="font-mono text-[11px] tabular-nums">
+            ${s.used} / ${Number(s.capacity).toLocaleString()}
+            <span class="text-muted">(${s.used_pct ?? 0}%)</span></span>
+          ${admin?`<button data-subdel="${s.id}" data-cidr="${esc(s.cidr)}" class="font-mono text-[10px] uppercase tracking-[.1em] text-down hover:underline">Remove</button>`:''}
+        </div>
+        <div class="h-1.5 bg-hairline mt-2">
+          <div class="h-1.5" style="width:${Math.min(100, Number(s.used_pct)||0)}%;
+            background:${(s.used_pct||0)>=90?HEX.down:(s.used_pct||0)>=75?HEX.degraded:HEX.healthy}"></div>
+        </div>
+        <p class="font-mono text-[10px] text-muted mt-1">
+          ${s.managed} with an agent · ${s.active_24h} seen in 24h
+          ${s.dhcp_range?` · dhcp ${esc(s.dhcp_range)}`:''}
+        </p>
+      </div>`).join('')}`)
+      : card(empty(admin
+          ? 'No subnets declared. Add one to see how much of it is in use.'
+          : 'No subnets declared.'))}
+
+    ${card(sectionHead('Address inventory',
+      `<span class="font-mono text-[10px] text-muted">${ips.length} known</span>`)
+      + (ips.length ? `<div class="overflow-x-auto max-h-[28rem]">
+        <table class="w-full text-[13px] whitespace-nowrap">
+          <thead><tr class="border-b border-rule">
+            ${['Address','Hostname','MAC','Source','Subnet','Last seen']
+              .map(h=>`<th class="font-mono text-[9px] uppercase tracking-[.14em] text-muted font-normal text-left px-3 py-2">${h}</th>`).join('')}
+          </tr></thead>
+          <tbody class="divide-y divide-hairline">
+            ${ips.map(i=>`<tr>
+              <td class="px-3 py-1.5 font-mono">${esc(i.ip)}</td>
+              <td class="px-3 py-1.5 truncate max-w-[12rem]">${esc(i.hostname||'—')}</td>
+              <td class="px-3 py-1.5 font-mono text-[11px] text-muted">${esc(i.mac||'—')}</td>
+              <td class="px-3 py-1.5">
+                <span class="font-mono text-[10px] uppercase tracking-[.1em] text-muted"
+                      title="${esc((IP_SOURCE[i.source]||[])[1]||'')}">${esc((IP_SOURCE[i.source]||[i.source])[0])}</span></td>
+              <td class="px-3 py-1.5 ${i.unclaimed?'text-degraded':''}">
+                ${i.unclaimed?'unclaimed':esc(i.subnet_name||'—')}</td>
+              <td class="px-3 py-1.5 font-mono text-[11px] text-muted tabular-nums">${ago(i.last_seen)}</td>
+            </tr>`).join('')}
+          </tbody></table></div>`
+        : empty('No addresses discovered yet.')))}
+
+    <p class="font-mono text-[10px] text-muted">
+      Addresses are correlated from agent interfaces, check targets and sign-in sources rather than
+      discovered by a protocol. Unclaimed means outside every declared subnet — either the range was
+      never documented, or something is on the network that should not be.
+    </p>
+  </div>`;
+}
+
 // ═══════════════════════════ page: applications
-const APP_KIND = { prometheus:'Prometheus', nginx:'Nginx' };
+const APP_KIND = { prometheus:'Prometheus', nginx:'Nginx', tomcat:'Tomcat', jboss:'JBoss' };
 
 function ms(sec){
   if(sec==null) return '—';
@@ -1274,8 +1431,10 @@ PrometheusMetrics(app)</pre>
           ${[['req/s', a.rps ?? '—'],
              ['p95', ms(a.p95_avg_1h ?? a.p95_latency_s)],
              ['avg', ms(a.avg_latency_s)],
-             [a.kind==='nginx'?'active':'cpu %', a.kind==='nginx'
-                ? (a.active_conns ?? '—') : (a.cpu_pct ?? '—')]
+             [a.kind==='nginx' ? 'active' : (a.kind==='tomcat'||a.kind==='jboss') ? 'heap %' : 'cpu %',
+              a.kind==='nginx' ? (a.active_conns ?? '—')
+                : (a.kind==='tomcat'||a.kind==='jboss') ? ((a.extra&&a.extra.heap_pct) ?? '—')
+                : (a.cpu_pct ?? '—')]
             ].map(([k,v])=>`
             <div class="px-3 py-2.5">
               <dt class="font-mono text-[8px] tracking-[.14em] uppercase text-muted">${k}</dt>
@@ -2296,6 +2455,7 @@ const TITLES = {
   host:['Server','Everything collected from this host'],
   servers:['Servers','Select a server to see its detail'],
   checks:['Checks','Agentless ping, port and URL monitoring'],
+  ipam:['IPAM','Subnets and address inventory'],
   applications:['Applications','Throughput, errors and latency'],
   network:['Network','Interfaces reported by the agents'],
   databases:['Databases','PostgreSQL and MySQL health'],
@@ -2337,6 +2497,7 @@ function render(){
     state.page.startsWith('todo:') ? pageTodo() :
     state.page==='checks'   ? pageChecks()   :
     state.page==='applications'? pageApplications():
+    state.page==='ipam'     ? pageIpam()     :
     state.page==='network'  ? pageNetwork()  :
     state.page==='databases'? pageDatabases():
     state.page==='desktops' ? pageDesktops() :
@@ -2391,6 +2552,16 @@ function bind(){
 
   // ── checks ──
   if ($('k-new')) $('k-new').onclick = () => openCheck(null);
+
+  // ── ipam ──
+  if ($('ip-new')) $('ip-new').onclick = openSubnet;
+  document.querySelectorAll('[data-subdel]').forEach(el =>
+    el.onclick = async () => {
+      if (!confirm(`Remove ${el.dataset.cidr}? The addresses stay; only the declaration goes.`)) return;
+      const { error } = await sb.from('subnets').delete().eq('id', el.dataset.subdel);
+      if (error) { $('err').textContent = error.message; return; }
+      refresh();
+    });
 
   document.querySelectorAll('[data-kedit]').forEach(el =>
     el.onclick = () => openCheck(state.probes.find(x => x.id === el.dataset.kedit)));
@@ -2628,6 +2799,47 @@ $('a-copy').onclick = async () => {
 $('a-close').onclick = closeAdd;
 $('addmodal').addEventListener('click', e=>{ if(e.target===$('addmodal')) closeAdd(); });
 
+// ═══════════════════════════ ipam
+function openSubnet(){
+  ['sn-cidr','sn-name','sn-site','sn-vlan','sn-gw','sn-notes'].forEach(id=>$(id).value='');
+  $('sn-msg').textContent='';
+  $('submodal').classList.remove('hidden'); $('submodal').classList.add('flex');
+  setTimeout(()=>$('sn-cidr').focus(), 40);
+}
+function closeSubnet(){
+  $('submodal').classList.add('hidden'); $('submodal').classList.remove('flex');
+}
+
+$('sn-save').onclick = async () => {
+  const cidr = $('sn-cidr').value.trim(), name = $('sn-name').value.trim();
+  $('sn-msg').textContent='';
+  if(!cidr || !name){ $('sn-msg').textContent='CIDR and name are required.'; return; }
+  // Postgres validates the cidr type, but catching the obvious shape here
+  // gives a better message than a database error.
+  if(!/^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/.test(cidr)){
+    $('sn-msg').textContent='Enter a CIDR such as 10.0.0.0/24.'; return;
+  }
+  const { error } = await sb.from('subnets').insert({
+    cidr, name,
+    site: $('sn-site').value.trim() || null,
+    vlan: $('sn-vlan').value ? parseInt($('sn-vlan').value,10) : null,
+    gateway: $('sn-gw').value.trim() || null,
+    notes: $('sn-notes').value.trim() || null,
+  });
+  if(error){
+    $('sn-msg').textContent =
+      /row-level security/i.test(error.message) ? 'Only an admin can declare subnets.'
+      : /duplicate|unique/i.test(error.message) ? 'That subnet is already declared.'
+      : /invalid input|cidr/i.test(error.message) ? 'That is not a valid CIDR. Host bits must be zero — 10.0.0.0/24, not 10.0.0.5/24.'
+      : error.message;
+    return;
+  }
+  closeSubnet(); refresh();
+};
+$('sn-cancel').onclick = closeSubnet;
+$('sn-close').onclick  = closeSubnet;
+$('submodal').addEventListener('click', e=>{ if(e.target===$('submodal')) closeSubnet(); });
+
 // ═══════════════════════════ checks
 let checkKind='ping', editingCheck=null;
 
@@ -2670,11 +2882,11 @@ function renderCheckKinds(){
 
   $('k-hint').textContent = CHECK_KINDS[checkKind].hint;
   // Port only applies to a port check; the URL assertions only to a URL check.
-  const isDb = !!CHECK_KINDS[checkKind].creds;
-  $('k-portwrap').classList.toggle('hidden', checkKind !== 'port' && !isDb);
+  const isDb  = !!CHECK_KINDS[checkKind].creds;
+  const isUrl = checkKind === 'url' || !!CHECK_KINDS[checkKind].url;
+  $('k-portwrap').classList.toggle('hidden', checkKind !== 'port' && !(isDb && !isUrl));
   $('k-urlwrap').classList.toggle('hidden', checkKind !== 'url');
   $('k-credwrap').classList.toggle('hidden', !isDb);
-  const isUrl = checkKind === 'url' || !!CHECK_KINDS[checkKind].url;
   $('k-targetlabel').textContent = isUrl ? 'URL' : 'Host or IP';
   $('k-target').placeholder =
     checkKind === 'prometheus' ? 'http://10.0.0.5:8000/metrics'
@@ -2999,7 +3211,8 @@ async function refresh(){
   try{
     const since=new Date(Date.now()-20*60*1000).toISOString();
     const [hosts,latest,hist,ports,auth,checks,users,alerts,recips,rules,tokens,fim,vulns,pkgs,chans,audit,
-           probes,matrix,avail,mttr,latency,nettools,databases,ifaces,apps]=await Promise.all([
+           probes,matrix,avail,mttr,latency,nettools,databases,ifaces,apps,
+           subnets,ips,ipcon]=await Promise.all([
       sb.from('agent_overview').select('*').order('label'),
       sb.from('agent_latest_metrics').select('*'),
       sb.from('metrics').select('agent_id,ts,cpu_pct').gte('ts',since).order('ts'),
@@ -3034,11 +3247,15 @@ async function refresh(){
       sb.from('database_overview').select('*').order('name'),
       sb.from('network_overview').select('*').order('host'),
       sb.from('application_overview').select('*').order('name'),
+      sb.from('subnet_usage').select('*').order('cidr'),
+      sb.from('ip_inventory').select('*').order('last_seen',{ascending:false}).limit(500),
+      sb.from('ip_conflicts').select('*'),
     ]);
     // Token and audit reads are admin-only under RLS, so a viewer legitimately
     // gets empty results there. Only treat the shared reads as fatal.
     const bad=[hosts,latest,hist,ports,auth,checks,users,alerts,recips,rules,fim,vulns,pkgs,chans,
-               probes,matrix,avail,mttr,latency,nettools,databases,ifaces,apps].find(r=>r.error);
+               probes,matrix,avail,mttr,latency,nettools,databases,ifaces,apps,
+               subnets,ips,ipcon].find(r=>r.error);
     if(bad) throw bad.error;
 
     state.hosts=hosts.data; state.ports=ports.data; state.auth=auth.data;
@@ -3048,6 +3265,7 @@ async function refresh(){
     state.probes=probes.data||[]; state.matrix=matrix.data||[];
     state.availability=avail.data||[]; state.mttr=mttr.data||[];
     state.latency=latency.data||[]; state.nettools=nettools.data||[]; state.databases=databases.data||[]; state.interfaces=ifaces.data||[]; state.applications=apps.data||[];
+    state.subnets=subnets.data||[]; state.ips=ips.data||[]; state.ipConflicts=ipcon.data||[];
     state.fim=fim.data||[];
 
     // Attach affected hosts to each finding. Done client-side because the
