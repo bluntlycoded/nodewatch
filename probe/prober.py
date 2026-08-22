@@ -1161,6 +1161,85 @@ def drain_nettools(conn):
     return len(jobs)
 
 
+# ---------------------------------------------------------------- topology
+
+# Traceroute is slow and the path rarely changes, so it runs far less often
+# than the checks themselves. Hourly is enough to notice a rerouted path
+# without turning the probe host into a traffic source.
+TRACE_INTERVAL_S = 3600
+_last_trace: dict[str, float] = {}
+
+HOP_RE = re.compile(r"^\s*(\d+)[:\s]\s*(.*)$")
+HOP_IP = re.compile(r"\b(\d{1,3}(?:\.\d{1,3}){3})\b")
+HOP_RTT = re.compile(r"([\d.]+)\s*ms")
+
+
+def parse_traceroute(text: str) -> list:
+    """
+    [(hop, ip, rtt_ms)]. Unresponsive hops appear as asterisks and are
+    skipped rather than recorded as unknown routers - a firewall dropping
+    ICMP TTL-exceeded is not a device worth drawing.
+    """
+    out = []
+    for line in text.splitlines():
+        m = HOP_RE.match(line)
+        if not m:
+            continue
+        rest = m.group(2)
+        ip = HOP_IP.search(rest)
+        if not ip:
+            continue
+        rtt = HOP_RTT.search(rest)
+        out.append((int(m.group(1)), ip.group(1),
+                    float(rtt.group(1)) if rtt else None))
+    return out
+
+
+def trace_targets(conn):
+    """Trace each enabled check whose target is a literal address."""
+    if not shutil.which("traceroute") and not shutil.which("tracepath"):
+        return 0
+
+    targets = conn.execute(
+        r"""select id::text, target from probes
+             where enabled and target ~ '^\d{1,3}(\.\d{1,3}){3}$'"""
+    ).fetchall()
+
+    now = time.monotonic()
+    due = [t for t in targets
+           if now - _last_trace.get(t["id"], 0) >= TRACE_INTERVAL_S]
+    if not due:
+        return 0
+
+    traced = 0
+    for t in due[:5]:            # a few per cycle; this is not urgent work
+        cmd = (["traceroute", "-n", "-w", "2", "-q", "1", "-m", "20", t["target"]]
+               if shutil.which("traceroute")
+               else ["tracepath", "-n", "-m", "20", t["target"]])
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            _last_trace[t["id"]] = now
+            continue
+
+        hops = parse_traceroute(res.stdout or "")
+        _last_trace[t["id"]] = now
+        if not hops:
+            continue
+
+        ts = datetime.now(timezone.utc)
+        conn.cursor().executemany(
+            """insert into route_hops (probe_id, traced_at, hop, ip, rtt_ms)
+               values (%s, %s, %s, %s, %s)
+               on conflict (probe_id, traced_at, hop) do nothing""",
+            [(t["id"], ts, h, ip, rtt) for h, ip, rtt in hops])
+        traced += 1
+
+    if traced:
+        log.info("traced %d path(s)", traced)
+    return traced
+
+
 # ---------------------------------------------------------------- loop
 
 def due(probes: list[dict]) -> list[dict]:
@@ -1251,6 +1330,7 @@ def main():
                     log.info("checked %d, %d failing", len(results), failed)
 
                 drain_nettools(conn)
+                trace_targets(conn)
 
                 # Forget probes that have been deleted, so the dict cannot
                 # grow without bound over a long uptime.
