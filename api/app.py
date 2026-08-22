@@ -464,7 +464,7 @@ def enroll(body: EnrollBody, request: Request):
 @app.post("/v1/ingest")
 def ingest(body: IngestBody, authorization: str | None = Header(default=None)):
     agent_id = agent_from_token(authorization)
-    counts = {"heartbeat": 0, "auth": 0, "ports": 0, "port_changes": 0, "checks": 0, "users": 0, "user_changes": 0, "fim": 0, "packages": 0, "interfaces": 0}
+    counts = {"heartbeat": 0, "auth": 0, "ports": 0, "port_changes": 0, "checks": 0, "users": 0, "user_changes": 0, "fim": 0, "packages": 0, "interfaces": 0, "apps": 0}
 
     with pool.connection() as conn:
         for ev in body.events:
@@ -515,6 +515,9 @@ def ingest(body: IngestBody, authorization: str | None = Header(default=None)):
             elif ev.kind == "interfaces":
                 counts["interfaces"] += sync_interfaces(
                     conn, agent_id, ts, ev.data.get("interfaces", []))
+
+            elif ev.kind == "apps":
+                counts["apps"] += sync_apps(conn, agent_id, ts, ev.data.get("apps", []))
 
             elif ev.kind == "fim":
                 counts["fim"] += sync_fim(conn, agent_id, ts, ev.data)
@@ -853,4 +856,28 @@ def sync_interfaces(conn, agent_id: str, ts: datetime, ifaces: list) -> int:
         "delete from net_interfaces where agent_id = %s and name <> all(%s)",
         (agent_id, [i["name"] for i in ifaces if i.get("name")]))
 
+    return len(rows)
+
+
+def sync_apps(conn, agent_id: str, ts: datetime, apps: list) -> int:
+    """
+    Application measurements read locally by the agent. Only IIS today. The
+    row is keyed by agent and app name rather than a probe, since there is no
+    probe polling it.
+    """
+    if not apps:
+        return 0
+    rows = [(agent_id, a.get("app_name"), ts,
+             a.get("requests_total"), a.get("errors_total"),
+             a.get("active_conns"), json.dumps(a.get("extra") or {}))
+            for a in apps if a.get("app_name")]
+    if not rows:
+        return 0
+    conn.cursor().executemany(
+        """
+        insert into app_metrics (agent_id, app_name, ts, requests_total,
+                                 errors_total, active_conns, extra)
+        values (%s, %s, %s, %s, %s, %s, %s)
+        on conflict do nothing
+        """, rows)
     return len(rows)
