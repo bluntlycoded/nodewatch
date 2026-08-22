@@ -346,6 +346,114 @@ def collect_packages():
     return out
 
 
+# ---------------------------------------------------------------- iis
+
+# Per-site counters plus application pool state. Get-Counter is present on
+# every Windows Server with IIS; WebAdministration is only present when the
+# management tools feature is installed, so pool state degrades to unknown
+# rather than failing the whole collection.
+IIS_QUERY = r"""
+$ErrorActionPreference='SilentlyContinue'
+if (-not (Get-Service W3SVC -ErrorAction SilentlyContinue)) { '[]'; exit }
+
+$paths = @(
+  '\web service(*)\total method requests',
+  '\web service(*)\total not found errors',
+  '\web service(*)\total server errors',
+  '\web service(*)\current connections',
+  '\web service(*)\bytes sent/sec',
+  '\web service(*)\bytes received/sec'
+)
+$samples = (Get-Counter -Counter $paths -ErrorAction SilentlyContinue).CounterSamples
+
+$sites = @{}
+foreach ($s in $samples) {
+  # InstanceName is the site name; _Total is the rollup and is skipped.
+  $name = $s.InstanceName
+  if (-not $name -or $name -eq '_total') { continue }
+  if (-not $sites.ContainsKey($name)) { $sites[$name] = @{} }
+  $metric = ($s.Path -split '\\')[-1]
+  $sites[$name][$metric] = $s.CookedValue
+}
+
+$pools = @{}
+if (Get-Module -ListAvailable -Name WebAdministration) {
+  Import-Module WebAdministration -ErrorAction SilentlyContinue
+  foreach ($p in (Get-ChildItem IIS:\AppPools -ErrorAction SilentlyContinue)) {
+    $pools[$p.Name] = $p.State.ToString()
+  }
+}
+
+$out = foreach ($k in $sites.Keys) {
+  $m = $sites[$k]
+  $siteState = 'Unknown'
+  if (Get-Module -ListAvailable -Name WebAdministration) {
+    $site = Get-Website -Name $k -ErrorAction SilentlyContinue
+    if ($site) { $siteState = $site.State.ToString() }
+  }
+  [pscustomobject]@{
+    site        = $k
+    requests    = [int64]$m['total method requests']
+    notfound    = [int64]$m['total not found errors']
+    server_err  = [int64]$m['total server errors']
+    connections = [int]$m['current connections']
+    bytes_sent  = [int64]$m['bytes sent/sec']
+    bytes_recv  = [int64]$m['bytes received/sec']
+    state       = $siteState
+  }
+}
+if (-not $out) { '[]' } else { $out | ConvertTo-Json -Depth 4 }
+"""
+
+POOL_QUERY = r"""
+$ErrorActionPreference='SilentlyContinue'
+if (-not (Get-Module -ListAvailable -Name WebAdministration)) { '[]'; exit }
+Import-Module WebAdministration
+$r = Get-ChildItem IIS:\AppPools | ForEach-Object {
+  [pscustomobject]@{ name=$_.Name; state=$_.State.ToString();
+                     runtime=$_.managedRuntimeVersion; pipeline=$_.managedPipelineMode }
+}
+if (-not $r) { '[]' } else { $r | ConvertTo-Json -Depth 3 }
+"""
+
+
+def collect_iis():
+    """
+    One entry per IIS site. Returns [] when IIS is not installed, which is
+    the common case and must not look like an error.
+    """
+    rows = ps(IIS_QUERY, timeout=60)
+    if not rows:
+        return []
+
+    pools = {p.get("name"): p for p in (ps(POOL_QUERY, timeout=30) or [])}
+    stopped = [n for n, p in pools.items() if str(p.get("state")) != "Started"]
+
+    out = []
+    for r in rows:
+        site = r.get("site")
+        if not site:
+            continue
+        # "Total server errors" is the 5xx count. 404s are counted separately
+        # and deliberately excluded: a missing page is usually the caller's
+        # problem, not the server's.
+        out.append({
+            "app_name": f"IIS: {site}",
+            "requests_total": int(r.get("requests") or 0),
+            "errors_total": int(r.get("server_err") or 0),
+            "active_conns": int(r.get("connections") or 0),
+            "extra": {
+                "site_state": r.get("state"),
+                "not_found": int(r.get("notfound") or 0),
+                "bytes_sent_sec": int(r.get("bytes_sent") or 0),
+                "bytes_recv_sec": int(r.get("bytes_recv") or 0),
+                "pools_total": len(pools),
+                "pools_stopped": stopped,
+            },
+        })
+    return out
+
+
 # ---------------------------------------------------------------- identity
 
 def machine_id():
