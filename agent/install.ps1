@@ -106,6 +106,13 @@ Copy-Item (Join-Path $ext 'nodewatch-main\agent\*.py') $Root -Force
 Remove-Item $zip -Force
 Remove-Item $ext -Recurse -Force
 
+foreach ($f in @('agent.py', 'osdetect.py', 'os_windows.py', 'inventory.py',
+                 'checks.py', 'identity.py')) {
+  if (-not (Test-Path (Join-Path $Root $f))) {
+    throw "$f is missing after download. Check that the repository contains agent/$f."
+  }
+}
+
 & $PyExe @PyPre -m venv "$Root\venv"
 $VenvPy = "$Root\venv\Scripts\python.exe"
 if (-not (Test-Path $VenvPy)) { throw "Virtualenv creation failed at $Root\venv" }
@@ -125,10 +132,24 @@ $lines = @(
   'set NW_PROVIDER=generic'
 )
 if ($env:NW_SITE) { $lines += "set NW_SITE=$env:NW_SITE" }
-$lines += ('"' + $VenvPy + '" "' + $Root + '\agent.py"')
+$lines += ('"' + $VenvPy + '" "' + $Root + '\agent.py" >> "' + $Root + '\state\agent.log" 2>&1')
 Set-Content -Path $runner -Value $lines -Encoding ASCII
 
-icacls $runner /inheritance:r /grant:r 'SYSTEM:(F)' 'Administrators:(F)' | Out-Null
+# Well-known SIDs rather than names: "Administrators" is localised and the
+# grant would silently fail on a non-English install.
+icacls $runner /inheritance:r /grant:r '*S-1-5-18:(F)' '*S-1-5-32-544:(F)' | Out-Null
+
+# ---------------------------------------------------------------- smoke test
+# Import the agent once and surface any error now. Registering a task around
+# a broken install just moves the failure somewhere nobody looks.
+Write-Host '   Checking the agent imports...'
+$probe = & $VenvPy -c "import sys; sys.path.insert(0, r'$Root'); import agent, osdetect; print(osdetect.PLATFORM, agent.AGENT_VERSION)" 2>&1
+if ($LASTEXITCODE -ne 0) {
+  Write-Host ''
+  Write-Host $probe -ForegroundColor Red
+  throw 'The agent failed to import. Fix the error above and re-run.'
+}
+Write-Host "   Agent imports cleanly: $probe"
 
 # ---------------------------------------------------------------- task
 Unregister-ScheduledTask -TaskName $Task -Confirm:$false -ErrorAction SilentlyContinue
@@ -161,12 +182,16 @@ $running = Get-Process -Name python -ErrorAction SilentlyContinue |
 if ($running) {
   Write-Host '   Agent process is running.'
 } else {
-  Write-Warning 'Agent process not detected. Run the launcher by hand to see the error:'
+  Write-Warning 'Agent process not detected. Recent log:'
+  $log = Join-Path $Root 'state\agent.log'
+  if (Test-Path $log) { Get-Content $log -Tail 20 | ForEach-Object { Write-Host "     $_" } }
+  else { Write-Host '     (no log yet - run the launcher by hand)' }
   Write-Host ("     & '" + $runner + "'")
 }
 
 Write-Host ''
 Write-Host 'Installed. The host appears in the dashboard within about two minutes.'
+Write-Host ("Logs:    Get-Content '" + $Root + "\state\agent.log' -Tail 20 -Wait")
 Write-Host ("Stop:    Stop-ScheduledTask -TaskName " + $Task)
 Write-Host ("Start:   Start-ScheduledTask -TaskName " + $Task)
 Write-Host ("Remove:  Unregister-ScheduledTask -TaskName " + $Task + " -Confirm:`$false")
