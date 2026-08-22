@@ -507,6 +507,7 @@ let state = {
   role:'viewer', channels:[], userEvents:[], dashUsers:[], audit:[], me:null,
   navOpen:null, checkKind:null, dbKind:null, databases:[],
   netView:null, interfaces:[], appKind:null, applications:[],
+  topoNodes:[], topoEdges:[],
   subnets:[], ips:[], ipConflicts:[], reportKind:'availability', reportDays:30,
   reportRows:[], reportFindings:[], reportLoading:false, nettools:[],
   probes:[], matrix:[], availability:[], mttr:[], latency:[],
@@ -668,7 +669,7 @@ const NAV = [
     ['desktops',       'Desktop Monitoring',  {}],
     ['todo:snmp',      'SNMP Monitoring',     {todo:'snmp'}],
     ['network?links',  'Link Monitoring',     {}],
-    ['todo:topology',  'Topology Map',        {todo:'topology'}],
+    ['topology',      'Topology Map',    {}],
   ]],
   ['Synthetic', [
     ['checks?ping', 'Ping Monitoring', {}],
@@ -1504,6 +1505,118 @@ Target: http://host:9990</pre>
             ${a.measured_at?ago(a.measured_at)+' ago':'no measurement yet'}</span>
         </div>
       </section>`;}).join('')}</div>
+  </div>`;
+}
+
+// ═══════════════════════════ page: topology
+// Laid out in columns by node kind rather than force-directed. A physics
+// simulation looks impressive and tells you nothing; a deterministic layout
+// means the same estate draws the same way every time, so a change in the
+// picture is a change in the network.
+const TOPO_COL = { subnet:0, host:1, probe:2, router:3 };
+const TOPO_KIND = k => (k==='host'||k==='subnet'||k==='router') ? k : 'probe';
+
+function pageTopology(){
+  const nodes = state.topoNodes, edges = state.topoEdges;
+  if(!nodes.length) return card(empty('Nothing to map yet.'));
+
+  const cols = [[],[],[],[]];
+  nodes.forEach(n => cols[TOPO_COL[TOPO_KIND(n.kind)]].push(n));
+
+  const COL_W = 230, ROW_H = 46, PAD = 28;
+  const height = Math.max(...cols.map(c=>c.length), 1) * ROW_H + PAD*2;
+  const width = COL_W * 4 + 120;
+
+  // Position first so edges can be drawn between known points.
+  const pos = {};
+  cols.forEach((col, ci) => {
+    const offset = (height - col.length * ROW_H) / 2;
+    col.forEach((n, ri) => {
+      pos[n.id] = { x: PAD + ci * COL_W + 60, y: offset + ri * ROW_H + ROW_H/2 };
+    });
+  });
+
+  const tone = st => st==='down' ? HEX.down
+                   : st==='degraded' ? HEX.degraded
+                   : st==='pending' ? HEX.pending : HEX.healthy;
+
+  const EDGE_TONE = { subnet:'var(--c-hairline)', monitors:HEX.signal||'var(--c-muted)',
+                      route:'var(--c-muted)' };
+
+  const lines = edges.map(e=>{
+    const a = pos[e.src], b = pos[e.dst];
+    if(!a || !b) return '';
+    // A gentle curve rather than a straight line: with several edges between
+    // the same columns, straight lines overlap into one thick smudge.
+    const mx = (a.x + b.x) / 2;
+    return `<path d="M${a.x},${a.y} C${mx},${a.y} ${mx},${b.y} ${b.x},${b.y}"
+      fill="none" stroke="${EDGE_TONE[e.kind]||'var(--c-hairline)'}"
+      stroke-width="${e.kind==='route'?1.4:1}"
+      stroke-dasharray="${e.kind==='monitors'?'3 3':''}" opacity="0.65"/>`;
+  }).join('');
+
+  const dots = nodes.map(n=>{
+    const p = pos[n.id]; if(!p) return '';
+    const k = TOPO_KIND(n.kind);
+    const label = (n.name||'').slice(0,22);
+    return `
+      <g>
+        ${k==='subnet'
+          ? `<rect x="${p.x-8}" y="${p.y-8}" width="16" height="16" rx="2"
+                   fill="${tone(n.status)}" opacity="0.9"/>`
+          : k==='router'
+          ? `<polygon points="${p.x},${p.y-9} ${p.x+9},${p.y} ${p.x},${p.y+9} ${p.x-9},${p.y}"
+                      fill="none" stroke="${tone(n.status)}" stroke-width="1.6"/>`
+          : `<circle cx="${p.x}" cy="${p.y}" r="${k==='host'?8:6}"
+                     fill="${k==='host'?tone(n.status):'none'}"
+                     stroke="${tone(n.status)}" stroke-width="1.6"/>`}
+        <text x="${p.x+16}" y="${p.y+4}" font-size="11"
+              fill="var(--c-ink)" font-family="ui-monospace,monospace">${esc(label)}</text>
+        ${n.detail?`<text x="${p.x+16}" y="${p.y+15}" font-size="8.5"
+              fill="var(--c-muted)" font-family="ui-monospace,monospace">${esc(String(n.detail).slice(0,26))}</text>`:''}
+      </g>`;
+  }).join('');
+
+  const heads = ['Subnets','Hosts','Checks','Discovered routers'].map((h,i)=>`
+    <text x="${PAD + i*COL_W + 60}" y="16" font-size="9" letter-spacing="1.6"
+          fill="var(--c-muted)" font-family="ui-monospace,monospace">${h.toUpperCase()}</text>`).join('');
+
+  const counts = {};
+  nodes.forEach(n=>{ const k=TOPO_KIND(n.kind); counts[k]=(counts[k]||0)+1; });
+
+  return `
+  <div class="space-y-4">
+    <div class="bg-paper border border-rule px-4 sm:px-5 py-3 flex flex-wrap items-center gap-x-6 gap-y-3">
+      ${Object.entries(counts).map(([k,v])=>`
+        <div class="flex items-baseline gap-1.5">
+          <span class="text-lg font-semibold tabular-nums">${v}</span>
+          <span class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">${k}s</span>
+        </div>`).join('')}
+      <div class="flex items-baseline gap-1.5">
+        <span class="text-lg font-semibold tabular-nums">${edges.length}</span>
+        <span class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">edges</span>
+      </div>
+      <span class="flex-1"></span>
+      <span class="font-mono text-[10px] text-muted hidden lg:inline">
+        Solid: membership · Dashed: monitors · Curved: traced route
+      </span>
+    </div>
+
+    ${card(`<div class="overflow-x-auto p-2">
+      <svg viewBox="0 0 ${width} ${height + 24}" width="${width}" height="${height + 24}"
+           style="min-width:${width}px">
+        ${heads}
+        <g transform="translate(0,24)">${lines}${dots}</g>
+      </svg></div>`)}
+
+    <div class="bg-paper border border-rule px-5 py-4">
+      <p class="text-sm text-muted leading-relaxed">
+        This is a reachability and dependency map, not a wiring diagram. It shows which subnet an
+        address belongs to, which check watches what, and the L3 path traced to each target.
+        It does not show which switch port a device occupies or how two switches are joined —
+        that needs LLDP or CDP neighbour tables over SNMP, which is not built.
+      </p>
+    </div>
   </div>`;
 }
 
@@ -2524,6 +2637,7 @@ const TITLES = {
   host:['Server','Everything collected from this host'],
   servers:['Servers','Select a server to see its detail'],
   checks:['Checks','Agentless ping, port and URL monitoring'],
+  topology:['Topology','Reachability and dependencies, not physical wiring'],
   ipam:['IPAM','Subnets and address inventory'],
   applications:['Applications','Throughput, errors and latency'],
   network:['Network','Interfaces reported by the agents'],
@@ -2568,6 +2682,7 @@ function render(){
     state.page==='applications'? pageApplications():
     state.page==='ipam'     ? pageIpam()     :
     state.page==='network'  ? pageNetwork()  :
+    state.page==='topology' ? pageTopology() :
     state.page==='databases'? pageDatabases():
     state.page==='desktops' ? pageDesktops() :
     state.page==='nettools' ? pageNetTools() :
@@ -3289,7 +3404,7 @@ async function refresh(){
     const since=new Date(Date.now()-20*60*1000).toISOString();
     const [hosts,latest,hist,ports,auth,checks,users,alerts,recips,rules,tokens,fim,vulns,pkgs,chans,audit,
            probes,matrix,avail,mttr,latency,nettools,databases,ifaces,apps,
-           subnets,ips,ipcon]=await Promise.all([
+           subnets,ips,ipcon,tnodes,tedges]=await Promise.all([
       sb.from('agent_overview').select('*').order('label'),
       sb.from('agent_latest_metrics').select('*'),
       sb.from('metrics').select('agent_id,ts,cpu_pct').gte('ts',since).order('ts'),
@@ -3327,12 +3442,14 @@ async function refresh(){
       sb.from('subnet_usage').select('*').order('cidr'),
       sb.from('ip_inventory').select('*').order('last_seen',{ascending:false}).limit(500),
       sb.from('ip_conflicts').select('*'),
+      sb.from('topology_nodes').select('*'),
+      sb.from('topology_edges').select('*'),
     ]);
     // Token and audit reads are admin-only under RLS, so a viewer legitimately
     // gets empty results there. Only treat the shared reads as fatal.
     const bad=[hosts,latest,hist,ports,auth,checks,users,alerts,recips,rules,fim,vulns,pkgs,chans,
                probes,matrix,avail,mttr,latency,nettools,databases,ifaces,apps,
-               subnets,ips,ipcon].find(r=>r.error);
+               subnets,ips,ipcon,tnodes,tedges].find(r=>r.error);
     if(bad) throw bad.error;
 
     state.hosts=hosts.data; state.ports=ports.data; state.auth=auth.data;
@@ -3343,6 +3460,7 @@ async function refresh(){
     state.availability=avail.data||[]; state.mttr=mttr.data||[];
     state.latency=latency.data||[]; state.nettools=nettools.data||[]; state.databases=databases.data||[]; state.interfaces=ifaces.data||[]; state.applications=apps.data||[];
     state.subnets=subnets.data||[]; state.ips=ips.data||[]; state.ipConflicts=ipcon.data||[];
+    state.topoNodes=tnodes.data||[]; state.topoEdges=tedges.data||[];
     state.fim=fim.data||[];
 
     // Attach affected hosts to each finding. Done client-side because the
