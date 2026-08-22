@@ -508,6 +508,8 @@ let state = {
   navOpen:null, checkKind:null, dbKind:null, databases:[],
   netView:null, interfaces:[], appKind:null, applications:[],
   topoNodes:[], topoEdges:[],
+  escalations:[], awaiting:[], services:[], serviceComponents:[],
+  autoRules:[], autoQueue:[],
   subnets:[], ips:[], ipConflicts:[], reportKind:'availability', reportDays:30,
   reportRows:[], reportFindings:[], reportLoading:false, nettools:[],
   probes:[], matrix:[], availability:[], mttr:[], latency:[],
@@ -699,7 +701,7 @@ const NAV = [
   ['Alerting', [
     ['alerts',   'Alerts',        {}],
     ['settings', 'Channels',      {}],
-    ['todo:escalation', 'Escalation Policies', {todo:'escalation'}],
+    ['escalation',      'Escalation Policies', {}],
   ]],
   ['Reports', [
     ['report?availability', 'Availability Report',     {}],
@@ -711,8 +713,8 @@ const NAV = [
     ['settings',      'Settings',      {}],
     ['ipam',          'IPAM',          {}],
     ['nettools',      'Network Tools', {}],
-    ['todo:automation','Automation',   {todo:'automation'}],
-    ['todo:bsm',      'Business Service Mapping', {todo:'bsm'}],
+    ['automation',     'Automation',   {}],
+    ['services',      'Business Service Mapping', {}],
   ]],
 ];
 
@@ -1505,6 +1507,226 @@ Target: http://host:9990</pre>
             ${a.measured_at?ago(a.measured_at)+' ago':'no measurement yet'}</span>
         </div>
       </section>`;}).join('')}</div>
+  </div>`;
+}
+
+// ═══════════════════════════ page: escalation
+function pageEscalation(){
+  const pols = state.escalations, waiting = state.awaiting;
+  const overdue = waiting.filter(w=>w.waiting_s > 900);
+
+  return `
+  <div class="space-y-4">
+    <div class="bg-paper border border-rule px-4 sm:px-5 py-3 flex flex-wrap items-center gap-x-6 gap-y-3">
+      ${[['policies', pols.length, null],
+         ['awaiting ack', waiting.length, waiting.length?HEX.degraded:null],
+         ['over 15 min', overdue.length, overdue.length?HEX.down:null],
+         ['fired 7d', pols.reduce((a,p)=>a+Number(p.fired_7d||0),0), null]]
+        .map(([l,v,c])=>`
+        <div class="flex items-baseline gap-1.5">
+          <span class="text-lg font-semibold tabular-nums" style="color:${c||'var(--c-ink)'}">${v}</span>
+          <span class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">${l}</span>
+        </div>`).join('')}
+      <span class="flex-1"></span>
+      <span class="font-mono text-[10px] text-muted hidden lg:inline">
+        Only delivered, unacknowledged alerts escalate.
+      </span>
+    </div>
+
+    ${waiting.length ? card(sectionHead('Waiting for acknowledgement')
+      + `<div class="divide-y divide-hairline max-h-72 overflow-y-auto">${waiting.map(w=>`
+        <div class="flex items-center gap-3 px-4 sm:px-5 py-2">
+          <span class="font-mono text-[10px] uppercase tracking-[.12em] w-14 shrink-0
+            ${w.severity==='critical'?'text-down':'text-degraded'}">${esc(w.severity)}</span>
+          <span class="text-[13px] truncate flex-1">${esc(w.subject)}</span>
+          <span class="font-mono text-[11px] text-muted truncate w-32">${esc(w.host)}</span>
+          <span class="font-mono text-[11px] tabular-nums w-16 text-right"
+                style="color:${w.waiting_s>900?HEX.down:w.waiting_s>300?HEX.degraded:'var(--c-muted)'}">
+            ${fmtDur(w.waiting_s)}</span>
+          <span class="font-mono text-[10px] text-muted w-16 text-right">
+            ${w.escalated?`escalated ${w.escalated}×`:'—'}</span>
+        </div>`).join('')}</div>`)
+      : card(empty('Nothing is waiting for acknowledgement.'))}
+
+    ${pols.length ? card(sectionHead('Policies') + `<div class="divide-y divide-hairline">${pols.map(p=>`
+      <div class="px-4 sm:px-5 py-3">
+        <div class="flex flex-wrap items-center gap-3">
+          <span class="w-2 h-2 rounded-full shrink-0" style="background:${p.enabled?HEX.healthy:HEX.muted}"></span>
+          <span class="text-sm font-medium">${esc(p.name)}</span>
+          <span class="font-mono text-[10px] text-muted">
+            ${(p.severities||[]).length?esc((p.severities||[]).join(', ')):'any severity'}
+            ${(p.rules||[]).length?' · '+esc((p.rules||[]).join(', ')):''}</span>
+          <span class="flex-1"></span>
+          ${p.quiet_start?`<span class="font-mono text-[10px] ${p.quiet_now?'text-degraded':'text-muted'}">
+            quiet ${esc(String(p.quiet_start).slice(0,5))}–${esc(String(p.quiet_end).slice(0,5))}
+            ${p.quiet_now?'(now)':''}</span>`:''}
+          <span class="font-mono text-[11px] text-muted">${p.steps} step${p.steps===1?'':'s'}</span>
+        </div>
+        <p class="font-mono text-[10px] text-muted mt-1">
+          first at ${p.first_after ?? '—'} min · last at ${p.last_after ?? '—'} min
+          · fired ${p.fired_7d} time${p.fired_7d===1?'':'s'} in 7 days
+        </p>
+      </div>`).join('')}`)
+      : card(empty('No escalation policies. Alerts are sent once and never chased.'))}
+
+    <div class="bg-paper border border-rule px-5 py-4">
+      <p class="text-sm text-muted leading-relaxed">
+        During quiet hours only critical alerts escalate. Someone woken at 3am for a warning
+        stops reading alerts entirely, which is worse than the warning going unread until morning.
+      </p>
+    </div>
+  </div>`;
+}
+
+// ═══════════════════════════ page: business services
+function pageServices(){
+  const svcs = state.services;
+  const comps = state.serviceComponents;
+  if(!svcs.length) return `
+    <div class="space-y-4">
+      ${card(empty('No services mapped yet.'))}
+      <div class="bg-paper border border-rule px-5 py-4">
+        <p class="text-sm text-muted leading-relaxed">
+          A service groups the hosts and checks that together deliver something people use.
+          Mark each component <span class="font-mono text-[12px]">required</span> or
+          <span class="font-mono text-[12px]">redundant</span>: any required component down takes
+          the service down, while redundant ones only degrade it until every member of their
+          group is gone.
+        </p>
+      </div>
+    </div>`;
+
+  const tone = st => st==='down'?HEX.down : st==='degraded'?HEX.degraded
+                   : st==='unknown'?HEX.muted : HEX.healthy;
+  const bad = svcs.filter(s=>s.effective_status==='down').length;
+
+  return `
+  <div class="space-y-4">
+    <div class="bg-paper border border-rule px-4 sm:px-5 py-3 flex flex-wrap items-center gap-x-6 gap-y-3">
+      ${[['services', svcs.length, null],
+         ['down', bad, bad?HEX.down:null],
+         ['degraded', svcs.filter(s=>s.effective_status==='degraded').length, HEX.degraded],
+         ['unmapped', svcs.filter(s=>s.status==='unknown').length, null]]
+        .map(([l,v,c])=>`
+        <div class="flex items-baseline gap-1.5">
+          <span class="text-lg font-semibold tabular-nums" style="color:${c||'var(--c-ink)'}">${v}</span>
+          <span class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">${l}</span>
+        </div>`).join('')}
+      <span class="flex-1"></span>
+      <span class="font-mono text-[10px] text-muted hidden lg:inline">Tier 1 first.</span>
+    </div>
+
+    <div class="grid gap-4 lg:grid-cols-2">${svcs.map(s=>{
+      const mine = comps.filter(c=>c.service_id===s.id);
+      return `
+      <section class="bg-paper border rise"
+               style="border-left:3px solid ${tone(s.effective_status)}">
+        <div class="px-4 py-3 border-b border-hairline">
+          <div class="flex items-center gap-2">
+            <span class="w-2 h-2 rounded-full shrink-0" style="background:${tone(s.effective_status)}"></span>
+            <h3 class="font-semibold tracking-tight truncate">${esc(s.name)}</h3>
+            <span class="font-mono text-[9px] uppercase tracking-[.12em] text-muted border border-rule px-1">tier ${s.tier}</span>
+            <span class="flex-1"></span>
+            <span class="font-mono text-[10px] uppercase tracking-[.12em]"
+                  style="color:${tone(s.effective_status)}">${esc(s.effective_status)}</span>
+          </div>
+          <p class="font-mono text-[10px] text-muted mt-1">${esc(s.reason)}</p>
+          ${(s.failing_dependencies||[]).length?`<p class="font-mono text-[10px] text-down mt-0.5">
+            depends on: ${esc((s.failing_dependencies||[]).join(', '))}</p>`:''}
+        </div>
+        ${mine.length?`<div class="divide-y divide-hairline">${mine.map(c=>`
+          <div class="flex items-center gap-3 px-4 py-1.5">
+            <span class="w-1.5 h-1.5 rounded-full shrink-0" style="background:${tone(c.status)}"></span>
+            <span class="text-[13px] truncate flex-1">${esc(c.name||'—')}</span>
+            <span class="font-mono text-[9px] uppercase tracking-[.1em] text-muted">${esc(c.kind)}</span>
+            <span class="font-mono text-[9px] uppercase tracking-[.1em]
+                  ${c.required?'text-ink':'text-muted'}">${c.required?'required':'redundant'}</span>
+            ${c.group_name?`<span class="font-mono text-[9px] text-muted">${esc(c.group_name)}</span>`:''}
+          </div>`).join('')}</div>`
+          :'<p class="px-4 py-4 text-sm text-muted">No components mapped.</p>'}
+      </section>`;}).join('')}</div>
+  </div>`;
+}
+
+// ═══════════════════════════ page: automation
+function pageAutomation(){
+  const rules = state.autoRules, queue = state.autoQueue;
+  const admin = isAdmin();
+  const pending = queue.filter(q=>q.status==='pending');
+
+  const POSTURE_TONE = { 'disabled':'text-muted', 'dry run only':'text-signal',
+                         'waits for approval':'text-degraded', 'runs automatically':'text-down' };
+  const RUN_TONE = { done:HEX.healthy, failed:HEX.down, pending:HEX.degraded,
+                     dry_run:HEX.muted, running:HEX.pending, rejected:HEX.muted,
+                     approved:HEX.pending, skipped:HEX.muted };
+
+  return `
+  <div class="space-y-4">
+    <div class="bg-paper border border-rule px-4 sm:px-5 py-3 flex flex-wrap items-center gap-x-6 gap-y-3">
+      ${[['rules', rules.length, null],
+         ['live', rules.filter(r=>r.enabled && !r.dry_run).length, null],
+         ['awaiting approval', pending.length, pending.length?HEX.degraded:null],
+         ['failed 7d', rules.reduce((a,r)=>a+Number(r.failed_7d||0),0), null]]
+        .map(([l,v,c])=>`
+        <div class="flex items-baseline gap-1.5">
+          <span class="text-lg font-semibold tabular-nums" style="color:${c||'var(--c-ink)'}">${v}</span>
+          <span class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">${l}</span>
+        </div>`).join('')}
+    </div>
+
+    <div class="border px-4 py-3" style="border-color:var(--c-rule);background:var(--c-ground)">
+      <p class="text-sm leading-relaxed">
+        <span class="font-mono text-[11px] uppercase tracking-[.14em] text-signal">How this works</span><br>
+        nodewatch decides <em>when</em> something should happen and calls an automation platform to
+        do it — Ansible AWX, Rundeck, a CI pipeline, any webhook receiver. It does not run commands
+        on monitored hosts. Giving the agent the ability to receive and execute instructions would
+        turn every agent into a remote shell reachable from the monitoring server, which is a far
+        larger security surface than anything else here.
+      </p>
+    </div>
+
+    ${pending.length ? card(sectionHead('Waiting for approval',
+        `<span class="font-mono text-[10px] text-degraded">${pending.length}</span>`)
+      + `<div class="divide-y divide-hairline">${pending.map(q=>`
+        <div class="px-4 sm:px-5 py-3">
+          <div class="flex flex-wrap items-center gap-3">
+            <span class="text-sm font-medium">${esc(q.rule_name)}</span>
+            <span class="font-mono text-[11px] text-muted truncate flex-1">${esc(q.reason||'')}</span>
+            <span class="font-mono text-[10px] text-muted">${ago(q.created_at)} ago</span>
+            ${admin?`
+              <button data-approve="${q.id}" class="font-mono text-[10px] uppercase tracking-[.12em] border border-ink px-2.5 py-1 hover:bg-ink hover:text-paper transition-colors">Approve</button>
+              <button data-reject="${q.id}" class="font-mono text-[10px] uppercase tracking-[.12em] text-down hover:underline">Reject</button>`
+              :'<span class="font-mono text-[10px] text-muted">admin approves</span>'}
+          </div>
+          <p class="font-mono text-[10px] text-muted mt-1 truncate">→ ${esc(q.action_url||'')}</p>
+        </div>`).join('')}</div>`) : ''}
+
+    ${rules.length ? card(sectionHead('Rules') + `<div class="divide-y divide-hairline">${rules.map(r=>`
+      <div class="px-4 sm:px-5 py-3">
+        <div class="flex flex-wrap items-center gap-3">
+          <span class="w-2 h-2 rounded-full shrink-0" style="background:${r.enabled?HEX.healthy:HEX.muted}"></span>
+          <span class="text-sm font-medium">${esc(r.name)}</span>
+          <span class="font-mono text-[9px] uppercase tracking-[.12em] ${POSTURE_TONE[r.posture]||'text-muted'}">${esc(r.posture)}</span>
+          <span class="flex-1"></span>
+          <span class="font-mono text-[10px] text-muted">
+            on ${esc(r.trigger_type)}${(r.trigger_rules||[]).length?': '+esc((r.trigger_rules||[]).join(', ')):''}</span>
+          <span class="font-mono text-[11px] tabular-nums text-muted">${r.runs_today}/${r.max_per_day} today</span>
+        </div>
+        <p class="font-mono text-[10px] text-muted mt-1 truncate">→ ${esc(r.action_url||'no url set')}</p>
+      </div>`).join('')}`)
+      : card(empty('No automation rules. Nothing acts on its own.'))}
+
+    ${queue.length ? card(sectionHead('Recent runs')
+      + `<div class="divide-y divide-hairline max-h-80 overflow-y-auto">${queue.slice(0,25).map(q=>`
+        <div class="flex items-center gap-3 px-4 sm:px-5 py-2">
+          <span class="font-mono text-[10px] uppercase tracking-[.1em] w-16 shrink-0"
+                style="color:${RUN_TONE[q.status]||HEX.muted}">${esc(q.status)}</span>
+          <span class="text-[13px] truncate flex-1">${esc(q.rule_name)}</span>
+          <span class="font-mono text-[11px] text-muted truncate w-40">${esc(q.reason||'')}</span>
+          ${q.http_status?`<span class="font-mono text-[11px] tabular-nums w-10 text-right"
+            style="color:${q.http_status<300?HEX.healthy:HEX.down}">${q.http_status}</span>`:'<span class="w-10"></span>'}
+          <span class="font-mono text-[10px] text-muted w-14 text-right">${ago(q.created_at)}</span>
+        </div>`).join('')}</div>`) : ''}
   </div>`;
 }
 
@@ -2637,6 +2859,9 @@ const TITLES = {
   host:['Server','Everything collected from this host'],
   servers:['Servers','Select a server to see its detail'],
   checks:['Checks','Agentless ping, port and URL monitoring'],
+  escalation:['Escalation','What happens when nobody acknowledges'],
+  services:['Business Services','Infrastructure grouped by what it supports'],
+  automation:['Automation','Decides when; an automation platform decides what'],
   topology:['Topology','Reachability and dependencies, not physical wiring'],
   ipam:['IPAM','Subnets and address inventory'],
   applications:['Applications','Throughput, errors and latency'],
@@ -2683,6 +2908,9 @@ function render(){
     state.page==='ipam'     ? pageIpam()     :
     state.page==='network'  ? pageNetwork()  :
     state.page==='topology' ? pageTopology() :
+    state.page==='escalation'? pageEscalation():
+    state.page==='services' ? pageServices() :
+    state.page==='automation'? pageAutomation():
     state.page==='databases'? pageDatabases():
     state.page==='desktops' ? pageDesktops() :
     state.page==='nettools' ? pageNetTools() :
@@ -2736,6 +2964,30 @@ function bind(){
 
   // ── checks ──
   if ($('k-new')) $('k-new').onclick = () => openCheck(null);
+
+  // ── automation approval ──
+  document.querySelectorAll('[data-approve]').forEach(el =>
+    el.onclick = async () => {
+      if (!confirm('Approve this run? The action will be carried out within a minute.')) return;
+      const { data:{ user } } = await sb.auth.getUser();
+      const { error } = await sb.from('automation_runs')
+        .update({ status:'approved', approved_by:user?.email||'admin',
+                  approved_at:new Date().toISOString() })
+        .eq('id', el.dataset.approve);
+      if (error) { $('err').textContent = error.message; return; }
+      refresh();
+    });
+
+  document.querySelectorAll('[data-reject]').forEach(el =>
+    el.onclick = async () => {
+      const { data:{ user } } = await sb.auth.getUser();
+      const { error } = await sb.from('automation_runs')
+        .update({ status:'rejected', approved_by:user?.email||'admin',
+                  approved_at:new Date().toISOString(), finished_at:new Date().toISOString() })
+        .eq('id', el.dataset.reject);
+      if (error) { $('err').textContent = error.message; return; }
+      refresh();
+    });
 
   // ── ipam ──
   if ($('ip-new')) $('ip-new').onclick = openSubnet;
@@ -3404,7 +3656,8 @@ async function refresh(){
     const since=new Date(Date.now()-20*60*1000).toISOString();
     const [hosts,latest,hist,ports,auth,checks,users,alerts,recips,rules,tokens,fim,vulns,pkgs,chans,audit,
            probes,matrix,avail,mttr,latency,nettools,databases,ifaces,apps,
-           subnets,ips,ipcon,tnodes,tedges]=await Promise.all([
+           subnets,ips,ipcon,tnodes,tedges,
+           escpol,await_,svc,svccomp,autorules,autoq]=await Promise.all([
       sb.from('agent_overview').select('*').order('label'),
       sb.from('agent_latest_metrics').select('*'),
       sb.from('metrics').select('agent_id,ts,cpu_pct').gte('ts',since).order('ts'),
@@ -3444,12 +3697,19 @@ async function refresh(){
       sb.from('ip_conflicts').select('*'),
       sb.from('topology_nodes').select('*'),
       sb.from('topology_edges').select('*'),
+      sb.from('escalation_overview').select('*').order('name'),
+      sb.from('alerts_awaiting').select('*'),
+      sb.from('service_impact').select('*').order('tier'),
+      sb.from('service_component_state').select('*'),
+      sb.from('automation_overview').select('*').order('name'),
+      sb.from('automation_queue').select('*').limit(40),
     ]);
     // Token and audit reads are admin-only under RLS, so a viewer legitimately
     // gets empty results there. Only treat the shared reads as fatal.
     const bad=[hosts,latest,hist,ports,auth,checks,users,alerts,recips,rules,fim,vulns,pkgs,chans,
                probes,matrix,avail,mttr,latency,nettools,databases,ifaces,apps,
-               subnets,ips,ipcon,tnodes,tedges].find(r=>r.error);
+               subnets,ips,ipcon,tnodes,tedges,
+               escpol,await_,svc,svccomp,autorules,autoq].find(r=>r.error);
     if(bad) throw bad.error;
 
     state.hosts=hosts.data; state.ports=ports.data; state.auth=auth.data;
@@ -3461,6 +3721,9 @@ async function refresh(){
     state.latency=latency.data||[]; state.nettools=nettools.data||[]; state.databases=databases.data||[]; state.interfaces=ifaces.data||[]; state.applications=apps.data||[];
     state.subnets=subnets.data||[]; state.ips=ips.data||[]; state.ipConflicts=ipcon.data||[];
     state.topoNodes=tnodes.data||[]; state.topoEdges=tedges.data||[];
+    state.escalations=escpol.data||[]; state.awaiting=await_.data||[];
+    state.services=svc.data||[]; state.serviceComponents=svccomp.data||[];
+    state.autoRules=autorules.data||[]; state.autoQueue=autoq.data||[];
     state.fim=fim.data||[];
 
     // Attach affected hosts to each finding. Done client-side because the
