@@ -87,6 +87,26 @@ def collect_packages():
     return _module().collect_packages()
 
 
+def collect_virtualization(interfaces=None):
+    """
+    {role, hypervisor, guest_of, runs, nested, evidence, basis}. Combines
+    direct detection with hardware evidence, so the answer carries its own
+    reasoning rather than being asserted.
+    """
+    import psutil
+    import virt
+
+    ev = virt.hardware_evidence(psutil, interfaces)
+    if PLATFORM == WINDOWS:
+        import os_windows as w
+        guest_of, running = virt.detect_windows(w.ps)
+    elif PLATFORM == MACOS:
+        guest_of, running = virt.detect_macos()
+    else:
+        guest_of, running = virt.detect_linux()
+    return virt.classify(guest_of, running, ev)
+
+
 def collect_apps():
     """
     [{app_name, requests_total, errors_total, active_conns, extra}] for

@@ -891,6 +891,22 @@ def main():
                         }
                     )
 
+                # Sent alongside interfaces because link speed is one of the
+                # signals the physical/virtual classification depends on.
+                try:
+
+                    buf.push(
+                        "virt",
+                        osdetect.collect_virtualization(ifs)
+                    )
+
+                except Exception as e:
+
+                    log.warning(
+                        "virtualisation detection failed: %s",
+                        e
+                    )
+
             except Exception as e:
 
                 log.warning(

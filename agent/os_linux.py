@@ -455,15 +455,6 @@ def is_noise(path: str) -> bool:
     return any(p.match(path) for p in NOISE_PATTERNS)
 
 
-NOISE_PATTERNS = [
-    re.compile(r"^/etc/systemd/system/(?:[^/]+\.wants/)?snap[-.].*-\d+\.mount$"),
-    re.compile(r"^/etc/systemd/system/snap\.[^/]+\.service$"),
-    re.compile(r"^/etc/systemd/system/multi-user\.target\.wants/snap[-.].*-\d+\.mount$"),
-    re.compile(r"^/etc/systemd/system/snapd\.mounts(?:-pre)?\.target\.wants/.*\.mount$"),
-    re.compile(r"^/etc/ssl/certs/[0-9a-f]{8}\.\d+$"),
-]
-
-
 # ---------------------------------------------------------------- packages
 
 def collect_packages():
