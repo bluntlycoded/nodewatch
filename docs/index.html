@@ -497,7 +497,10 @@ const PAGES = [
   ['posture','Posture'], ['vulns','Vulnerabilities'], ['settings','Settings'],
   ['users','Users', true],   // third element: admin only
 ];
-const INGEST_HINT = 'http://172.31.30.90:8000';
+// Where agents post. The private VPC address only works for hosts inside
+// that VPC; the tunnel is reachable from anywhere, which is what an
+// on-premise or campus machine needs.
+const INGEST_HINT = 'https://life-travelling-marketing-norfolk.trycloudflare.com';
 
 let state = {
   page:'servers', tab:'ports', filter:'all', query:'', alertFilter:'all',
@@ -3142,7 +3145,7 @@ const PLATFORMS = [
 function openAdd(){
   addProvider='aws';
   $('a-name').value=''; $('a-site').value='';
-  $('a-ingest').value = localStorage_get('nw-ingest') || INGEST_HINT;
+  $('a-ingest').value = localStorage_get('nw-ingest-2') || INGEST_HINT;
   $('a-out').classList.add('hidden'); $('a-msg').textContent='';
   renderPlatforms(); renderProviders();
   $('addmodal').classList.remove('hidden'); $('addmodal').classList.add('flex');
@@ -3182,7 +3185,7 @@ $('a-gen').onclick = async () => {
   $('a-msg').textContent='';
   const ingest = $('a-ingest').value.trim();
   if(!ingest){ $('a-msg').textContent='Enter the ingest URL.'; return; }
-  localStorage_set('nw-ingest', ingest);
+  localStorage_set('nw-ingest-2', ingest);
 
   // Only a host without cloud attestation strictly needs a token, but issuing
   // one for every provider is harmless and makes enrolment explicit.
