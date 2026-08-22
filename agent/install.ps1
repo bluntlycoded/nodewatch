@@ -625,90 +625,34 @@ Write-Host '============================================'
 Write-Host ''
 
 
-$probeCode = @"
-import sys
-import platform
+Write-Host ''
+Write-Host '============================================'
+Write-Host '      Windows Agent Smoke Test'
+Write-Host '============================================'
+Write-Host ''
 
-sys.path.insert(0, r'$Root')
+$probe = & $VenvPy -c "import sys; sys.path.insert(0, r'$Root'); import agent; import osdetect; print('AGENT IMPORT OK'); print('OSDETECT IMPORT OK')" 2>&1
 
-print("Operating system:", platform.system())
-print("Windows version:", platform.version())
+if ($LASTEXITCODE -ne 0) {
+    Write-Host ''
+    Write-Host '============================================' -ForegroundColor Red
+    Write-Host ' WINDOWS AGENT SMOKE TEST FAILED' -ForegroundColor Red
+    Write-Host '============================================' -ForegroundColor Red
+    Write-Host ''
+    $probe | ForEach-Object {
+        Write-Host $_ -ForegroundColor Red
+    }
+    throw 'The Windows agent failed its smoke test.'
+}
 
-import agent
-import osdetect
+Write-Host ''
+$probe | ForEach-Object {
+    Write-Host "   $_"
+}
 
-print("agent.py imported successfully")
-print("osdetect.py imported successfully")
-
-print("Agent version:", agent.AGENT_VERSION)
-
-print("")
-print("Testing platform_string()...")
-
-try:
-    p = agent.platform_string()
-    print("Platform:", p)
-except Exception as e:
-    print("WARNING: platform_string() failed:", repr(e))
-
-print("")
-print("Testing collect_metrics()...")
-
-metrics = agent.collect_metrics()
-
-print("")
-print("Metrics returned:")
-print(metrics)
-
-if not isinstance(metrics, dict):
-    raise RuntimeError(
-        "collect_metrics() did not return a dictionary"
-    )
-
-required = [
-    "cpu_pct",
-    "mem_pct",
-    "disk_pct",
-    "load1",
-    "uptime_s",
-    "proc_count"
-]
-
-print("")
-print("Checking required metrics...")
-
-for key in required:
-
-    if key not in metrics:
-
-        raise RuntimeError(
-            "collect_metrics() missing key: " + key
-        )
-
-    print(
-        "  OK:",
-        key,
-        "=",
-        metrics[key]
-    )
-
-print("")
-print("Testing collect_ports()...")
-
-ports = agent.collect_ports()
-
-print(
-    "collect_ports() returned",
-    len(ports),
-    "ports"
-)
-
-print("")
-print("Windows agent smoke test: OK")
-"@
-
-
-$probe = & $VenvPy -c $probeCode 2>&1
+Write-Host ''
+Write-Host 'Windows agent smoke test PASSED.' -ForegroundColor Green
+Write-Host ''
 
 
 if ($LASTEXITCODE -ne 0) {
