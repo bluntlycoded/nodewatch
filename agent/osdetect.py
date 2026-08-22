@@ -87,6 +87,17 @@ def collect_packages():
     return _module().collect_packages()
 
 
+def collect_apps():
+    """
+    [{app_name, requests_total, errors_total, active_conns, extra}] for
+    application servers the agent can read locally. Only Windows has one
+    today - IIS - so everything else returns nothing rather than raising.
+    """
+    m = _module()
+    fn = getattr(m, "collect_iis", None)
+    return fn() if fn else []
+
+
 def watch_paths():
     """Directories worth hashing for integrity monitoring on this OS."""
     return _module().WATCH_PATHS
