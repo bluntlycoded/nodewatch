@@ -294,18 +294,18 @@ tailwind.config = { theme: { extend: {
       <div id="k-credwrap" class="hidden space-y-3">
         <div class="grid sm:grid-cols-2 gap-3">
           <div>
-            <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Username</label>
+            <label id="k-userlabel" class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Username</label>
             <input id="k-user" autocomplete="off" spellcheck="false"
                    class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
           </div>
           <div>
-            <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Password</label>
+            <label id="k-passlabel" class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Password</label>
             <input id="k-pass" type="password" autocomplete="new-password"
                    class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
           </div>
         </div>
         <div class="grid sm:grid-cols-2 gap-3">
-          <div>
+          <div id="k-dbwrap">
             <label id="k-dblabel" class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Database (optional)</label>
             <input id="k-db" placeholder="postgres"
                    class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
@@ -516,6 +516,7 @@ let state = {
   subnets:[], ips:[], ipConflicts:[], reportKind:'availability', reportDays:30,
   reportRows:[], reportFindings:[], reportLoading:false, nettools:[],
   probes:[], matrix:[], availability:[], mttr:[], latency:[],
+  proxmoxClusters:[], proxmoxGuests:[], proxmoxStorage:[], proxmoxBackups:[],
   hostDetail:{ checks:[], packages:[], vulns:[], users:[], ports:[], fim:[], history:[] },
 };
 
@@ -670,7 +671,7 @@ const NAV = [
     ['servers',        'Server Monitoring',   {}],
     ['todo:idrac',     'iDRAC Monitoring',    {todo:'idrac'}],
     ['todo:ilo',       'HP iLO Monitoring',   {todo:'ilo'}],
-    ['todo:proxmox',   'Proxmox Monitoring',  {todo:'proxmox'}],
+    ['proxmox',        'Proxmox Monitoring',  {}],
     ['todo:nutanix',   'Nutanix Monitoring',  {todo:'nutanix'}],
     ['desktops',       'Desktop Monitoring',  {}],
     ['todo:snmp',      'SNMP Monitoring',     {todo:'snmp'}],
@@ -727,7 +728,6 @@ const NAV = [
 const TODO_SPEC = {
   idrac:   ['iDRAC Monitoring', 'Dell PowerEdge out-of-band telemetry over the Redfish API: PSU and fan status with RPM, inlet and exhaust temperature, CPU die temperature, physical disk health with predictive-failure flags, RAID and CMOS battery, DIMM population, NIC link state, and the system event log.', 'Redfish is a REST API over HTTPS, so this needs an iDRAC address and read-only credentials per chassis. HP iLO implements the same standard, so the two share most of their code.'],
   ilo:     ['HP iLO Monitoring', 'The same out-of-band hardware telemetry as iDRAC, for HP ProLiant chassis.', 'Shares the Redfish client with iDRAC; mostly a matter of vendor-specific field mapping.'],
-  proxmox: ['Proxmox Monitoring', 'Cluster and node status, VM and container inventory with running state, per-guest CPU, memory and disk usage, storage pool capacity, and backup job outcomes.', 'Uses the Proxmox VE REST API with an API token. One poll covers every guest on a node.'],
   nutanix: ['Nutanix Monitoring', 'Cluster health, host and VM inventory, storage container usage, and alert feed.', 'Uses the Prism REST API.'],
   snmp:    ['SNMP Monitoring', 'Interface counters and link state for switches, routers, firewalls and printers: in/out octets, errors, discards, admin and operational status, uptime and system description.', 'Needs SNMP v2c community strings or v3 credentials. This is the foundation for link utilisation and the topology map.'],
   link:    ['Link Monitoring', 'Bandwidth utilisation per interface, computed from SNMP counter deltas, with top-N by utilisation and threshold alerting on saturation.', 'Depends on SNMP polling being in place first.'],
@@ -1128,6 +1128,8 @@ const CHECK_KINDS = {
               hint:'Reads the manager app XML status. Give the account the manager-status role only — manager-script can deploy and undeploy applications.' },
   jboss:    { label:'JBoss',      url:true, creds:true,
               hint:'WildFly or JBoss EAP management API on port 9990. The account comes from add-user.sh in the management realm, not from the application.' },
+  proxmox:  { label:'Proxmox VE', creds:true, token:true,
+              hint:'Reads /cluster/resources and /cluster/tasks with an API token (Datacenter → Permissions → API Tokens). PVEAuditor is enough — this never writes.' },
 };
 
 function pageChecks(){
@@ -2097,6 +2099,151 @@ GRANT CREATE SESSION, SELECT_CATALOG_ROLE TO nodewatch;</pre>
   </div>`;
 }
 
+// ═══════════════════════════ page: proxmox
+function pageProxmox(){
+  const admin = isAdmin();
+  const clusters = state.proxmoxClusters;
+
+  if(!clusters.length) return `
+    <div class="space-y-4">
+      ${card(empty('No Proxmox cluster is monitored yet.'))}
+      ${admin?`<div class="bg-paper border border-rule px-5 py-4 space-y-2">
+        <p class="text-sm text-muted leading-relaxed">
+          Add one from <span class="font-mono text-[12px]">Checks</span> — choose Proxmox VE and give
+          it a read-only API token. This never needs to write, so scope it to an auditor role:</p>
+        <pre class="border border-rule bg-ground px-3 py-2 font-mono text-[11px] whitespace-pre-wrap">pveum role add PVEAuditor -privs "VM.Audit,Datastore.Audit,Sys.Audit"
+pveum user token add nodewatch@pve nodewatch --privsep 0
+pveum acl modify / -token 'nodewatch@pve!nodewatch' -role PVEAuditor</pre>
+      </div>`:''}
+    </div>`;
+
+  const guestsBy = {}, storageBy = {}, backupsBy = {};
+  state.proxmoxGuests.forEach(g => (guestsBy[g.probe_id] ||= []).push(g));
+  state.proxmoxStorage.forEach(s => (storageBy[s.probe_id] ||= []).push(s));
+  state.proxmoxBackups.forEach(b => (backupsBy[b.probe_id] ||= []).push(b));
+
+  const up = clusters.filter(c=>c.status==='up').length;
+  const guestsRunning = clusters.reduce((a,c)=>a+(c.guests_running||0),0);
+  const guestsTotal   = clusters.reduce((a,c)=>a+(c.guests_total||0),0);
+  const worstStorage  = clusters.reduce((a,c)=>Math.max(a, c.storage_pct_worst ?? 0), 0);
+  const failedBackups = state.proxmoxBackups.filter(
+    b=>!b.ok && Date.now()-new Date(b.ts).getTime() < 86400000).length;
+
+  return `
+  <div class="space-y-4">
+    <div class="bg-paper border border-rule px-4 sm:px-5 py-3 flex flex-wrap items-center gap-x-6 gap-y-3">
+      <div class="flex items-baseline gap-1.5">
+        <span class="text-lg font-semibold tabular-nums">${clusters.length}</span>
+        <span class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">clusters</span>
+      </div>
+      <div class="flex items-baseline gap-1.5">
+        <span class="text-lg font-semibold tabular-nums" style="color:${HEX.healthy}">${up}</span>
+        <span class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">reachable</span>
+      </div>
+      <div class="flex items-baseline gap-1.5">
+        <span class="text-lg font-semibold tabular-nums">${guestsRunning}<span class="text-muted">/${guestsTotal}</span></span>
+        <span class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">guests running</span>
+      </div>
+      <div class="flex items-baseline gap-1.5">
+        <span class="text-lg font-semibold tabular-nums"
+              style="color:${worstStorage>=90?HEX.down:worstStorage>=75?HEX.degraded:HEX.healthy}">${Math.round(worstStorage)}%</span>
+        <span class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">peak storage</span>
+      </div>
+      ${failedBackups?`<div class="flex items-baseline gap-1.5">
+        <span class="text-lg font-semibold tabular-nums" style="color:${HEX.down}">${failedBackups}</span>
+        <span class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">failed backups, 24h</span>
+      </div>`:''}
+    </div>
+
+    ${clusters.map(c=>{
+      const down = c.status!=='up';
+      const guests = guestsBy[c.id]||[];
+      const storage = storageBy[c.id]||[];
+      const backups = (backupsBy[c.id]||[]).slice(0,8);
+      return `
+      <section class="bg-paper border rise ${down?'border-down':'border-rule'}"
+               ${down?`style="border-left:3px solid ${HEX.down}"`:''}>
+        <div class="px-4 sm:px-5 py-3 border-b border-hairline flex items-start justify-between gap-3">
+          <div class="min-w-0">
+            <div class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full shrink-0" style="background:${down?HEX.down:HEX.healthy}"></span>
+              <h3 class="font-semibold tracking-tight truncate">${esc(c.name)}</h3>
+              ${c.site?`<span class="font-mono text-[9px] uppercase tracking-[.12em] text-muted border border-rule px-1 shrink-0">${esc(c.site)}</span>`:''}
+            </div>
+            <p class="font-mono text-[10px] text-muted mt-1 truncate">${esc(c.host||'—')} · every ${c.interval_s}s
+              ${c.measured_at?' · '+ago(c.measured_at)+' ago':''}</p>
+          </div>
+          ${!down?`<div class="text-right shrink-0">
+            <p class="text-2xl font-semibold tabular-nums leading-none">${c.nodes_online ?? '—'}<span class="text-muted text-base">/${c.nodes_total ?? '—'}</span></p>
+            <p class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">nodes online</p>
+          </div>`:''}
+        </div>
+
+        ${down ? `<p class="px-4 sm:px-5 py-6 text-sm text-down">${esc(c.detail||'unreachable')}</p>` : `
+        <div class="px-4 sm:px-5 py-3 grid gap-4 lg:grid-cols-3">
+          <div class="space-y-3">
+            <p class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">cluster load</p>
+            <div>
+              <div class="flex justify-between font-mono text-[10px] mb-1">
+                <span class="text-muted">cpu</span><span class="tabular-nums">${c.cpu_pct!=null?c.cpu_pct+'%':'—'}</span>
+              </div>${bar(c.cpu_pct)}
+            </div>
+            <div>
+              <div class="flex justify-between font-mono text-[10px] mb-1">
+                <span class="text-muted">memory</span><span class="tabular-nums">${c.mem_pct!=null?c.mem_pct+'%':'—'}</span>
+              </div>${bar(c.mem_pct)}
+            </div>
+          </div>
+
+          <div class="space-y-1.5 lg:col-span-2">
+            <p class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">storage pools</p>
+            ${storage.length ? storage.map(s=>{
+              const pct = s.total_bytes ? Math.round(100*s.used_bytes/s.total_bytes) : null;
+              return `<div class="flex items-center gap-2">
+                <span class="font-mono text-[10px] text-muted w-28 truncate shrink-0" title="${esc(s.node)}">${esc(s.storage)}</span>
+                <div class="flex-1">${bar(pct,90)}</div>
+                <span class="font-mono text-[10px] tabular-nums w-28 text-right shrink-0">${bytes(s.used_bytes)} / ${bytes(s.total_bytes)}</span>
+              </div>`;
+            }).join('') : `<p class="text-xs text-muted">no storage pools reported</p>`}
+          </div>
+        </div>
+
+        <div class="border-t border-hairline px-4 sm:px-5 py-3">
+          <p class="font-mono text-[9px] tracking-[.16em] uppercase text-muted mb-2">guests (${guests.length})</p>
+          ${guests.length ? `<div class="divide-y divide-hairline max-h-72 overflow-y-auto">${guests.map(g=>`
+            <div class="flex items-center gap-3 py-1.5">
+              <span class="w-1.5 h-1.5 rounded-full shrink-0" style="background:${g.status==='running'?HEX.healthy:HEX.muted}"></span>
+              <span class="font-mono text-[10px] uppercase tracking-[.1em] text-muted w-10 shrink-0">${esc(g.kind)}</span>
+              <span class="text-sm truncate flex-1 min-w-0">${esc(g.name)}</span>
+              <span class="font-mono text-[10px] text-muted shrink-0">${esc(g.node)}</span>
+              <span class="font-mono text-[10px] tabular-nums w-14 text-right shrink-0">${g.status==='running'&&g.cpu_pct!=null?g.cpu_pct+'% cpu':'—'}</span>
+              <span class="font-mono text-[10px] tabular-nums w-24 text-right shrink-0">${g.status==='running'?bytes(g.mem_bytes)+' / '+bytes(g.mem_max_bytes):'—'}</span>
+              <span class="font-mono text-[10px] tabular-nums w-16 text-right shrink-0">${bytes(g.disk_max_bytes)}</span>
+              <span class="font-mono text-[10px] uppercase tracking-[.1em] w-16 text-right shrink-0"
+                    style="color:${g.status==='running'?HEX.healthy:HEX.muted}">${esc(g.status)}</span>
+            </div>`).join('')}</div>`
+            : `<p class="text-xs text-muted">no guests found</p>`}
+        </div>
+
+        <div class="border-t border-hairline px-4 sm:px-5 py-3">
+          <p class="font-mono text-[9px] tracking-[.16em] uppercase text-muted mb-2">recent backups</p>
+          ${backups.length ? `<div class="divide-y divide-hairline">${backups.map(b=>`
+            <div class="flex items-center gap-3 py-1.5">
+              <span class="w-1.5 h-1.5 rounded-full shrink-0" style="background:${b.ok?HEX.healthy:HEX.down}"></span>
+              <span class="font-mono text-[10px] text-muted w-16 shrink-0">vmid ${b.vmid ?? '—'}</span>
+              <span class="font-mono text-[10px] text-muted flex-1 truncate">${esc(b.node||'')}</span>
+              <span class="font-mono text-[10px] tabular-nums text-muted shrink-0">${b.duration_s!=null?fmtDur(b.duration_s):'—'}</span>
+              <span class="font-mono text-[10px] uppercase tracking-[.1em] w-14 text-right shrink-0"
+                    style="color:${b.ok?HEX.healthy:HEX.down}">${b.ok?'ok':'failed'}</span>
+              <span class="font-mono text-[10px] tabular-nums text-muted w-24 text-right shrink-0">${ago(b.ts)} ago</span>
+            </div>`).join('')}</div>`
+            : `<p class="text-xs text-muted">no backup jobs recorded yet</p>`}
+        </div>`}
+      </section>`;
+    }).join('')}
+  </div>`;
+}
+
 // ═══════════════════════════ page: reports
 const REPORTS = {
   availability: { title:'Availability Report', rpc:'report_availability',
@@ -2871,6 +3018,7 @@ const TITLES = {
   applications:['Applications','Throughput, errors and latency'],
   network:['Network','Interfaces reported by the agents'],
   databases:['Databases','PostgreSQL and MySQL health'],
+  proxmox:['Proxmox','Cluster, guest and storage status from the Proxmox VE API'],
   desktops:['Desktops','End-user machines - laptops and workstations'],
   nettools:['Network Tools','Diagnostics run from the probe host'],
   report:['Report','Generated from collected telemetry'],
@@ -2916,6 +3064,7 @@ function render(){
     state.page==='services' ? pageServices() :
     state.page==='automation'? pageAutomation():
     state.page==='databases'? pageDatabases():
+    state.page==='proxmox'  ? pageProxmox()  :
     state.page==='desktops' ? pageDesktops() :
     state.page==='nettools' ? pageNetTools() :
     state.page==='report'   ? pageReport()   :
@@ -3333,8 +3482,18 @@ function renderCheckKinds(){
     : checkKind === 'nginx'    ? 'http://10.0.0.5/nginx_status'
     : checkKind === 'url'      ? 'https://example.com/health' : '10.0.0.1';
   if (isDb && !$('k-port').value) {
-    $('k-port').value = { postgres:5432, mysql:3306, mssql:1433, oracle:1521 }[checkKind] || '';
+    $('k-port').value = { postgres:5432, mysql:3306, mssql:1433, oracle:1521, proxmox:8006 }[checkKind] || '';
   }
+  // Proxmox authenticates with an API token, not a password, so the
+  // username/password fields are relabelled to say what actually goes in
+  // them rather than reusing generic labels a token doesn't fit.
+  const isToken = !!CHECK_KINDS[checkKind].token;
+  if ($('k-userlabel')) {
+    $('k-userlabel').textContent = isToken ? 'API token ID' : 'Username';
+    $('k-user').placeholder = isToken ? 'root@pam!nodewatch' : '';
+  }
+  if ($('k-passlabel')) $('k-passlabel').textContent = isToken ? 'API token secret' : 'Password';
+  if ($('k-dbwrap')) $('k-dbwrap').classList.toggle('hidden', isToken);
   if ($('k-dblabel')) {
     // Oracle connects to a service, not a database name, and getting that
     // wrong is the usual reason a first connection fails.
@@ -3381,7 +3540,9 @@ $('k-save').onclick = async () => {
 
   const isDb = !!CHECK_KINDS[checkKind].creds;
   if(isDb && !$('k-user').value.trim()){
-    $('k-msg').textContent = 'A database check needs a username.'; return;
+    $('k-msg').textContent = CHECK_KINDS[checkKind].token
+      ? 'A Proxmox check needs its API token ID.' : 'A database check needs a username.';
+    return;
   }
 
   let error, probeId = editingCheck?.id;
@@ -3737,6 +3898,12 @@ const PAGE_QUERIES = {
     autorules: sb.from('automation_overview').select('*').order('name'),
     autoq:     sb.from('automation_queue').select('*').limit(40),
   }),
+  proxmox: () => ({
+    pxclusters: sb.from('proxmox_overview').select('*').order('name'),
+    pxguests:   sb.from('proxmox_guests').select('*').order('name'),
+    pxstorage:  sb.from('proxmox_storage').select('*').order('node').order('storage'),
+    pxbackups:  sb.from('proxmox_backups').select('*').order('ts',{ascending:false}).limit(100),
+  }),
 };
 
 // The alert channel list is also shown on Settings; Alerts needs nothing extra.
@@ -3749,6 +3916,8 @@ const ASSIGN = {
   ips:'ips', ipcon:'ipConflicts', tnodes:'topoNodes', tedges:'topoEdges',
   escpol:'escalations', awaitl:'awaiting', svc:'services', svccomp:'serviceComponents',
   autorules:'autoRules', autoq:'autoQueue',
+  pxclusters:'proxmoxClusters', pxguests:'proxmoxGuests',
+  pxstorage:'proxmoxStorage', pxbackups:'proxmoxBackups',
 };
 
 let polling = false;

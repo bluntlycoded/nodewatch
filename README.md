@@ -25,9 +25,11 @@ probe runner (agentless checks) ──────────┘               
 listening ports, sign-in events, local accounts and privilege changes,
 configuration posture, installed packages, file integrity, network interfaces.
 
-**Anything else, via agentless probes** — ping, TCP port, HTTP/URL, PostgreSQL
-and MySQL. The probe runner polls on a schedule from a host with a route to the
-target, which is also how BMC, hypervisor and SNMP support will work.
+**Anything else, via agentless probes** — ping, TCP port, HTTP/URL, PostgreSQL,
+MySQL, SQL Server, Oracle, Prometheus, nginx, Tomcat, JBoss/WildFly, and
+Proxmox VE clusters (node status, VM/container inventory, storage pool
+capacity, backup outcomes). The probe runner polls on a schedule from a host
+with a route to the target, which is also how BMC and SNMP support will work.
 
 **Enrolment covers** AWS, GCP, Azure and on-premise, each verified as strongly
 as the platform allows.
@@ -228,7 +230,7 @@ every stock system account as newly added.
 ## Not built
 
 BMC telemetry (iDRAC, iLO, XCC, Supermicro — one Redfish module would cover
-all four), Proxmox and Nutanix, SNMP and the topology map that depends on it,
+all four), Nutanix, SNMP and the topology map that depends on it,
 application servers, Oracle and SQL Server, IPAM, business service mapping,
 and escalation policies.
 
