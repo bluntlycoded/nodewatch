@@ -686,7 +686,7 @@ const NAV = [
     ['applications?nginx', 'Nginx Monitoring',  {}],
     ['applications?tomcat', 'Tomcat Monitoring', {}],
     ['applications?jboss',  'JBoss Monitoring',  {}],
-    ['todo:iis',    'IIS Monitoring',    {todo:'iis'}],
+    ['applications?iis',    'IIS Monitoring',    {}],
   ]],
   ['Security', [
     ['posture',        'Posture',         {}],
@@ -1318,7 +1318,8 @@ function pageIpam(){
 }
 
 // ═══════════════════════════ page: applications
-const APP_KIND = { prometheus:'Prometheus', nginx:'Nginx', tomcat:'Tomcat', jboss:'JBoss' };
+const APP_KIND = { prometheus:'Prometheus', nginx:'Nginx', tomcat:'Tomcat',
+                   jboss:'JBoss', iis:'IIS' };
 
 function ms(sec){
   if(sec==null) return '—';
@@ -1335,33 +1336,69 @@ function pageApplications(){
   if(!rows.length) return `
     <div class="space-y-4">
       ${card(empty('No applications monitored yet.'))}
-      ${admin?`<div class="bg-paper border border-rule px-5 py-4 space-y-3">
+      ${admin?`<div class="bg-paper border border-rule px-5 py-4 space-y-4">
         <p class="text-sm text-muted leading-relaxed">
-          Add one from <span class="font-mono text-[12px]">Checks</span>. Two kinds are supported,
+          Add one from <span class="font-mono text-[12px]">Checks</span>. Five kinds are supported,
           and between them they cover most of what a lab runs.</p>
+
         <div>
-          <p class="font-mono text-[10px] uppercase tracking-[.16em] text-muted">Prometheus</p>
+          <p class="font-mono text-[10px] uppercase tracking-[.16em] text-signal">Prometheus</p>
           <p class="text-sm text-muted mt-1">Any app exposing <span class="font-mono text-[12px]">/metrics</span>
-            in the text exposition format. For Python apps that means one dependency:</p>
+            in the text exposition format. For Python apps that is one dependency:</p>
           <pre class="border border-rule bg-ground px-3 py-2 font-mono text-[11px] mt-2 whitespace-pre-wrap"># FastAPI
 pip install prometheus-fastapi-instrumentator
 Instrumentator().instrument(app).expose(app)
 
-# Django
-pip install django-prometheus   # then add the middleware and urls
+# Django — add the middleware and include the urls
+pip install django-prometheus
 
 # Flask
 pip install prometheus-flask-exporter
 PrometheusMetrics(app)</pre>
         </div>
+
         <div>
-          <p class="font-mono text-[10px] uppercase tracking-[.16em] text-muted">Nginx</p>
-          <p class="text-sm text-muted mt-1">Enable the built-in status endpoint:</p>
+          <p class="font-mono text-[10px] uppercase tracking-[.16em] text-signal">Nginx</p>
+          <p class="text-sm text-muted mt-1">Enable the built-in status endpoint and restrict it to the probe host:</p>
           <pre class="border border-rule bg-ground px-3 py-2 font-mono text-[11px] mt-2 whitespace-pre-wrap">location /nginx_status {
     stub_status;
-    allow 10.0.0.0/8;   # the probe host
+    allow 172.31.30.90;   # the probe host
     deny all;
 }</pre>
+        </div>
+
+        <div>
+          <p class="font-mono text-[10px] uppercase tracking-[.16em] text-signal">Tomcat</p>
+          <p class="text-sm text-muted mt-1">Give an account the <span class="font-mono text-[12px]">manager-status</span>
+            role only. That role is read-only — <span class="font-mono text-[12px]">manager-script</span> can deploy
+            and undeploy applications, which monitoring has no business doing.</p>
+          <pre class="border border-rule bg-ground px-3 py-2 font-mono text-[11px] mt-2 whitespace-pre-wrap">&lt;!-- conf/tomcat-users.xml --&gt;
+&lt;role rolename="manager-status"/&gt;
+&lt;user username="nodewatch" password="..." roles="manager-status"/&gt;
+
+Target: http://host:8080/manager/status</pre>
+        </div>
+
+        <div>
+          <p class="font-mono text-[10px] uppercase tracking-[.16em] text-signal">JBoss / WildFly</p>
+          <p class="text-sm text-muted mt-1">The management realm is separate from your application's realm.
+            Create the account with <span class="font-mono text-[12px]">add-user.sh</span>, choosing
+            <em>Management User</em>:</p>
+          <pre class="border border-rule bg-ground px-3 py-2 font-mono text-[11px] mt-2 whitespace-pre-wrap">$JBOSS_HOME/bin/add-user.sh
+  → (a) Management User
+  → username: nodewatch
+
+# the interface must listen beyond localhost:
+bin/standalone.sh -bmanagement=0.0.0.0
+
+Target: http://host:9990</pre>
+        </div>
+
+        <div>
+          <p class="font-mono text-[10px] uppercase tracking-[.16em] text-signal">IIS</p>
+          <p class="text-sm text-muted mt-1">Nothing to configure and no credentials needed — the Windows agent
+            reads the IIS performance counters directly. Install the agent on the web server and its sites
+            appear here automatically.</p>
         </div>
       </div>`:''}
     </div>`;
@@ -1416,7 +1453,11 @@ PrometheusMetrics(app)</pre>
               <span class="font-mono text-[9px] uppercase tracking-[.12em] text-muted border border-rule px-1 shrink-0">
                 ${esc(APP_KIND[a.kind]||a.kind)}</span>
             </div>
-            <p class="font-mono text-[10px] text-muted mt-1 truncate">${esc(a.target)}</p>
+            <p class="font-mono text-[10px] text-muted mt-1 truncate">
+              ${esc(a.target)}${a.kind==='iis'?' <span class="text-muted">· via agent</span>':''}
+              ${a.extra&&a.extra.site_state&&a.extra.site_state!=='Started'
+                ? `<span class="text-down"> · site ${esc(a.extra.site_state)}</span>`:''}
+            </p>
           </div>
           <div class="text-right shrink-0">
             <p class="text-2xl font-semibold tabular-nums leading-none"
@@ -1431,8 +1472,9 @@ PrometheusMetrics(app)</pre>
           ${[['req/s', a.rps ?? '—'],
              ['p95', ms(a.p95_avg_1h ?? a.p95_latency_s)],
              ['avg', ms(a.avg_latency_s)],
-             [a.kind==='nginx' ? 'active' : (a.kind==='tomcat'||a.kind==='jboss') ? 'heap %' : 'cpu %',
-              a.kind==='nginx' ? (a.active_conns ?? '—')
+             [(a.kind==='nginx'||a.kind==='iis') ? 'active'
+                : (a.kind==='tomcat'||a.kind==='jboss') ? 'heap %' : 'cpu %',
+              (a.kind==='nginx'||a.kind==='iis') ? (a.active_conns ?? '—')
                 : (a.kind==='tomcat'||a.kind==='jboss') ? ((a.extra&&a.extra.heap_pct) ?? '—')
                 : (a.cpu_pct ?? '—')]
             ].map(([k,v])=>`
@@ -1447,6 +1489,9 @@ PrometheusMetrics(app)</pre>
           ${a.memory_bytes?`<span>${bytes(a.memory_bytes)} rss</span>`:''}
           ${a.uptime_s?`<span>up ${fmtDur(a.uptime_s)}</span>`:''}
           ${a.p95_max_1h?`<span>worst p95 ${ms(a.p95_max_1h)}</span>`:''}
+          ${a.extra&&a.extra.not_found?`<span>${a.extra.not_found} not found</span>`:''}
+          ${a.extra&&(a.extra.pools_stopped||[]).length
+            ? `<span class="text-down">pool stopped: ${esc(a.extra.pools_stopped.join(', '))}</span>`:''}
         </div>`}
 
         <div class="border-t border-hairline px-4 py-1.5 flex items-center justify-between">
