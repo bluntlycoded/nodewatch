@@ -11,10 +11,8 @@ No shared secrets on the host.
 import json
 import logging
 import os
-import re
 import socket
 import sqlite3
-import subprocess
 import sys
 import time
 from pathlib import Path

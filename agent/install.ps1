@@ -624,13 +624,6 @@ Write-Host '      Windows Agent Smoke Test'
 Write-Host '============================================'
 Write-Host ''
 
-
-Write-Host ''
-Write-Host '============================================'
-Write-Host '      Windows Agent Smoke Test'
-Write-Host '============================================'
-Write-Host ''
-
 $probe = & $VenvPy -c "import sys; sys.path.insert(0, r'$Root'); import agent; import osdetect; print('AGENT IMPORT OK'); print('OSDETECT IMPORT OK')" 2>&1
 
 if ($LASTEXITCODE -ne 0) {
@@ -642,6 +635,9 @@ if ($LASTEXITCODE -ne 0) {
     $probe | ForEach-Object {
         Write-Host $_ -ForegroundColor Red
     }
+    Write-Host ''
+    Write-Host 'The Scheduled Task was NOT created.'
+    Write-Host ''
     throw 'The Windows agent failed its smoke test.'
 }
 
@@ -653,37 +649,6 @@ $probe | ForEach-Object {
 Write-Host ''
 Write-Host 'Windows agent smoke test PASSED.' -ForegroundColor Green
 Write-Host ''
-
-
-if ($LASTEXITCODE -ne 0) {
-
-    Write-Host ''
-    Write-Host '============================================' `
-        -ForegroundColor Red
-
-    Write-Host ' WINDOWS AGENT SMOKE TEST FAILED' `
-        -ForegroundColor Red
-
-    Write-Host '============================================' `
-        -ForegroundColor Red
-
-    Write-Host ''
-
-    $probe |
-        ForEach-Object {
-
-            Write-Host `
-                $_ `
-                -ForegroundColor Red
-        }
-
-
-    Write-Host ''
-    Write-Host 'The Scheduled Task was NOT created.'
-    Write-Host ''
-
-    throw 'The Windows agent failed its smoke test.'
-}
 
 
 Write-Host ''
