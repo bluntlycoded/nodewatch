@@ -21,6 +21,7 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
+import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
@@ -572,9 +573,195 @@ def check_nginx(p) -> tuple[bool, int | None, str]:
                       + (f", {accepts - handled} dropped" if accepts != handled else ""))
 
 
+# ---------------------------------------------------------------- java app servers
+
+def _basic_opener(cfg, url, digest=False):
+    """
+    Tomcat's manager app uses Basic auth; WildFly's management interface uses
+    Digest by default. Both need a realm-agnostic password manager.
+    """
+    mgr = urllib.request.HTTPPasswordMgrWithDefaultRealm()
+    mgr.add_password(None, url, cfg.get("user", ""), cfg.get("password", ""))
+    handler = (urllib.request.HTTPDigestAuthHandler(mgr) if digest
+               else urllib.request.HTTPBasicAuthHandler(mgr))
+    return urllib.request.build_opener(handler)
+
+
+def check_tomcat(p) -> tuple[bool, int | None, str]:
+    """
+    Reads the manager app's XML status. Needs a user with the
+    manager-status role - that role is read-only, unlike manager-script,
+    which can deploy and undeploy applications.
+    """
+    cfg = p.get("config") or {}
+    if not cfg.get("user"):
+        return False, None, "no credentials configured (needs the manager-status role)"
+
+    url = p["target"]
+    if "XML=true" not in url:
+        url = url.rstrip("/") + ("&" if "?" in url else "?") + "XML=true"
+
+    t0 = time.monotonic()
+    try:
+        opener = _basic_opener(cfg, url)
+        with opener.open(url, timeout=p["timeout_ms"] / 1000) as r:
+            body = r.read(2 * 1024 * 1024).decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            return False, None, f"status {e.code}: check the manager-status role"
+        return False, None, f"status {e.code}"
+    except urllib.error.URLError as e:
+        return False, None, f"unreachable: {e.reason}"[:200]
+    except Exception as e:
+        return False, None, str(e)[:200]
+
+    ms = int((time.monotonic() - t0) * 1000)
+    try:
+        root = ET.fromstring(body)
+    except ET.ParseError:
+        return False, ms, "response was not the manager XML status"
+
+    mem = root.find("./jvm/memory")
+    heap_free = int(mem.get("free", 0)) if mem is not None else 0
+    heap_total = int(mem.get("total", 0)) if mem is not None else 0
+    heap_max = int(mem.get("max", 0)) if mem is not None else 0
+    heap_used = heap_total - heap_free
+
+    requests = errors = 0
+    busy = maxthreads = threads = 0
+    proc_time = max_time = 0
+    connectors = []
+    for c in root.findall("./connector"):
+        ti = c.find("threadInfo")
+        ri = c.find("requestInfo")
+        if ti is not None:
+            maxthreads += int(ti.get("maxThreads", 0))
+            threads += int(ti.get("currentThreadCount", 0))
+            busy += int(ti.get("currentThreadsBusy", 0))
+        if ri is not None:
+            requests += int(ri.get("requestCount", 0))
+            errors += int(ri.get("errorCount", 0))
+            proc_time += int(ri.get("processingTime", 0))
+            max_time = max(max_time, int(ri.get("maxTime", 0)))
+        connectors.append(c.get("name"))
+
+    p["_app_metrics"] = {
+        "requests_total": requests,
+        "errors_total": errors,
+        "active_conns": busy,
+        # Tomcat reports total processing time, not a distribution, so the
+        # mean is all that can honestly be derived. maxTime goes in extra
+        # rather than being passed off as a percentile.
+        "p95_latency_s": None,
+        "avg_latency_s": round(proc_time / 1000.0 / requests, 4) if requests else None,
+        "memory_bytes": heap_used or None,
+        "cpu_seconds": None,
+        "uptime_s": None,
+        "extra": {
+            "heap_used": heap_used, "heap_total": heap_total, "heap_max": heap_max,
+            "heap_pct": round(100.0 * heap_used / heap_max, 1) if heap_max else None,
+            "threads": threads, "threads_busy": busy, "threads_max": maxthreads,
+            "thread_pct": round(100.0 * busy / maxthreads, 1) if maxthreads else None,
+            "max_time_ms": max_time,
+            "connectors": [c for c in connectors if c],
+        },
+    }
+    return True, ms, (f"{requests} requests, {errors} errors, "
+                      f"heap {p['_app_metrics']['extra']['heap_pct']}%, "
+                      f"{busy}/{maxthreads} threads busy")
+
+
+def _wildfly(opener, base, payload, timeout):
+    req = urllib.request.Request(
+        base, data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"})
+    with opener.open(req, timeout=timeout) as r:
+        return json.loads(r.read(1024 * 1024).decode("utf-8", "replace"))
+
+
+def check_jboss(p) -> tuple[bool, int | None, str]:
+    """
+    WildFly and JBoss EAP expose a management API on 9990. Digest auth by
+    default, and the management realm is separate from the application
+    realm - the account comes from add-user.sh, not from the app.
+    """
+    cfg = p.get("config") or {}
+    if not cfg.get("user"):
+        return False, None, "no credentials configured (needs a management-realm user)"
+
+    base = p["target"].rstrip("/")
+    if not base.endswith("/management"):
+        base = base + "/management"
+    timeout = p["timeout_ms"] / 1000
+
+    t0 = time.monotonic()
+    try:
+        opener = _basic_opener(cfg, base, digest=True)
+        heap = _wildfly(opener, base, {
+            "operation": "read-resource", "include-runtime": True,
+            "address": [{"core-service": "platform-mbean"}, {"type": "memory"}],
+        }, timeout)
+        threads = _wildfly(opener, base, {
+            "operation": "read-resource", "include-runtime": True,
+            "address": [{"core-service": "platform-mbean"}, {"type": "threading"}],
+        }, timeout)
+        runtime = _wildfly(opener, base, {
+            "operation": "read-resource", "include-runtime": True,
+            "address": [{"core-service": "platform-mbean"}, {"type": "runtime"}],
+        }, timeout)
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            return False, None, f"status {e.code}: check the management-realm user"
+        return False, None, f"status {e.code}"
+    except urllib.error.URLError as e:
+        return False, None, f"unreachable: {e.reason}"[:200]
+    except Exception as e:
+        return False, None, f"{type(e).__name__}: {e}"[:200]
+
+    ms = int((time.monotonic() - t0) * 1000)
+
+    def res(d):
+        return d.get("result", d) if isinstance(d, dict) else {}
+
+    hu = res(heap).get("heap-memory-usage") or {}
+    nh = res(heap).get("non-heap-memory-usage") or {}
+    th = res(threads)
+    rt = res(runtime)
+
+    used = int(hu.get("used") or 0)
+    maxi = int(hu.get("max") or 0)
+    uptime_ms = int(rt.get("uptime") or 0)
+
+    p["_app_metrics"] = {
+        "requests_total": None,   # not exposed by platform-mbean
+        "errors_total": None,
+        "active_conns": int(th.get("thread-count") or 0) or None,
+        "p95_latency_s": None,
+        "avg_latency_s": None,
+        "memory_bytes": used or None,
+        "cpu_seconds": None,
+        "uptime_s": int(uptime_ms / 1000) if uptime_ms else None,
+        "extra": {
+            "heap_used": used,
+            "heap_max": maxi,
+            "heap_pct": round(100.0 * used / maxi, 1) if maxi else None,
+            "non_heap_used": int(nh.get("used") or 0),
+            "threads": int(th.get("thread-count") or 0),
+            "daemon_threads": int(th.get("daemon-thread-count") or 0),
+            "peak_threads": int(th.get("peak-thread-count") or 0),
+            "jvm": rt.get("vm-name"),
+            "jvm_version": rt.get("spec-version"),
+        },
+    }
+    pct = p["_app_metrics"]["extra"]["heap_pct"]
+    return True, ms, (f"heap {pct}%, {th.get('thread-count')} threads, "
+                      f"up {int(uptime_ms/3600000)}h")
+
+
 CHECKS = {"ping": check_ping, "port": check_port, "url": check_url,
           "postgres": check_postgres, "mysql": check_mysql,
-          "prometheus": check_prometheus, "nginx": check_nginx}
+          "prometheus": check_prometheus, "nginx": check_nginx,
+          "tomcat": check_tomcat, "jboss": check_jboss}
 
 
 def run_one(p: dict) -> tuple[str, bool, int | None, str, dict | None, dict | None]:
