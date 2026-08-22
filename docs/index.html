@@ -480,7 +480,7 @@ tailwind.config = { theme: { extend: {
 // ═══════════════════════════ config
 const SUPABASE_URL = "https://jcprvuqhnjtgskjuoded.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpjcHJ2dXFobmp0Z3NranVvZGVkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY4MzEzNjMsImV4cCI6MjEwMjQwNzM2M30.7PH62L3s5SLTHXBhs-yvdcjXs_QiT2ILg1H6ZJpfefk";
-const POLL_MS = 10000, TRACE_POINTS = 44;
+const POLL_MS = 15000, TRACE_POINTS = 44;
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const $ = id => document.getElementById(id);
@@ -644,7 +644,8 @@ async function enter(){
     else if(page.startsWith('todo:')||PAGES.some(([k])=>k===page)) state.page=page;
   }
   applyThemeLabel();
-  refresh(); setInterval(refresh, POLL_MS);
+  refresh();
+  setInterval(()=>{ if(!document.hidden) refresh(); }, POLL_MS);
 }
 sb.auth.getSession().then(({data})=>{ if(data.session) enter(); });
 
@@ -786,7 +787,7 @@ function badges(){
   const down = state.hosts.filter(h=>h.status==='down').length;
   const failedMail = state.alerts.filter(a=>a.status==='failed'||(!a.acknowledged_at&&!a.resolved_at&&a.severity==='critical')).length;
   const highChecks = state.checks.filter(c=>c.severity==='high').length;
-  const severeVulns = state.vulns.filter(v=>v.severity==='critical'||v.severity==='high').length;
+  const severeVulns = state.hosts.reduce((a,h)=>a+Number(h.vulns_severe||0),0);
   const critFiles = state.fim.filter(f=>f.critical).length;
   const downChecks = state.probes.filter(x=>x.status==='down').length;
   return { servers:down, checks:downChecks, alerts:failedMail, posture:highChecks,
@@ -3654,97 +3655,158 @@ async function loadHostDetail(id){
 }
 
 // ═══════════════════════════ poll
+//
+// Only what the current page needs. Every feature added queries here and the
+// total reached thirty-six parallel requests every ten seconds, per open tab.
+// Each one takes a pooled connection, shared with the ingest API, the probe
+// runner and the cron jobs, so a couple of tabs was enough to exhaust the
+// pool - which surfaces as an intermittent 500 on whichever query loses.
+//
+// Core is what the navigation badges and the landing page need. Everything
+// else loads when its page is open.
+
+function coreQueries(){
+  const since = new Date(Date.now() - 20*60*1000).toISOString();
+  return {
+    hosts:  sb.from('agent_overview').select('*').order('label'),
+    latest: sb.from('agent_latest_metrics').select('*'),
+    hist:   sb.from('metrics').select('agent_id,ts,cpu_pct').gte('ts',since).order('ts'),
+    alerts: sb.from('alert_log').select('id,agent_id,rule,severity,status,subject,recipients,error,created_at,sent_at,acknowledged_at,resolved_at')
+              .order('id',{ascending:false}).limit(100),
+    checks: sb.from('host_checks').select('agent_id,check_id,title,severity,status,detail')
+              .eq('status','fail').limit(120),
+    fim:    sb.from('fim_events').select('ts,path,action,critical,detail,agent_id')
+              .order('ts',{ascending:false}).limit(80),
+    probes: sb.from('probe_state').select('*').order('name'),
+  };
+}
+
+// Extra reads per page. A page absent from this map needs nothing beyond core.
+const PAGE_QUERIES = {
+  servers: () => ({ matrix: sb.from('health_matrix').select('*') }),
+  checks:  () => ({
+    avail:   sb.from('availability_summary').select('*'),
+    mttr:    sb.from('mttr_summary').select('*').order('mttr_s',{ascending:false}),
+    latency: sb.from('probe_latency').select('*'),
+  }),
+  activity: () => ({
+    ports: sb.from('port_events').select('ts,port,proto,bind_addr,external,process,action,agents(hostname)')
+             .order('ts',{ascending:false}).limit(60),
+    auth:  sb.from('auth_events').select('ts,kind,username,source_ip,agents(hostname)')
+             .order('ts',{ascending:false}).limit(60),
+    users: sb.from('user_events').select('ts,username,action,uid,sudoer,detail,agents(hostname)')
+             .order('ts',{ascending:false}).limit(60),
+  }),
+  vulns: () => ({
+    vulns: sb.from('package_vulns').select('name,version,vuln_id,severity,summary,fixed_in').limit(400),
+    pkgs:  sb.from('host_packages').select('agent_id,name,version').limit(4000),
+  }),
+  settings: () => ({
+    recips: sb.from('alert_recipients').select('id,email,agent_id').order('created_at'),
+    rules:  sb.from('alert_rules').select('rule,severity,cooldown,enabled,description').order('rule'),
+    tokens: sb.from('enroll_token_status').select('*').order('created_at',{ascending:false}).limit(20),
+    chans:  sb.from('alert_channel_status').select('*').order('kind'),
+    audit:  sb.from('audit_log').select('actor_email,action,target,created_at')
+              .order('id',{ascending:false}).limit(40),
+  }),
+  databases:    () => ({ databases: sb.from('database_overview').select('*').order('name') }),
+  network:      () => ({ ifaces: sb.from('network_overview').select('*').order('host') }),
+  applications: () => ({ apps: sb.from('application_overview').select('*').order('name') }),
+  desktops:     () => ({}),
+  nettools:     () => ({ nettools: sb.from('nettool_jobs')
+                    .select('id,tool,target,status,output,duration_ms,created_at')
+                    .order('created_at',{ascending:false}).limit(12) }),
+  ipam: () => ({
+    subnets: sb.from('subnet_usage').select('*').order('cidr'),
+    ips:     sb.from('ip_inventory').select('*').order('last_seen',{ascending:false}).limit(500),
+    ipcon:   sb.from('ip_conflicts').select('*'),
+  }),
+  topology: () => ({
+    tnodes: sb.from('topology_nodes').select('*'),
+    tedges: sb.from('topology_edges').select('*'),
+  }),
+  escalation: () => ({
+    escpol: sb.from('escalation_overview').select('*').order('name'),
+    awaitl: sb.from('alerts_awaiting').select('*'),
+  }),
+  services: () => ({
+    svc:     sb.from('service_impact').select('*').order('tier'),
+    svccomp: sb.from('service_component_state').select('*'),
+  }),
+  automation: () => ({
+    autorules: sb.from('automation_overview').select('*').order('name'),
+    autoq:     sb.from('automation_queue').select('*').limit(40),
+  }),
+};
+
+// The alert channel list is also shown on Settings; Alerts needs nothing extra.
+const ASSIGN = {
+  hosts:'hosts', latest:null, hist:null, alerts:'alerts', checks:'checks', fim:'fim',
+  probes:'probes', matrix:'matrix', avail:'availability', mttr:'mttr', latency:'latency',
+  ports:'ports', auth:'auth', users:'userEvents', recips:'recipients', rules:'rules',
+  tokens:'tokens', chans:'channels', audit:'audit', databases:'databases',
+  ifaces:'interfaces', apps:'applications', nettools:'nettools', subnets:'subnets',
+  ips:'ips', ipcon:'ipConflicts', tnodes:'topoNodes', tedges:'topoEdges',
+  escpol:'escalations', awaitl:'awaiting', svc:'services', svccomp:'serviceComponents',
+  autorules:'autoRules', autoq:'autoQueue',
+};
+
+let polling = false;
+
 async function refresh(){
+  // A slow cycle must not stack on the next one, which would multiply the
+  // connection load rather than reduce it.
+  if (polling) return;
+  polling = true;
   try{
-    const since=new Date(Date.now()-20*60*1000).toISOString();
-    const [hosts,latest,hist,ports,auth,checks,users,alerts,recips,rules,tokens,fim,vulns,pkgs,chans,audit,
-           probes,matrix,avail,mttr,latency,nettools,databases,ifaces,apps,
-           subnets,ips,ipcon,tnodes,tedges,
-           escpol,await_,svc,svccomp,autorules,autoq]=await Promise.all([
-      sb.from('agent_overview').select('*').order('label'),
-      sb.from('agent_latest_metrics').select('*'),
-      sb.from('metrics').select('agent_id,ts,cpu_pct').gte('ts',since).order('ts'),
-      sb.from('port_events').select('ts,port,proto,bind_addr,external,process,action,agents(hostname)')
-        .order('ts',{ascending:false}).limit(60),
-      sb.from('auth_events').select('ts,kind,username,source_ip,agents(hostname)')
-        .order('ts',{ascending:false}).limit(60),
-      sb.from('host_checks').select('agent_id,check_id,title,severity,status,detail').eq('status','fail').limit(120),
-      sb.from('user_events').select('ts,username,action,uid,sudoer,detail,agents(hostname)')
-        .order('ts',{ascending:false}).limit(60),
-      sb.from('alert_log').select('id,agent_id,rule,severity,status,subject,recipients,error,created_at,sent_at,acknowledged_at,resolved_at')
-        .order('id',{ascending:false}).limit(100),
-      sb.from('alert_recipients').select('id,email,agent_id').order('created_at'),
-      sb.from('alert_rules').select('rule,severity,cooldown,enabled,description').order('rule'),
-      sb.from('enroll_token_status').select('*').order('created_at',{ascending:false}).limit(20),
-      sb.from('fim_events').select('ts,path,action,critical,detail,agent_id')
-        .order('ts',{ascending:false}).limit(80),
-      // Vulnerabilities joined to the hosts running the affected package, so
-      // one row can answer "which nodes does this affect".
-      sb.from('package_vulns').select('name,version,vuln_id,severity,summary,fixed_in').limit(400),
-      sb.from('host_packages').select('agent_id,name,version').limit(4000),
-      sb.from('alert_channel_status').select('*').order('kind'),
-      sb.from('audit_log').select('actor_email,action,target,created_at')
-        .order('id',{ascending:false}).limit(40),
-      sb.from('probe_state').select('*').order('name'),
-      sb.from('health_matrix').select('*'),
-      sb.from('availability_summary').select('*'),
-      sb.from('mttr_summary').select('*').order('mttr_s',{ascending:false}),
-      sb.from('probe_latency').select('*'),
-      sb.from('nettool_jobs').select('id,tool,target,status,output,duration_ms,created_at')
-        .order('created_at',{ascending:false}).limit(12),
-      sb.from('database_overview').select('*').order('name'),
-      sb.from('network_overview').select('*').order('host'),
-      sb.from('application_overview').select('*').order('name'),
-      sb.from('subnet_usage').select('*').order('cidr'),
-      sb.from('ip_inventory').select('*').order('last_seen',{ascending:false}).limit(500),
-      sb.from('ip_conflicts').select('*'),
-      sb.from('topology_nodes').select('*'),
-      sb.from('topology_edges').select('*'),
-      sb.from('escalation_overview').select('*').order('name'),
-      sb.from('alerts_awaiting').select('*'),
-      sb.from('service_impact').select('*').order('tier'),
-      sb.from('service_component_state').select('*'),
-      sb.from('automation_overview').select('*').order('name'),
-      sb.from('automation_queue').select('*').limit(40),
-    ]);
+    const page = state.page === 'host' ? 'servers' : state.page;
+    const queries = { ...coreQueries(), ...((PAGE_QUERIES[page] || (()=>({})))()) };
+    const keys = Object.keys(queries);
+    const settled = await Promise.all(Object.values(queries));
+    const r = {};
+    keys.forEach((k,i)=>{ r[k] = settled[i]; });
+
     // Token and audit reads are admin-only under RLS, so a viewer legitimately
-    // gets empty results there. Only treat the shared reads as fatal.
-    const bad=[hosts,latest,hist,ports,auth,checks,users,alerts,recips,rules,fim,vulns,pkgs,chans,
-               probes,matrix,avail,mttr,latency,nettools,databases,ifaces,apps,
-               subnets,ips,ipcon,tnodes,tedges,
-               escpol,await_,svc,svccomp,autorules,autoq].find(r=>r.error);
+    // gets an error there. Those two are not fatal.
+    const soft = new Set(['tokens','audit']);
+    const bad = keys.filter(k=>!soft.has(k)).map(k=>r[k]).find(x=>x && x.error);
     if(bad) throw bad.error;
 
-    state.hosts=hosts.data; state.ports=ports.data; state.auth=auth.data;
-    state.checks=checks.data; state.userEvents=users.data; state.alerts=alerts.data;
-    state.recipients=recips.data||[]; state.rules=rules.data||[]; state.tokens=tokens.data||[];
-    state.channels=chans.data||[]; state.audit=audit.data||[];
-    state.probes=probes.data||[]; state.matrix=matrix.data||[];
-    state.availability=avail.data||[]; state.mttr=mttr.data||[];
-    state.latency=latency.data||[]; state.nettools=nettools.data||[]; state.databases=databases.data||[]; state.interfaces=ifaces.data||[]; state.applications=apps.data||[];
-    state.subnets=subnets.data||[]; state.ips=ips.data||[]; state.ipConflicts=ipcon.data||[];
-    state.topoNodes=tnodes.data||[]; state.topoEdges=tedges.data||[];
-    state.escalations=escpol.data||[]; state.awaiting=await_.data||[];
-    state.services=svc.data||[]; state.serviceComponents=svccomp.data||[];
-    state.autoRules=autorules.data||[]; state.autoQueue=autoq.data||[];
-    state.fim=fim.data||[];
+    for(const k of keys){
+      const target = ASSIGN[k];
+      if(target && r[k]) state[target] = r[k].data || [];
+    }
 
-    // Attach affected hosts to each finding. Done client-side because the
-    // join is small and it avoids another view.
-    const owners={};
-    (pkgs.data||[]).forEach(p=>(owners[p.name+'@'+p.version] ||= []).push(p.agent_id));
-    state.vulns=(vulns.data||[]).map(v=>({...v, agent_ids:owners[v.name+'@'+v.version]||[]}))
-                                .filter(v=>v.agent_ids.length);
-    state.metrics={}; latest.data.forEach(m=>state.metrics[m.agent_id]=m);
-    state.series={};  hist.data.forEach(m=>(state.series[m.agent_id] ||= []).push(m.cpu_pct??0));
+    if(r.latest){ state.metrics={}; (r.latest.data||[]).forEach(m=>state.metrics[m.agent_id]=m); }
+    if(r.hist){ state.series={}; (r.hist.data||[]).forEach(m=>(state.series[m.agent_id] ||= []).push(m.cpu_pct??0)); }
+
+    // Vulnerabilities are only fetched on their own page, so the join only
+    // runs there too.
+    if(r.vulns && r.pkgs){
+      const owners={};
+      (r.pkgs.data||[]).forEach(p=>(owners[p.name+'@'+p.version] ||= []).push(p.agent_id));
+      state.vulns=(r.vulns.data||[]).map(v=>({...v, agent_ids:owners[v.name+'@'+v.version]||[]}))
+                                    .filter(v=>v.agent_ids.length);
+    }
 
     if (state.page==='host' && state.host) await loadHostDetail(state.host);
     if (state.page==='users' && isAdmin()) await loadUsers();
     render();
     $('clock').textContent=new Date().toLocaleTimeString([],{hour12:false});
     $('err').textContent='';
-  }catch(e){ $('err').textContent='Could not load telemetry: '+(e.message||e); }
+  }catch(e){
+    $('err').textContent = /statement timeout|too many|connection/i.test(String(e.message||e))
+      ? 'The database is under load. Retrying on the next cycle.'
+      : 'Could not load telemetry: '+(e.message||e);
+  } finally {
+    polling = false;
+  }
 }
+
+// A tab left open in the background is the main source of wasted queries.
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && !$('app').classList.contains('hidden')) refresh();
+});
 </script>
 </body>
 </html>
