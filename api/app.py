@@ -384,8 +384,13 @@ def enroll(body: EnrollBody, request: Request):
     if provider not in ("aws", "gcp", "azure", "generic"):
         raise HTTPException(400, f"unknown provider {provider!r}")
 
-    # Cloud-attested providers re-prove themselves on every enrolment, so a
-    # token is only ever a first-contact formality for them.
+    # Cloud-attested providers re-prove themselves on every enrolment, but a
+    # token is single-use. Spending it on every call - not just the first -
+    # means an operator who supplies one at install time (the README shows
+    # this for every platform) gets a host that fails every re-enrolment
+    # after the first, since the JWT expires every JWT_TTL_MIN and the
+    # re-sent token has already been consumed. Refined below to true first
+    # contact once node_id is known.
     first_contact = True
 
     with pool.connection() as conn:
@@ -419,6 +424,15 @@ def enroll(body: EnrollBody, request: Request):
             # Already introduced: its machine id is the credential now. Do not
             # try to spend the token still sitting in its unit file.
             first_contact = not returning
+
+        if provider != "generic":
+            # aws/gcp/azure prove identity fresh every time, but the token is
+            # still single-use: only spend it the first time this instance_id
+            # is seen, the same way the generic branch already does.
+            known = conn.execute(
+                "select 1 from agents where instance_id = %s", (str(node_id),)
+            ).fetchone()
+            first_contact = known is None
 
         if first_contact:
             consume_token(conn, body.enroll_token, node_id)
@@ -464,7 +478,7 @@ def enroll(body: EnrollBody, request: Request):
 @app.post("/v1/ingest")
 def ingest(body: IngestBody, authorization: str | None = Header(default=None)):
     agent_id = agent_from_token(authorization)
-    counts = {"heartbeat": 0, "auth": 0, "ports": 0, "port_changes": 0, "checks": 0, "users": 0, "user_changes": 0, "fim": 0, "packages": 0, "interfaces": 0, "apps": 0}
+    counts = {"heartbeat": 0, "auth": 0, "ports": 0, "port_changes": 0, "checks": 0, "users": 0, "user_changes": 0, "fim": 0, "packages": 0, "interfaces": 0, "apps": 0, "virt": 0}
 
     with pool.connection() as conn:
         for ev in body.events:
@@ -530,6 +544,9 @@ def ingest(body: IngestBody, authorization: str | None = Header(default=None)):
                 counts["checks"] += sync_checks(
                     conn, agent_id, ts, ev.data.get("results", [])
                 )
+
+            elif ev.kind == "virt":
+                counts["virt"] += sync_virt(conn, agent_id, ev.data)
 
         # last_seen is the single source of truth for health. Update it once
         # per batch, from the server clock, never from agent-reported time.
@@ -881,3 +898,18 @@ def sync_apps(conn, agent_id: str, ts: datetime, apps: list) -> int:
         on conflict do nothing
         """, rows)
     return len(rows)
+
+
+def sync_virt(conn, agent_id: str, data: dict) -> int:
+    """
+    Virtualisation role. Stored on the agent row rather than as a time series
+    because it changes when someone rebuilds a machine, not minute to minute.
+    """
+    role = data.get("role")
+    if role not in ("physical", "type1_host", "type2_host", "guest"):
+        return 0
+    conn.execute(
+        """update agents set virt_role = %s, hypervisor = %s, virt_detail = %s
+            where id = %s""",
+        (role, data.get("hypervisor"), json.dumps(data), agent_id))
+    return 1
