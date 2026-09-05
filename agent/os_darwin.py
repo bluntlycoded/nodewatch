@@ -275,7 +275,109 @@ def collect_checks():
         except FileNotFoundError:
             pass
 
+    results.append(check_screen_lock())
+    results.append(check_edr())
+    results.append(check_remote_access())
+
     return results
+
+
+# ---------------------------------------------------------------- end-user computing
+
+def _console_user():
+    """
+    The interactively logged-in user, if any. Root is what /dev/console
+    shows before anyone has logged in, so it means no session, not a user
+    named root.
+    """
+    out = run(["stat", "-f%Su", "/dev/console"]).strip()
+    return out if out and out != "root" else None
+
+
+def check_screen_lock():
+    """
+    com.apple.screensaver is a per-user preference domain, not a system
+    one, and the agent runs as a root launchd daemon with no session of
+    its own - hence -currentHost plus running as the actual console user,
+    the same technique macOS's own MDM profiles rely on.
+    """
+    user = _console_user()
+    if not user:
+        return _error("mac-screen-lock", "Screen lock is enabled", "system", SEV_MED,
+                      "no console user session found")
+
+    ask = run(["sudo", "-u", user, "defaults", "-currentHost", "read",
+              "com.apple.screensaver", "askForPassword"]).strip()
+    delay = run(["sudo", "-u", user, "defaults", "-currentHost", "read",
+                "com.apple.screensaver", "askForPasswordDelay"]).strip()
+
+    if ask not in ("0", "1"):
+        return _error("mac-screen-lock", "Screen lock is enabled", "system", SEV_MED,
+                      f"could not read the screensaver setting for {user}")
+    return _check("mac-screen-lock", "Screen lock is enabled", "system", SEV_MED,
+                  ask == "1", f"askForPassword = {ask}, delay {delay or '0'}s (user {user})")
+
+
+# Presence is reported, not required - fleets standardise on different
+# vendors - but a desktop running none of them is worth knowing about.
+EDR_PROCESSES = {
+    "falcon-sensor": "CrowdStrike Falcon", "SentinelAgent": "SentinelOne",
+    "SentinelServiceHelper": "SentinelOne", "wdavdaemon": "Microsoft Defender",
+    "SophosScanD": "Sophos", "sophos_agent": "Sophos", "osqueryd": "osquery",
+    "cbagentd": "Carbon Black", "elastic-agent": "Elastic Agent",
+}
+
+
+def check_edr():
+    procs = run(["ps", "-axo", "comm"])
+    found = sorted({label for needle, label in EDR_PROCESSES.items() if needle in procs})
+    return _check("mac-edr", "A recognised security agent is running", "system",
+                  SEV_MED, bool(found),
+                  ", ".join(found) if found else "none of the known agents were found")
+
+
+# A visibility check, not a policy one: presence fails at low severity so
+# it surfaces for review, since only a person knows whether a given
+# install is IT-sanctioned.
+REMOTE_ACCESS_PROCESSES = {
+    "TeamViewer": "TeamViewer", "AnyDesk": "AnyDesk",
+    "vncserver": "VNC", "ScreenConnect.ClientService": "ScreenConnect",
+    "LMIGuardianSvc": "LogMeIn",
+}
+
+
+def check_remote_access():
+    procs = run(["ps", "-axo", "comm"])
+    found = sorted({label for needle, label in REMOTE_ACCESS_PROCESSES.items() if needle in procs})
+    return _check("mac-remote-access", "No remote-access software is running", "system",
+                  SEV_LOW, not found,
+                  "none found" if not found else "running: " + ", ".join(found))
+
+
+# A browser dragged into /Applications rather than installed from a .pkg
+# has no pkgutil receipt and no Homebrew formula, so it would otherwise be
+# invisible to inventory and vulnerability scanning entirely - which
+# matters here specifically because the browser is the most exposed piece
+# of software on an end-user machine.
+BROWSER_APPS = {
+    "Google Chrome.app": "Google Chrome",
+    "Firefox.app": "Mozilla Firefox",
+    "Microsoft Edge.app": "Microsoft Edge",
+    "Brave Browser.app": "Brave Browser",
+}
+
+
+def _browser_packages():
+    out = []
+    for app_name, pkg_name in BROWSER_APPS.items():
+        try:
+            with open(f"/Applications/{app_name}/Contents/Info.plist", "rb") as f:
+                version = plistlib.load(f).get("CFBundleShortVersionString")
+        except Exception:
+            continue
+        if version:
+            out.append({"name": pkg_name, "version": str(version)[:100], "arch": None})
+    return out
 
 
 # ---------------------------------------------------------------- packages
@@ -285,6 +387,7 @@ def collect_packages():
     pkgutil lists Apple-installer receipts, which covers the OS and anything
     installed from a .pkg. Homebrew is added when present because on a
     developer Mac it is where most third-party software actually lives.
+    Browsers are checked separately since a drag-installed .app has neither.
     """
     out = []
     for pid in run(["pkgutil", "--pkgs"], timeout=60).split():
@@ -299,6 +402,8 @@ def collect_packages():
         if len(parts) >= 2:
             out.append({"name": f"brew:{parts[0]}"[:200], "version": parts[1][:100],
                         "arch": None})
+
+    out.extend(_browser_packages())
     return out
 
 

@@ -46,6 +46,13 @@ def _check(cid, title, cat, sev, ok, detail):
     }
 
 
+def _error(cid, title, cat, sev, detail):
+    return {
+        "check_id": cid, "title": title, "category": cat, "severity": sev,
+        "status": "error", "detail": detail,
+    }
+
+
 # ---------------------------------------------------------------- ssh
 
 SSHD_RULES = [
@@ -223,11 +230,100 @@ def check_pending_updates():
                    f"{sec} security update(s) pending")]
 
 
+# ---------------------------------------------------------------- end-user computing
+#
+# These three exist for laptops and workstations, not servers - a server
+# has no screen to lock and no business running TeamViewer. They still run
+# everywhere, since role is an operator's classification, not a detection,
+# and a check that only ran conditionally could not be trusted to have run
+# at all.
+
+def check_screen_lock():
+    """
+    Screen lock is a per-session GNOME setting, not a system-wide one, and
+    the agent runs as a root system service with no session of its own.
+    Best effort: find the active graphical session's user and read it for
+    them - GNOME specifically, since that is what the large majority of
+    managed Linux desktops (Ubuntu) ship. Anything else reports error
+    rather than guessing a pass.
+    """
+    sessions = _run(["loginctl", "list-sessions", "--no-legend"])
+    user = None
+    for line in sessions.splitlines():
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        session_id = parts[0]
+        seat_type = _run(["loginctl", "show-session", session_id, "-p", "Type", "--value"]).strip()
+        active = _run(["loginctl", "show-session", session_id, "-p", "Active", "--value"]).strip()
+        if seat_type in ("x11", "wayland") and active == "yes":
+            user = parts[2]
+            break
+
+    if not user:
+        return [_error("sys-screen-lock", "Screen lock is enabled", "system", SEV_MED,
+                       "no active graphical session found")]
+
+    uid = _run(["id", "-u", user]).strip()
+    out = _run([
+        "sudo", "-u", user, "env", f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus",
+        "gsettings", "get", "org.gnome.desktop.screensaver", "lock-enabled",
+    ]).strip().lower()
+
+    if out not in ("true", "false"):
+        return [_error("sys-screen-lock", "Screen lock is enabled", "system", SEV_MED,
+                       f"could not read a GNOME screensaver setting for {user}")]
+    return [_check("sys-screen-lock", "Screen lock is enabled", "system", SEV_MED,
+                   out == "true", f"lock-enabled = {out} (user {user}, GNOME)")]
+
+
+# Process names of known EDR/AV agents. Presence is not required - fleets
+# standardise on different vendors - but a desktop running none of them is
+# worth knowing about, and this is the honest way to check: matching the
+# process itself works regardless of which one is installed.
+EDR_PROCESSES = {
+    "falcon-sensor": "CrowdStrike Falcon", "sentinelone": "SentinelOne",
+    "SentinelAgent": "SentinelOne", "bdservicehost": "Bitdefender",
+    "clamd": "ClamAV", "wazuh-agentd": "Wazuh", "osqueryd": "osquery",
+    "sophos_agent": "Sophos", "cbagentd": "Carbon Black",
+    "elastic-agent": "Elastic Agent",
+}
+
+
+def check_edr():
+    procs = _run(["ps", "-eo", "comm"], timeout=8)
+    found = sorted({label for needle, label in EDR_PROCESSES.items() if needle in procs})
+    return [_check("sys-edr", "A recognised security agent is running", "system",
+                   SEV_MED, bool(found),
+                   ", ".join(found) if found else "none of the known agents were found")]
+
+
+# Remote-access tooling is the shape shadow IT and attacker persistence
+# both take on an end-user machine. This is a visibility check, not a
+# policy one: presence fails at low severity so it surfaces for review
+# rather than being silently invisible, since only a person knows whether
+# a given install is IT-sanctioned.
+REMOTE_ACCESS_PROCESSES = {
+    "teamviewerd": "TeamViewer", "anydesk": "AnyDesk",
+    "vncserver": "VNC", "Xvnc": "VNC", "x11vnc": "VNC",
+    "ScreenConnect.ClientService": "ScreenConnect",
+}
+
+
+def check_remote_access():
+    procs = _run(["ps", "-eo", "comm"], timeout=8)
+    found = sorted({label for needle, label in REMOTE_ACCESS_PROCESSES.items() if needle in procs})
+    return [_check("sys-remote-access", "No remote-access software is running", "system",
+                   SEV_LOW, not found,
+                   "none found" if not found else "running: " + ", ".join(found))]
+
+
 # ---------------------------------------------------------------- entry point
 
 COLLECTORS = [
     check_sshd, check_permissions, check_world_writable, check_sysctl,
     check_accounts, check_firewall, check_auto_updates, check_pending_updates,
+    check_screen_lock, check_edr, check_remote_access,
 ]
 
 

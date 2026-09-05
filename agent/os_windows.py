@@ -243,6 +243,71 @@ $sec=@($r.Updates | Where-Object { $_.Categories | Where-Object { $_.Name -match
 [pscustomobject]@{ Total=$r.Updates.Count; Security=$sec } | ConvertTo-Json
 """
 
+# End-user-computing posture: screen lock, third-party AV/EDR presence,
+# remote-access tooling, Secure Boot, TPM, USB mass storage policy. A
+# server has no screen to lock and no business running TeamViewer, but
+# this runs unconditionally regardless of the agent's role classification
+# - a check that only ran sometimes could not be trusted to have run at all.
+EUC_QUERY = r"""
+$ErrorActionPreference='SilentlyContinue'
+
+# Screen lock lives in HKCU, which a SYSTEM service cannot read for a user
+# it is not running as. Machine policy (GPO) is authoritative when set and
+# lives in HKLM, so check that first; otherwise read the hive of whichever
+# interactive user is actually logged in, from HKEY_USERS.
+$policy = Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Control Panel\Desktop' -ErrorAction SilentlyContinue
+$lockSource = $null; $lockActive = $null; $lockSecure = $null; $lockUser = $null
+if ($policy -and $null -ne $policy.ScreenSaveActive) {
+  $lockSource = 'policy'; $lockActive = $policy.ScreenSaveActive; $lockSecure = $policy.ScreenSaverIsSecure
+} else {
+  $sids = Get-ChildItem 'Registry::HKEY_USERS' -ErrorAction SilentlyContinue |
+    Where-Object { $_.PSChildName -match '^S-1-5-21-\d+-\d+-\d+-\d+$' }
+  foreach ($sid in $sids) {
+    $u = Get-ItemProperty "Registry::HKEY_USERS\$($sid.PSChildName)\Control Panel\Desktop" -ErrorAction SilentlyContinue
+    if ($u -and $null -ne $u.ScreenSaveActive) {
+      $lockSource = 'user'; $lockActive = $u.ScreenSaveActive; $lockSecure = $u.ScreenSaverIsSecure
+      try { $lockUser = (New-Object System.Security.Principal.SecurityIdentifier($sid.PSChildName)).Translate([System.Security.Principal.NTAccount]).Value } catch {}
+      break
+    }
+  }
+}
+
+# SecurityCenter2 lists every AV/EDR product registered with Windows
+# Security Center, not only Defender - a third-party agent registers here
+# and Windows disables Defender's own real-time scanning in response,
+# which is expected behaviour, not a posture failure.
+$avs = @(Get-CimInstance -Namespace 'root/SecurityCenter2' -ClassName AntiVirusProduct -ErrorAction SilentlyContinue |
+         Select-Object -ExpandProperty displayName)
+
+$procs = @(Get-Process -ErrorAction SilentlyContinue | Select-Object -ExpandProperty ProcessName)
+
+$sb = $null
+try { $sb = [bool](Confirm-SecureBootUEFI) } catch {}
+$tpm = Get-Tpm -ErrorAction SilentlyContinue
+
+# 3 = enabled (default), 4 = disabled by policy.
+$usb = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\USBSTOR' -Name Start -ErrorAction SilentlyContinue).Start
+
+[pscustomobject]@{
+  LockSource=$lockSource; LockActive=$lockActive; LockSecure=$lockSecure; LockUser=$lockUser
+  AntivirusProducts=$avs
+  Processes=$procs
+  SecureBoot=$sb
+  TpmPresent=$tpm.TpmPresent; TpmReady=$tpm.TpmReady
+  UsbStorageStart=$usb
+} | ConvertTo-Json -Depth 4
+"""
+
+# A visibility check, not a policy one: presence fails at low severity so
+# it surfaces for review, since only a person knows whether a given
+# install is IT-sanctioned.
+REMOTE_ACCESS_PROCESS_NAMES = {
+    "TeamViewer": "TeamViewer", "TeamViewer_Service": "TeamViewer",
+    "AnyDesk": "AnyDesk", "vncserver": "VNC", "tvnserver": "VNC", "winvnc": "VNC",
+    "ScreenConnect.ClientService": "ScreenConnect", "LMIGuardianSvc": "LogMeIn",
+    "SRService": "Splashtop",
+}
+
 
 def collect_checks():
     results = []
@@ -280,15 +345,32 @@ def collect_checks():
     results.append(_check("win-bitlocker", "System drive is encrypted", "filesystem",
                           SEV_HIGH, bl == "On", f"BitLocker: {bl}"))
 
-    results.append(_check("win-defender-rt", "Defender real-time protection is on",
-                          "system", SEV_HIGH, d.get("DefenderRealTime") is True,
-                          "real-time protection " + ("on" if d.get("DefenderRealTime") else "off")))
+    euc = ps(EUC_QUERY)
+    euc = euc[0] if euc else {}
+    avs = [a for a in (euc.get("AntivirusProducts") or []) if a]
+    third_party_av = [a for a in avs if "defender" not in a.lower()]
+
+    # Windows disables Defender's own real-time scanning the moment a
+    # compatible third-party AV registers as active - that is correct
+    # behaviour, not a posture gap, so it only fails when nothing else is
+    # covering the host either.
+    rt = d.get("DefenderRealTime") is True
+    results.append(_check("win-defender-rt", "Real-time antivirus protection is on",
+                          "system", SEV_HIGH, rt or bool(third_party_av),
+                          "real-time protection on" if rt
+                          else (f"off, but {', '.join(third_party_av)} is registered" if third_party_av
+                                else "off, and no other antivirus product is registered")))
 
     age = d.get("DefenderSigAge")
-    results.append(_check("win-defender-sig", "Antivirus signatures are current",
-                          "system", SEV_MED,
-                          isinstance(age, int) and age <= 3,
-                          f"signatures {age} day(s) old"))
+    if third_party_av:
+        results.append(_check("win-defender-sig", "Antivirus signatures are current",
+                              "system", SEV_LOW, True,
+                              f"managed by {', '.join(third_party_av)}, not Defender"))
+    else:
+        results.append(_check("win-defender-sig", "Antivirus signatures are current",
+                              "system", SEV_MED,
+                              isinstance(age, int) and age <= 3,
+                              f"signatures {age} day(s) old"))
 
     # LmCompatibilityLevel 5 refuses LM and NTLMv1 outright.
     lm = d.get("LmCompat")
@@ -310,6 +392,55 @@ def collect_checks():
     else:
         results.append(_error("win-security-updates", "No pending security updates",
                               "system", SEV_MED, "Windows Update search unavailable"))
+
+    # ------------------------------------------------------ end-user computing
+
+    if euc.get("LockSource"):
+        active, secure = euc.get("LockActive"), euc.get("LockSecure")
+        # ScreenSaveActive/ScreenSaverIsSecure are historically REG_SZ, not
+        # REG_DWORD, so PowerShell can hand back either "1" or 1 depending
+        # on how a given machine's value was written; compare as strings
+        # rather than gambling on which.
+        src = "policy" if euc["LockSource"] == "policy" else f"user {euc.get('LockUser') or '?'}"
+        results.append(_check("win-screen-lock", "Screen lock is enabled", "system",
+                              SEV_MED, str(active) == "1" and str(secure) == "1",
+                              f"ScreenSaveActive={active}, ScreenSaverIsSecure={secure} ({src})"))
+    else:
+        results.append(_error("win-screen-lock", "Screen lock is enabled", "system",
+                              SEV_MED, "no policy set and no interactive user session found"))
+
+    results.append(_check("win-edr", "A recognised security agent is running", "system",
+                          SEV_MED, bool(avs), ", ".join(avs) if avs else
+                          "none of the known agents were found"))
+
+    procs = euc.get("Processes") or []
+    found_ra = sorted({label for needle, label in REMOTE_ACCESS_PROCESS_NAMES.items()
+                       if needle in procs})
+    results.append(_check("win-remote-access", "No remote-access software is running",
+                          "system", SEV_LOW, not found_ra,
+                          "none found" if not found_ra else "running: " + ", ".join(found_ra)))
+
+    sb = euc.get("SecureBoot")
+    if sb is None:
+        results.append(_error("win-secureboot", "Secure Boot is enabled", "system",
+                              SEV_MED, "not UEFI, or Secure Boot state unavailable"))
+    else:
+        results.append(_check("win-secureboot", "Secure Boot is enabled", "system",
+                              SEV_MED, sb is True, f"Secure Boot: {'on' if sb else 'off'}"))
+
+    tpm_present, tpm_ready = euc.get("TpmPresent"), euc.get("TpmReady")
+    if tpm_present is None:
+        results.append(_error("win-tpm", "A TPM is present and ready", "system",
+                              SEV_MED, "TPM state unavailable (module not present or accessible)"))
+    else:
+        results.append(_check("win-tpm", "A TPM is present and ready", "system", SEV_MED,
+                              bool(tpm_present) and bool(tpm_ready),
+                              f"present={bool(tpm_present)}, ready={bool(tpm_ready)}"))
+
+    usb = euc.get("UsbStorageStart")
+    results.append(_check("win-usb-storage", "USB mass storage is restricted", "system",
+                          SEV_LOW, usb == 4,
+                          f"USBSTOR start = {usb}" if usb is not None else "USBSTOR service not found"))
 
     return results
 
