@@ -169,14 +169,18 @@ The Windows installer and agent are **not yet Authenticode-signed**, and
 the macOS installer is **not yet notarized**. This is the single biggest
 remaining lever for reducing false-positive detections and is the
 recommended next step before wide deployment — it requires acquiring an EV
-code-signing certificate (Windows) and an Apple Developer ID (macOS), which
-is a procurement step rather than a code change. Once in place, `install.ps1`
-and the agent's `.py` sources (or a compiled distribution, if one is
-introduced later) should be signed as part of the release process, and this
-document updated with the publisher identity and certificate thumbprint so
-it can be pinned directly.
+code-signing certificate (Windows) and an Apple Developer ID (macOS), issued
+to the publisher of record, **Cipherium Private Limited**. Once in place,
+`install.ps1` and the agent's `.py` sources (or a compiled distribution, if
+one is introduced later) should be signed as part of the release process,
+and this document updated with the certificate thumbprint so it can be
+pinned directly.
 
 ---
+
+## Publisher
+
+nodewatch is developed and published by **Cipherium Private Limited**.
 
 ## Reporting a false-positive detection, or a real vulnerability
 
@@ -185,13 +189,4 @@ it can be pinned directly.
   `https://github.com/bluntlycoded/nodewatch/issues` with the detection
   name, the exact behaviour that triggered it, and the platform. This
   document is the reference for that discussion.
-- **Vulnerability report**: `<security contact email — add before publishing>`.
-
-<!--
-  TODO before this goes external:
-    - Add a real security contact address above.
-    - Add the legal entity name / publisher name that will appear on a
-      code-signing certificate, once one is acquired.
-    - Once signed releases exist, replace the "Status: code signing"
-      section with the actual certificate thumbprint and publisher name.
--->
+- **Vulnerability report**: `rahul@cipherium.co.in`.
