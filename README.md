@@ -23,7 +23,19 @@ probe runner (agentless checks) ──────────┘               
 
 **Hosts, via an agent** — Linux, Windows and macOS. CPU, memory, disk, uptime,
 listening ports, sign-in events, local accounts and privilege changes,
-configuration posture, installed packages, file integrity, network interfaces.
+installed packages, file integrity, network interfaces, and virtualisation
+role — physical, a type 1 or type 2 hypervisor host, or a guest, inferred
+from direct detection plus hardware evidence (fan/temperature sensors, NIC
+link speed) rather than asserted.
+
+**Configuration posture** runs unconditionally on every host, but covers two
+different things: server hardening (SSH, sysctl, firewall, pending updates)
+and end-user machines specifically (screen lock, third-party EDR/AV
+presence via each OS's own security-product registry — not just the
+platform's built-in one, remote-access tooling, Secure Boot and TPM, USB
+storage policy). A host is classified as a server or a desktop from the
+dashboard, but every check still runs on every host regardless — a check
+that only ran sometimes could not be trusted to have run at all.
 
 **Anything else, via agentless probes** — ping, TCP port, HTTP/URL, PostgreSQL,
 MySQL, SQL Server, Oracle, Prometheus, nginx, Tomcat, JBoss/WildFly, and
@@ -102,13 +114,21 @@ api/       FastAPI ingest service
 probe/     agentless probe runner
 db/        migrations, applied in order
 docs/      the dashboard (single HTML file, served by GitHub Pages)
-supabase/  Edge Functions: alerts, vulnerability scanning, user management
 ```
 
 **The agent** is pure Python: `psutil` and `requests`, nothing compiled.
 `osdetect.py` defines one interface; `os_linux`, `os_windows` and `os_darwin`
 implement it. The agent itself contains no platform conditionals, so adding an
-OS means adding a module rather than editing the collectors.
+OS means adding a module rather than editing the collectors. `virt.py` is the
+one exception with its own file rather than living in each OS module,
+since virtualisation-role detection shares logic (classification, hardware
+evidence) across all three.
+
+**Edge Functions** (`send-alerts`, `scan-vulns`, `manage-users`) run on
+Supabase but are not yet tracked in this repository — they are deployed
+directly from the Supabase dashboard/CLI. Referenced in
+[Deploying the stack](#deploying-the-stack) below for what each does and
+how it must be configured.
 
 ---
 
@@ -182,9 +202,11 @@ reads its password.
 
 ## Alerting
 
-Nine rules, each with its own cooldown. Delivery by email (Resend), Telegram,
-Slack, Botim or a plain webhook, configured per server or fleet-wide, each
-destination with a minimum severity.
+Each rule has its own cooldown — from account changes and new exposure to
+database replication lag, a hypervisor going down, and a Proxmox backup
+failing. Delivery by email (Resend), Telegram, Slack, Botim or a plain
+webhook, configured per server or fleet-wide, each destination with a
+minimum severity.
 
 Detection lives in database triggers so nothing can slip through a polling gap;
 delivery lives in an Edge Function so no credential ever reaches a browser. The
@@ -227,14 +249,31 @@ every stock system account as newly added.
 
 ---
 
+## Security disclosure
+
+The agent reads configuration state — the Security event log, BitLocker
+status, `/etc/shadow`, registry keys — that looks alarming out of context
+and is exactly what an EDR or antivirus product has good reason to be
+suspicious of. [SECURITY.md](SECURITY.md) documents exactly what each
+platform's collectors read and why, and — just as importantly — what the
+agent categorically never does: it never transmits a password or its hash,
+never writes to the monitored host, opens no listening port, and persists
+nowhere beyond the one service or scheduled task the installer creates.
+Written for a security vendor disputing a detection, or an admin writing an
+allowlist rule, sourced directly from the collectors rather than a separate
+marketing description of them.
+
+---
+
 ## Not built
 
 BMC telemetry (iDRAC, iLO, XCC, Supermicro — one Redfish module would cover
-all four), Nutanix, SNMP and the topology map that depends on it,
-application servers, Oracle and SQL Server, IPAM, business service mapping,
-and escalation policies.
+all four), Nutanix, and SNMP — which is also what a physical, LLDP/CDP-based
+topology map would need. The topology page that exists today shows L3
+reachability derived from traceroute, which is a different and narrower
+thing than switch-port-level adjacency.
 
-The dashboard lists these with a page describing what each would collect and
-how it would work, rather than a dead link.
+The dashboard lists what isn't built with a page describing what it would
+collect and how it would work, rather than a dead link.
 
 
