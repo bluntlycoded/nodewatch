@@ -48,6 +48,12 @@ ENROLL_TOKEN = os.environ.get(
 
 AGENT_VERSION = "0.4.0"
 
+# Identifies the agent to anything inspecting outbound traffic - a proxy,
+# an EDR's network module, or an admin reading a packet capture - rather
+# than leaving every request looking like an anonymous python-requests
+# client, which is itself a pattern some tools flag.
+USER_AGENT = f"nodewatch-agent/{AGENT_VERSION}"
+
 DB_PATH = STATE_DIR / "buffer.db"
 
 HEARTBEAT_INTERVAL = 15
@@ -333,6 +339,7 @@ class Session:
             r = requests.post(
                 f"{INGEST_URL}/v1/enroll",
                 json=body,
+                headers={"User-Agent": USER_AGENT},
                 timeout=HTTP_TIMEOUT,
             )
 
@@ -377,7 +384,8 @@ class Session:
         return {
             "Authorization": (
                 f"Bearer {self.token}"
-            )
+            ),
+            "User-Agent": USER_AGENT,
         }
 
 
