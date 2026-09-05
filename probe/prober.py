@@ -989,25 +989,158 @@ def check_oracle(p) -> tuple[bool, int | None, str]:
     return True, ms, detail
 
 
+# ---------------------------------------------------------------- proxmox
+
+# /cluster/resources returns every node, guest and storage pool in the
+# cluster in one call - there is no per-guest connection to open the way
+# there is for postgres or mysql, so one poll really does cover everything.
+PROXMOX_TIMEOUT_FLOOR = 10
+
+
+def _proxmox_ctx(verify: bool):
+    import ssl
+    ctx = ssl.create_default_context()
+    if not verify:
+        # Proxmox ships a self-signed cert by default; the operator can
+        # switch SSL mode to "require" once a real certificate is installed.
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+
+def _proxmox_get(base, token, path, ctx, timeout):
+    req = urllib.request.Request(base + path,
+                                 headers={"Authorization": token, "User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
+        return json.loads(r.read(4 * 1024 * 1024).decode("utf-8", "replace")).get("data") or []
+
+
+def check_proxmox(p) -> tuple[bool, int | None, str]:
+    """
+    Auth is an API token (user@realm!tokenid + secret), not a password, so
+    it reuses the username/password fields probe_secrets already has: user
+    holds the full token id, password holds the secret. SSL mode "require"
+    means verify the certificate; anything else skips verification, since
+    an unconfigured Proxmox host has a self-signed one.
+    """
+    cfg = p.get("config") or {}
+    user, secret = cfg.get("user"), cfg.get("password")
+    if not user or not secret:
+        return False, None, "no credentials configured (needs an API token: user@realm!tokenid)"
+
+    host = cfg.get("host") or p["target"]
+    port = int(cfg.get("port") or p.get("port") or 8006)
+    base = f"https://{host}:{port}/api2/json"
+    token = f"PVEAPIToken={user}={secret}"
+    ctx = _proxmox_ctx(cfg.get("sslmode") == "require")
+    timeout = max(PROXMOX_TIMEOUT_FLOOR, p["timeout_ms"] / 1000)
+
+    t0 = time.monotonic()
+    try:
+        resources = _proxmox_get(base, token, "/cluster/resources", ctx, timeout)
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            return False, None, f"status {e.code}: check the API token and its permissions"
+        return False, None, f"status {e.code}"
+    except urllib.error.URLError as e:
+        return False, None, f"unreachable: {e.reason}"[:200]
+    except Exception as e:
+        return False, None, f"{type(e).__name__}: {e}"[:200]
+
+    ms = int((time.monotonic() - t0) * 1000)
+
+    nodes = [r for r in resources if r.get("type") == "node"]
+    guests = [r for r in resources if r.get("type") in ("qemu", "lxc")]
+    storage = [r for r in resources if r.get("type") == "storage"]
+
+    guest_rows = [{
+        "vmid": g.get("vmid"), "node": g.get("node"), "name": g.get("name") or f"vmid {g.get('vmid')}",
+        "kind": g.get("type"), "status": g.get("status") or "unknown",
+        "cpu_pct": round(100.0 * (g.get("cpu") or 0), 1),
+        "mem_bytes": g.get("mem"), "mem_max_bytes": g.get("maxmem"),
+        "disk_bytes": g.get("disk"), "disk_max_bytes": g.get("maxdisk"),
+        "uptime_s": g.get("uptime"),
+    } for g in guests if g.get("vmid") is not None]
+
+    storage_rows = [{
+        "node": s.get("node"), "storage": s.get("storage"), "kind": s.get("plugintype"),
+        "used_bytes": s.get("disk"), "total_bytes": s.get("maxdisk"),
+    } for s in storage if s.get("storage") and s.get("node")]
+
+    # Backup outcomes: recent finished vzdump tasks. A separate call because
+    # these are events, not current state - /cluster/resources has no view
+    # of what happened, only what is.
+    backup_rows = []
+    try:
+        tasks = _proxmox_get(base, token, "/cluster/tasks", ctx, timeout)
+        for t in tasks:
+            if t.get("type") != "vzdump" or not t.get("upid"):
+                continue
+            vmid = t.get("id")
+            backup_rows.append({
+                "upid": t["upid"], "vmid": int(vmid) if vmid and str(vmid).isdigit() else None,
+                "node": t.get("node"), "ts": t.get("starttime") or t.get("endtime"),
+                "ok": (t.get("status") or "").upper() == "OK",
+                "duration_s": (t.get("endtime") - t["starttime"])
+                              if t.get("endtime") and t.get("starttime") else None,
+                "detail": t.get("status"),
+            })
+    except Exception as e:
+        log.warning("proxmox backup task list failed for %s: %s", p["name"], e)
+
+    worst_storage = None
+    for s in storage_rows:
+        if s["total_bytes"]:
+            pct = 100.0 * s["used_bytes"] / s["total_bytes"]
+            worst_storage = pct if worst_storage is None else max(worst_storage, pct)
+
+    cutoff = time.time() - 86400
+    backups_failed_24h = sum(1 for b in backup_rows if not b["ok"] and (b["ts"] or 0) >= cutoff)
+
+    cpu_vals  = [n["cpu"]  for n in nodes if n.get("cpu")  is not None]
+    mem_used  = sum(n.get("mem", 0)  or 0 for n in nodes)
+    mem_total = sum(n.get("maxmem", 0) or 0 for n in nodes)
+
+    metrics = {
+        "nodes_total": len(nodes),
+        "nodes_online": sum(1 for n in nodes if n.get("status") == "online"),
+        "guests_total": len(guest_rows),
+        "guests_running": sum(1 for g in guest_rows if g["status"] == "running"),
+        "cpu_pct": round(100.0 * sum(cpu_vals) / len(cpu_vals), 1) if cpu_vals else None,
+        "mem_pct": round(100.0 * mem_used / mem_total, 1) if mem_total else None,
+        "storage_pct_worst": round(worst_storage, 1) if worst_storage is not None else None,
+        "backups_failed_24h": backups_failed_24h,
+        "extra": {"guests_stopped": sum(1 for g in guest_rows if g["status"] == "stopped")},
+    }
+
+    p["_proxmox"] = {"metrics": metrics, "guests": guest_rows,
+                      "storage": storage_rows, "backups": backup_rows}
+    return True, ms, (f"{metrics['nodes_online']}/{metrics['nodes_total']} nodes, "
+                      f"{metrics['guests_running']}/{metrics['guests_total']} guests running")
+
+
 CHECKS = {"ping": check_ping, "port": check_port, "url": check_url,
           "postgres": check_postgres, "mysql": check_mysql,
           "mssql": check_mssql, "oracle": check_oracle,
           "prometheus": check_prometheus, "nginx": check_nginx,
-          "tomcat": check_tomcat, "jboss": check_jboss}
+          "tomcat": check_tomcat, "jboss": check_jboss,
+          "proxmox": check_proxmox}
 
 
-def run_one(p: dict) -> tuple[str, bool, int | None, str, dict | None, dict | None]:
+def run_one(p: dict) -> tuple[str, bool, int | None, str, dict | None, dict | None, dict | None]:
     fn = CHECKS.get(p["kind"])
     if not fn:
-        return p["id"], False, None, f"unknown probe kind {p['kind']}", None, None
+        return p["id"], False, None, f"unknown probe kind {p['kind']}", None, None, None
     try:
         ok, ms, detail = fn(p)
     except Exception as e:
         # A bug in one check must not take the runner down.
         log.exception("probe %s raised", p["name"])
         ok, ms, detail = False, None, f"probe error: {e}"[:200]
-    # Database checks attach a measurement set; the others do not.
-    return p["id"], ok, ms, detail, p.get("_metrics"), p.get("_app_metrics")
+    # Database checks attach a measurement set; Proxmox attaches guests,
+    # storage and backups too; the others attach nothing.
+    return (p["id"], ok, ms, detail, p.get("_metrics"), p.get("_app_metrics"),
+            p.get("_proxmox"))
 
 
 # ---------------------------------------------------------------- net tools
@@ -1336,7 +1469,7 @@ def main():
                         """insert into probe_results (probe_id, ts, ok, latency_ms, detail)
                            values (%s, %s, %s, %s, %s)
                            on conflict (probe_id, ts) do nothing""",
-                        [(pid, ts, ok, ms, detail) for pid, ok, ms, detail, _, _ in results],
+                        [(pid, ts, ok, ms, detail) for pid, ok, ms, detail, _, _, _ in results],
                     )
 
                     # Database measurements go to their own table. One
@@ -1347,7 +1480,7 @@ def main():
                          m.get("slow_queries"), m.get("longest_query_s"),
                          m.get("replication_lag_s"), m.get("size_bytes"),
                          m.get("uptime_s"), m.get("qps"), json.dumps(m.get("extra") or {}))
-                        for pid, ok, _, _, m, _ in results if ok and m
+                        for pid, ok, _, _, m, _, _ in results if ok and m
                     ]
                     approws = [
                         (pid, ts, a.get("requests_total"), a.get("errors_total"),
@@ -1355,7 +1488,7 @@ def main():
                          a.get("avg_latency_s"), a.get("memory_bytes"),
                          a.get("cpu_seconds"), a.get("uptime_s"),
                          json.dumps(a.get("extra") or {}))
-                        for pid, ok, _, _, _, a in results if ok and a
+                        for pid, ok, _, _, _, a, _ in results if ok and a
                     ]
                     if approws:
                         conn.cursor().executemany(
@@ -1377,11 +1510,85 @@ def main():
                                on conflict (probe_id, ts) do nothing""",
                             dbrows)
 
+                    # Proxmox attaches guests, storage and backups alongside
+                    # the cluster-level metrics row - four writes instead of
+                    # one, but still one round trip each for the whole cycle.
+                    pxrows = [(pid, px) for pid, ok, _, _, _, _, px in results if ok and px]
+                    if pxrows:
+                        conn.cursor().executemany(
+                            """insert into proxmox_metrics (probe_id, ts, nodes_total,
+                                   nodes_online, guests_total, guests_running, cpu_pct,
+                                   mem_pct, storage_pct_worst, backups_failed_24h, extra)
+                               values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                               on conflict (probe_id, ts) do nothing""",
+                            [(pid, ts, m["nodes_total"], m["nodes_online"],
+                              m["guests_total"], m["guests_running"], m["cpu_pct"],
+                              m["mem_pct"], m["storage_pct_worst"], m["backups_failed_24h"],
+                              json.dumps(m.get("extra") or {}))
+                             for pid, px in pxrows for m in [px["metrics"]]])
+
+                        guest_rows = [(pid, g["vmid"], g["node"], g["name"], g["kind"],
+                                       g["status"], g["cpu_pct"], g["mem_bytes"],
+                                       g["mem_max_bytes"], g["disk_bytes"],
+                                       g["disk_max_bytes"], g["uptime_s"], ts)
+                                      for pid, px in pxrows for g in px["guests"]]
+                        if guest_rows:
+                            conn.cursor().executemany(
+                                """insert into proxmox_guests (probe_id, vmid, node, name,
+                                       kind, status, cpu_pct, mem_bytes, mem_max_bytes,
+                                       disk_bytes, disk_max_bytes, uptime_s, last_seen)
+                                   values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                                   on conflict (probe_id, vmid) do update set
+                                       node = excluded.node, name = excluded.name,
+                                       status = excluded.status, cpu_pct = excluded.cpu_pct,
+                                       mem_bytes = excluded.mem_bytes,
+                                       mem_max_bytes = excluded.mem_max_bytes,
+                                       disk_bytes = excluded.disk_bytes,
+                                       disk_max_bytes = excluded.disk_max_bytes,
+                                       uptime_s = excluded.uptime_s,
+                                       last_seen = excluded.last_seen""",
+                                guest_rows)
+                            # A guest that disappeared was deleted or migrated off this
+                            # cluster; leaving it would show a phantom VM forever.
+                            for pid, px in pxrows:
+                                seen = [g["vmid"] for g in px["guests"]]
+                                conn.execute(
+                                    "delete from proxmox_guests where probe_id = %s and vmid <> all(%s)",
+                                    (pid, seen or [-1]))
+
+                        storage_rows = [(pid, s["node"], s["storage"], s["kind"],
+                                         s["used_bytes"], s["total_bytes"], ts)
+                                        for pid, px in pxrows for s in px["storage"]]
+                        if storage_rows:
+                            conn.cursor().executemany(
+                                """insert into proxmox_storage (probe_id, node, storage,
+                                       kind, used_bytes, total_bytes, last_seen)
+                                   values (%s,%s,%s,%s,%s,%s,%s)
+                                   on conflict (probe_id, node, storage) do update set
+                                       kind = excluded.kind, used_bytes = excluded.used_bytes,
+                                       total_bytes = excluded.total_bytes,
+                                       last_seen = excluded.last_seen""",
+                                storage_rows)
+
+                        backup_rows = [
+                            (pid, b["upid"], b["vmid"], b["node"],
+                             datetime.fromtimestamp(b["ts"], tz=timezone.utc), b["ok"],
+                             b["duration_s"], b["detail"])
+                            for pid, px in pxrows for b in px["backups"] if b.get("ts")
+                        ]
+                        if backup_rows:
+                            conn.cursor().executemany(
+                                """insert into proxmox_backups (probe_id, upid, vmid, node,
+                                       ts, ok, duration_s, detail)
+                                   values (%s,%s,%s,%s,%s,%s,%s,%s)
+                                   on conflict (probe_id, upid) do nothing""",
+                                backup_rows)
+
                     now = time.monotonic()
                     for p in batch:
                         _last_run[p["id"]] = now
 
-                    failed = sum(1 for _, ok, _, _, _, _ in results if not ok)
+                    failed = sum(1 for _, ok, _, _, _, _, _ in results if not ok)
                     log.info("checked %d, %d failing", len(results), failed)
 
                 drain_nettools(conn)
