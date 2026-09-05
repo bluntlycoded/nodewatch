@@ -1088,10 +1088,14 @@ def check_proxmox(p) -> tuple[bool, int | None, str]:
     except Exception as e:
         log.warning("proxmox backup task list failed for %s: %s", p["name"], e)
 
+    # _pct() rather than a raw division: a storage entry can report a
+    # non-zero maxdisk with a null disk (an offline or unreachable pool),
+    # which would otherwise raise and turn a working poll into a full
+    # probe error, losing the node and guest data too.
     worst_storage = None
     for s in storage_rows:
-        if s["total_bytes"]:
-            pct = 100.0 * s["used_bytes"] / s["total_bytes"]
+        pct = _pct(s["used_bytes"], s["total_bytes"])
+        if pct is not None:
             worst_storage = pct if worst_storage is None else max(worst_storage, pct)
 
     cutoff = time.time() - 86400
