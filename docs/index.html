@@ -517,6 +517,7 @@ let state = {
   reportRows:[], reportFindings:[], reportLoading:false, nettools:[],
   probes:[], matrix:[], availability:[], mttr:[], latency:[],
   proxmoxClusters:[], proxmoxGuests:[], proxmoxStorage:[], proxmoxBackups:[],
+  desktopAdmins:[],
   hostDetail:{ checks:[], packages:[], vulns:[], users:[], ports:[], fim:[], history:[] },
 };
 
@@ -2380,6 +2381,8 @@ function pageDesktops(){
     </div>`;
 
   const off = d.filter(x=>x.status==='down').length;
+  const admins = state.desktopAdmins.filter(a=>a.admin_count>0);
+
   return `
   <div class="space-y-4">
     <div class="bg-paper border border-rule px-4 sm:px-5 py-3 flex flex-wrap items-center gap-x-6 gap-y-3">
@@ -2397,11 +2400,26 @@ function pageDesktops(){
         <span class="text-lg font-semibold tabular-nums" style="color:${off?HEX.down:'var(--c-ink)'}">${off}</span>
         <span class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">offline</span>
       </div>
+      <div class="flex items-baseline gap-1.5">
+        <span class="text-lg font-semibold tabular-nums" style="color:${admins.length?HEX.degraded:'var(--c-ink)'}">${admins.length}</span>
+        <span class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">with local admin</span>
+      </div>
       <span class="flex-1"></span>
       <span class="font-mono text-[10px] text-muted hidden sm:inline">
         A desktop offline overnight is normal; a server offline is not.
       </span>
     </div>
+
+    ${admins.length ? card(sectionHead('Local admin accounts',
+        `<span class="font-mono text-[10px] text-muted">${admins.length} of ${d.length} desktops</span>`)
+      + `<div class="divide-y divide-hairline">${admins.map(a=>`
+        <div class="flex items-center gap-3 px-4 sm:px-5 py-2.5">
+          <span class="text-sm truncate flex-1 min-w-0">${esc(a.label)}</span>
+          <span class="font-mono text-[9px] uppercase tracking-[.1em] text-muted shrink-0">${esc(a.platform)}</span>
+          <span class="font-mono text-[11px] text-muted truncate max-w-xs shrink-0">${esc((a.admins||[]).join(', '))}</span>
+          <span class="font-mono text-[11px] tabular-nums w-6 text-right shrink-0" style="color:${HEX.degraded}">${a.admin_count}</span>
+        </div>`).join('')}</div>`) : ''}
+
     <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">${d.map(serverCard).join('')}</div>
   </div>`;
 }
@@ -3873,7 +3891,7 @@ const PAGE_QUERIES = {
   databases:    () => ({ databases: sb.from('database_overview').select('*').order('name') }),
   network:      () => ({ ifaces: sb.from('network_overview').select('*').order('host') }),
   applications: () => ({ apps: sb.from('application_overview').select('*').order('name') }),
-  desktops:     () => ({}),
+  desktops:     () => ({ desktopAdmins: sb.from('desktop_admin_summary').select('*').order('label') }),
   nettools:     () => ({ nettools: sb.from('nettool_jobs')
                     .select('id,tool,target,status,output,duration_ms,created_at')
                     .order('created_at',{ascending:false}).limit(12) }),
@@ -3918,6 +3936,7 @@ const ASSIGN = {
   autorules:'autoRules', autoq:'autoQueue',
   pxclusters:'proxmoxClusters', pxguests:'proxmoxGuests',
   pxstorage:'proxmoxStorage', pxbackups:'proxmoxBackups',
+  desktopAdmins:'desktopAdmins',
 };
 
 let polling = false;
