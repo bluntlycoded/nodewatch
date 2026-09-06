@@ -173,6 +173,7 @@ declare t text;
 begin
     foreach t in array array['agents','metrics','auth_events','port_state','port_events']
     loop
+        execute format('drop policy if exists %I on %I', t || '_read', t);
         execute format(
             'create policy %I on %I for select to authenticated using (true)',
             t || '_read', t
