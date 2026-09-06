@@ -1495,13 +1495,25 @@ def main():
                         for pid, ok, _, _, _, a, _ in results if ok and a
                     ]
                     if approws:
+                        # app_metrics_key (024_iis.sql) is a coalesce()-based
+                        # expression index, not a plain (probe_id, ts) unique
+                        # constraint - it has to allow either probe_id or
+                        # agent_id to be null, since IIS metrics come from
+                        # the agent while everything else here comes from a
+                        # probe. ON CONFLICT inference requires an exact
+                        # expression match, not just matching column names.
                         conn.cursor().executemany(
                             """insert into app_metrics (probe_id, ts, requests_total,
                                    errors_total, active_conns, p95_latency_s,
                                    avg_latency_s, memory_bytes, cpu_seconds,
                                    uptime_s, extra)
                                values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                               on conflict (probe_id, ts) do nothing""",
+                               on conflict (
+                                   (coalesce(probe_id, '00000000-0000-0000-0000-000000000000'::uuid)),
+                                   (coalesce(agent_id, '00000000-0000-0000-0000-000000000000'::uuid)),
+                                   (coalesce(app_name, '')),
+                                   ts
+                               ) do nothing""",
                             approws)
 
                     if dbrows:
