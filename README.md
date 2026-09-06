@@ -159,6 +159,23 @@ Service Control Manager kills one that does not report back. Making it a real
 service would need `pywin32`, and a compiled dependency would cost more than it
 buys.
 
+**The agent does not self-update.** It runs whatever was on disk at install
+time, so a host enrolled before a code change stays on the old code until
+updated. `update.sh` / `update-macos.sh` / `update.ps1` pull the latest
+`agent/*.py` from `main` and restart the service or task in place — they
+never touch enrolment state, the venv, or the ingest URL/token, so no
+credentials are needed to run one.
+
+```bash
+# Linux / macOS, on the host, as root
+sudo bash update.sh          # or: sudo bash update-macos.sh
+```
+
+```powershell
+# Windows, elevated
+irm .../agent/update.ps1 | iex
+```
+
 ---
 
 ## Deploying the stack
