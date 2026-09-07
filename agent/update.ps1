@@ -1,5 +1,5 @@
 # Update an already-installed nodewatch Windows agent to the latest code
-# on main. Only overwrites the agent's .py files - enrolment state and the
+# on main, including its pinned dependencies. Enrolment state and the
 # Scheduled Task (which holds the ingest URL and token as environment
 # variables) are untouched, so this does not re-enrol or need any
 # credentials. Run in an elevated PowerShell.
@@ -38,6 +38,15 @@ if (-not (Test-Path $sourceAgent)) {
 
 Stop-ScheduledTask -TaskName $Task -ErrorAction SilentlyContinue
 Copy-Item (Join-Path $sourceAgent '*.py') $Root -Force
+
+# A code-only refresh would silently leave a known-vulnerable dependency
+# in place, since the venv is otherwise never touched after install.
+$VenvPy = "$Root\venv\Scripts\python.exe"
+$reqs = Join-Path $sourceAgent 'requirements.txt'
+if ((Test-Path $VenvPy) -and (Test-Path $reqs)) {
+    & $VenvPy -m pip install -q --upgrade -r $reqs
+}
+
 Remove-Item $zip -Force
 Remove-Item $ext -Recurse -Force
 

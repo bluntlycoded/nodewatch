@@ -1,2 +1,6 @@
 psutil>=5.9
-requests>=2.31
+# 2.31 permitted several now-known-vulnerable releases (.netrc credential
+# leak via malicious URL, Session not re-verifying after a redirect,
+# insecure temp file reuse in extract_zipped_paths) - 2.33.0 is the floor
+# that excludes all of them, not just the minimum that happens to work.
+requests>=2.33.0

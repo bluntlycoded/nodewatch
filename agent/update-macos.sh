@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Update an already-installed nodewatch macOS agent to the latest code on
-# main. Only overwrites the agent's .py files - enrolment state, the venv
-# and the launchd plist (which holds the ingest URL and token) are
-# untouched, so this does not re-enrol or need any credentials. Run with sudo.
+# main, including its pinned dependencies. Enrolment state and the launchd
+# plist (which holds the ingest URL and token) are untouched, so this does
+# not re-enrol or need any credentials. Run with sudo.
 #
 #   sudo bash update-macos.sh
 set -euo pipefail
@@ -20,6 +20,11 @@ TMP=$(mktemp -d)
 curl -fsSL "$REPO/archive/refs/heads/main.zip" -o "$TMP/nw.zip"
 unzip -q "$TMP/nw.zip" -d "$TMP"
 cp "$TMP"/nodewatch-main/agent/*.py "$ROOT/"
+
+# A code-only refresh would silently leave a known-vulnerable dependency
+# in place, since the venv is otherwise never touched after install.
+"$ROOT/venv/bin/pip" install -q --upgrade -r "$TMP"/nodewatch-main/agent/requirements.txt
+
 rm -rf "$TMP"
 
 launchctl bootout system "$PLIST" 2>/dev/null || true
