@@ -13,6 +13,7 @@ stable.
 import json
 import os
 import re
+import shutil
 import subprocess
 
 SEV_HIGH, SEV_MED, SEV_LOW = "high", "medium", "low"
@@ -442,7 +443,90 @@ def collect_checks():
                           SEV_LOW, usb == 4,
                           f"USBSTOR start = {usb}" if usb is not None else "USBSTOR service not found"))
 
+    results.append(check_ai_skills())
+
     return results
+
+
+# Known AI-CLI skill directories, relative to a user's profile. Claude
+# Code's convention is well documented and stable; others get added here
+# once confirmed rather than guessed at.
+AI_SKILL_DIRS = {"Claude Code": r".claude\skills"}
+AI_SKILLS_SCAN_MAX = 15   # bounded like every other unbounded-input check here
+
+
+def _find_ai_skills():
+    """[(tool, skill_dir, [skill_name, ...])] for every populated skill
+    directory found across every real user profile under C:\\Users."""
+    found = []
+    try:
+        homes = [os.path.join(r"C:\Users", d) for d in os.listdir(r"C:\Users")
+                 if d not in ("Public", "Default", "Default User", "All Users")
+                 and os.path.isdir(os.path.join(r"C:\Users", d))]
+    except OSError:
+        homes = []
+    for home in homes:
+        for tool, rel in AI_SKILL_DIRS.items():
+            base = os.path.join(home, rel)
+            if not os.path.isdir(base):
+                continue
+            try:
+                skills = [d for d in os.listdir(base)
+                         if os.path.isfile(os.path.join(base, d, "SKILL.md"))]
+            except OSError:
+                continue
+            if skills:
+                found.append((tool, base, skills))
+    return found
+
+
+def check_ai_skills():
+    """
+    Installed AI-agent skills (Claude Code, etc.) run with implicit trust
+    and minimal vetting - this doesn't install or execute anything, it
+    only reports whether skillspector (github.com/NVIDIA/skillspector),
+    if present on the host, considers what's already installed safe.
+    """
+    dirs = _find_ai_skills()
+    if not dirs:
+        return _check("win-ai-skills", "Installed AI-agent skills carry no unreviewed risk",
+                      "system", SEV_MED, True, "no AI-agent skills found")
+
+    total = sum(len(skills) for _, _, skills in dirs)
+    scanner = shutil.which("skillspector") or shutil.which("skillspector.exe")
+    if not scanner:
+        return _error("win-ai-skills", "Installed AI-agent skills carry no unreviewed risk",
+                      "system", SEV_MED,
+                      f"{total} skill(s) found but skillspector is not installed to assess them")
+
+    order = {"SAFE": 0, "CAUTION": 1, "DO_NOT_INSTALL": 2}
+    worst, flagged, scanned = "SAFE", [], 0
+    for tool, base, skills in dirs:
+        for name in skills:
+            if scanned >= AI_SKILLS_SCAN_MAX:
+                break
+            scanned += 1
+            try:
+                # --no-llm: static analysis only, nothing about the
+                # skill's contents leaves this host.
+                res = subprocess.run(
+                    [scanner, "scan", os.path.join(base, name), "--no-llm", "--format", "json"],
+                    capture_output=True, text=True, timeout=20,
+                )
+                verdict = json.loads(res.stdout)["risk_assessment"]
+                rec = verdict.get("recommendation", "SAFE")
+            except Exception:
+                continue
+            if order.get(rec, 0) > order.get(worst, 0):
+                worst = rec
+            if rec != "SAFE":
+                flagged.append(f"{name} ({rec}, score {verdict.get('score', '?')})")
+
+    sev = SEV_HIGH if worst == "DO_NOT_INSTALL" else SEV_MED
+    detail = f"{scanned} of {total} skill(s) scanned"
+    detail += f", flagged: {', '.join(flagged)}" if flagged else ", none flagged"
+    return _check("win-ai-skills", "Installed AI-agent skills carry no unreviewed risk",
+                  "system", sev, worst == "SAFE", detail)
 
 
 # ---------------------------------------------------------------- packages

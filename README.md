@@ -33,9 +33,12 @@ different things: server hardening (SSH, sysctl, firewall, pending updates)
 and end-user machines specifically (screen lock, third-party EDR/AV
 presence via each OS's own security-product registry — not just the
 platform's built-in one, remote-access tooling, Secure Boot and TPM, USB
-storage policy). A host is classified as a server or a desktop from the
-dashboard, but every check still runs on every host regardless — a check
-that only ran sometimes could not be trusted to have run at all.
+storage policy, and the risk of any installed AI-agent skill — Claude Code
+skills and similar — via [NVIDIA's SkillSpector](https://github.com/NVIDIA/skillspector)
+if it happens to be present on the host). A host is classified as a server
+or a desktop from the dashboard, but every check still runs on every host
+regardless — a check that only ran sometimes could not be trusted to have
+run at all.
 
 **Anything else, via agentless probes** — ping, TCP port, HTTP/URL, PostgreSQL,
 MySQL, SQL Server, Oracle, Prometheus, nginx, Tomcat, JBoss/WildFly, and

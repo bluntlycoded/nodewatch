@@ -109,6 +109,20 @@ text is fully static and auditable — there is nothing dynamic to hide.
 read-only status queries against Apple's own CLI tools, no `sudo`
 escalation beyond what the launchd job already runs as.
 
+### End-user-computing posture (all platforms)
+
+Added after this document was first written; listed here for the same
+reason everything else is. These run unconditionally on every host, not
+only ones classified as desktops — see [README.md](README.md).
+
+| Check | What it does |
+|---|---|
+| Screen lock | Reads the OS's own screen-lock/screensaver setting for the console user (or machine policy on Windows). Never reads the password itself, only whether one is required. |
+| EDR/AV presence | Matches the running process list against known security-agent names (CrowdStrike, SentinelOne, Defender, Sophos, etc. — see `EDR_PROCESSES` per platform module), or on Windows, queries `root/SecurityCenter2`, the same registry Windows Security Center itself reads. Process names only, never process memory or arguments. |
+| Remote-access tooling | Same process-matching technique, against known remote-access software (TeamViewer, AnyDesk, VNC, ScreenConnect, LogMeIn). A visibility check, not a block — presence is reported, nothing is stopped. |
+| Secure Boot / TPM / USB storage policy (Windows) | `Confirm-SecureBootUEFI`, `Get-Tpm`, and the `USBSTOR` service's registry `Start` value — all read-only status queries. |
+| AI-agent skill risk | If a known AI-CLI skill directory is found (currently just `.claude/skills` under a real user's home — [`agent/os_linux.py`](agent/os_linux.py), [`agent/os_darwin.py`](agent/os_darwin.py), [`agent/os_windows.py`](agent/os_windows.py)), and the independent, open-source [`skillspector`](https://github.com/NVIDIA/skillspector) scanner happens to already be installed on that host, the agent invokes it with `--no-llm` and reports its verdict. The agent does not install, bundle, or require skillspector — if it isn't present, the check reports "not installed to assess" rather than guessing. `--no-llm` means no file content is sent to any LLM provider, but skillspector's own supply-chain check still queries the public, unauthenticated `api.osv.dev` with the scanned skill's declared dependency names and versions (not file contents) even in `--no-llm` mode — that lookup is skillspector's behaviour, not the agent's, and happens regardless of this integration. Only the scan's verdict (a risk score and category) is shipped to the ingest API. |
+
 ### File integrity monitoring detail
 
 The agent hashes a narrow, explicit set of paths (`/etc` and equivalents —

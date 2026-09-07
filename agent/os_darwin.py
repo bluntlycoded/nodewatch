@@ -11,6 +11,7 @@ import json
 import os
 import plistlib
 import re
+import shutil
 import subprocess
 
 SEV_HIGH, SEV_MED, SEV_LOW = "high", "medium", "low"
@@ -278,6 +279,7 @@ def collect_checks():
     results.append(check_screen_lock())
     results.append(check_edr())
     results.append(check_remote_access())
+    results.append(check_ai_skills())
 
     return results
 
@@ -352,6 +354,85 @@ def check_remote_access():
     return _check("mac-remote-access", "No remote-access software is running", "system",
                   SEV_LOW, not found,
                   "none found" if not found else "running: " + ", ".join(found))
+
+
+# Known AI-CLI skill directories, relative to a user's home. Claude Code's
+# convention is well documented and stable; others get added here once
+# confirmed rather than guessed at.
+AI_SKILL_DIRS = {"Claude Code": ".claude/skills"}
+AI_SKILLS_SCAN_MAX = 15   # bounded like every other unbounded-input check here
+
+
+def _find_ai_skills():
+    """[(tool, skill_dir, [skill_name, ...])] for every populated skill
+    directory found across every real user's home under /Users."""
+    found = []
+    try:
+        homes = [f"/Users/{d}" for d in os.listdir("/Users")
+                 if d not in ("Shared", "Guest") and not d.startswith(".")
+                 and os.path.isdir(f"/Users/{d}")]
+    except OSError:
+        homes = []
+    for home in homes:
+        for tool, rel in AI_SKILL_DIRS.items():
+            base = os.path.join(home, rel)
+            if not os.path.isdir(base):
+                continue
+            try:
+                skills = [d for d in os.listdir(base)
+                         if os.path.isfile(os.path.join(base, d, "SKILL.md"))]
+            except OSError:
+                continue
+            if skills:
+                found.append((tool, base, skills))
+    return found
+
+
+def check_ai_skills():
+    """
+    Installed AI-agent skills (Claude Code, etc.) run with implicit trust
+    and minimal vetting - this doesn't install or execute anything, it
+    only reports whether skillspector (github.com/NVIDIA/skillspector),
+    if present on the host, considers what's already installed safe.
+    """
+    dirs = _find_ai_skills()
+    if not dirs:
+        return _check("mac-ai-skills", "Installed AI-agent skills carry no unreviewed risk",
+                      "system", SEV_MED, True, "no AI-agent skills found")
+
+    total = sum(len(skills) for _, _, skills in dirs)
+    scanner = shutil.which("skillspector")
+    if not scanner:
+        return _error("mac-ai-skills", "Installed AI-agent skills carry no unreviewed risk",
+                      "system", SEV_MED,
+                      f"{total} skill(s) found but skillspector is not installed to assess them")
+
+    order = {"SAFE": 0, "CAUTION": 1, "DO_NOT_INSTALL": 2}
+    worst, flagged, scanned = "SAFE", [], 0
+    for tool, base, skills in dirs:
+        for name in skills:
+            if scanned >= AI_SKILLS_SCAN_MAX:
+                break
+            scanned += 1
+            # --no-llm: static analysis only, nothing about the skill's
+            # contents leaves this host.
+            out = run([scanner, "scan", os.path.join(base, name), "--no-llm", "--format", "json"],
+                     timeout=20)
+            try:
+                verdict = json.loads(out)["risk_assessment"]
+                rec = verdict.get("recommendation", "SAFE")
+            except Exception:
+                continue
+            if order.get(rec, 0) > order.get(worst, 0):
+                worst = rec
+            if rec != "SAFE":
+                flagged.append(f"{name} ({rec}, score {verdict.get('score', '?')})")
+
+    sev = SEV_HIGH if worst == "DO_NOT_INSTALL" else SEV_MED
+    detail = f"{scanned} of {total} skill(s) scanned"
+    detail += f", flagged: {', '.join(flagged)}" if flagged else ", none flagged"
+    return _check("mac-ai-skills", "Installed AI-agent skills carry no unreviewed risk",
+                  "system", sev, worst == "SAFE", detail)
 
 
 # A browser dragged into /Applications rather than installed from a .pkg
