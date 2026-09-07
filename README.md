@@ -183,6 +183,17 @@ sudo bash update.sh          # or: sudo bash update-macos.sh
 irm .../agent/update.ps1 | iex
 ```
 
+**Neither does the probe runner or the ingest API.** Same story, same fix —
+`probe/update-probe.sh` and `api/deploy/update-api.sh` pull the latest code
+and pinned dependencies, then restart the service. `/etc/nodewatch/api.env`
+(credentials) is untouched by either.
+
+```bash
+# On the API host, as root
+sudo bash update-probe.sh    # probe runner
+sudo bash update-api.sh      # ingest API
+```
+
 ---
 
 ## Deploying the stack
