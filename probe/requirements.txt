@@ -1,6 +1,6 @@
 # Probe runner dependencies. All pure pip: no vendor client libraries,
 # no system packages beyond iputils-ping.
 psycopg[binary,pool]>=3.1   # PostgreSQL, and the runner's own connection
-pymysql>=1.1                # MySQL and MariaDB
+pymysql>=1.1.1               # MySQL and MariaDB - 1.1 permits a SQL injection CVE fixed in 1.1.1
 pymssql>=2.3                # SQL Server, prebuilt wheels
 oracledb>=2.0               # Oracle, thin mode needs no Instant Client

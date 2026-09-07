@@ -13,6 +13,11 @@ apt-get install -y iputils-ping
 mkdir -p /opt/nodewatch-probe
 cp "$(dirname "$0")/prober.py" /opt/nodewatch-probe/
 
+# The shared venv only has api/requirements.txt in it so far - without this,
+# check_mysql/check_mssql/check_oracle report "not installed on the probe
+# host" forever, since nothing else ever installs pymysql/pymssql/oracledb.
+/opt/nodewatch-api/venv/bin/pip install -q -r "$(dirname "$0")/requirements.txt"
+
 install -m644 "$(dirname "$0")/nodewatch-probe.service" /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now nodewatch-probe
