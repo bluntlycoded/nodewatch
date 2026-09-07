@@ -18,6 +18,7 @@ import re
 import shutil
 import socket
 import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -1123,18 +1124,139 @@ def check_proxmox(p) -> tuple[bool, int | None, str]:
                       f"{metrics['guests_running']}/{metrics['guests_total']} guests running")
 
 
+# ---------------------------------------------------------------- supply chain
+
+# ForgeGuardian (github.com/Mah3Sec/ForgeGuardian) does the actual scanning
+# - dependency parsing across nine ecosystems, OSV lookups, malware pattern
+# matching. This clones the target repo and shells out to fgctl the same
+# way check_proxmox calls Proxmox's own API rather than reimplementing a
+# hypervisor: expected to already be on the probe host, not installed or
+# bundled by nodewatch.
+SUPPLY_CHAIN_CLONE_TIMEOUT = 60
+SUPPLY_CHAIN_SCAN_TIMEOUT = 180
+
+# fgctl's own JSON output has no 0-100 score or SAFE/CAUTION/DO_NOT_INSTALL
+# verdict - that's computed by ForgeGuardian's own dashboard server, which
+# this integration doesn't run. Scoring it the same way here keeps every
+# probe kind's risk number on the same scale as the dashboard already
+# uses elsewhere (posture checks, Proxmox, EUC).
+SEVERITY_POINTS = {"CRITICAL": 50, "HIGH": 25, "MEDIUM": 10, "LOW": 5, "INFORMATIONAL": 0}
+
+
+def _supply_chain_verdict(summary: dict) -> tuple[int, str, str]:
+    score = min(100, sum(SEVERITY_POINTS.get(k.upper(), 0) * (summary.get(k) or 0)
+                         for k in ("Critical", "High", "Medium", "Low", "Informational")))
+    if score > 80:
+        severity = "CRITICAL"
+    elif score > 50:
+        severity = "HIGH"
+    elif score > 20:
+        severity = "MEDIUM"
+    else:
+        severity = "LOW"
+    recommendation = "DO_NOT_INSTALL" if severity in ("HIGH", "CRITICAL") \
+        else "CAUTION" if severity == "MEDIUM" else "SAFE"
+    return score, severity, recommendation
+
+
+def check_supply_chain(p) -> tuple[bool, int | None, str]:
+    """
+    Clones the target repository shallow into a scratch directory, scans
+    it with fgctl, and reports the worst finding. Credentials, if
+    configured, are a PAT inserted into the clone URL - the same
+    username/password fields probe_secrets already has, reused rather
+    than adding new ones, the same way Proxmox's API token is.
+    """
+    scanner = shutil.which("fgctl")
+    if not scanner:
+        return False, None, "fgctl is not installed on the probe host"
+    if not shutil.which("git"):
+        return False, None, "git is not installed on the probe host"
+
+    cfg = p.get("config") or {}
+    clone_url = p["target"]
+    if cfg.get("user") and cfg.get("password"):
+        scheme, sep, rest = clone_url.partition("://")
+        if sep:
+            clone_url = f"{scheme}://{cfg['user']}:{cfg['password']}@{rest}"
+
+    t0 = time.monotonic()
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            cloned = subprocess.run(
+                ["git", "clone", "--depth", "1", "--quiet", clone_url, tmp],
+                capture_output=True, text=True, timeout=SUPPLY_CHAIN_CLONE_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            return False, None, f"git clone timed out after {SUPPLY_CHAIN_CLONE_TIMEOUT}s"
+        if cloned.returncode != 0:
+            lines = (cloned.stderr or "no error output").strip().splitlines()
+            return False, None, f"git clone failed: {lines[-1][:180] if lines else 'unknown error'}"
+
+        try:
+            scanned = subprocess.run(
+                [scanner, "scan", tmp, "--format", "json"],
+                capture_output=True, text=True, timeout=SUPPLY_CHAIN_SCAN_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            return False, None, f"fgctl scan timed out after {SUPPLY_CHAIN_SCAN_TIMEOUT}s"
+
+        ms = int((time.monotonic() - t0) * 1000)
+        try:
+            report = json.loads(scanned.stdout)
+        except json.JSONDecodeError:
+            detail = (scanned.stderr or "no output").strip().splitlines()
+            return False, ms, f"fgctl produced no parseable output: {detail[-1][:150] if detail else ''}"
+
+        # Absolute paths inside the scratch dir are meaningless once it's
+        # deleted; keep only the path relative to the clone root.
+        for r in report.get("Results") or []:
+            fp = (r.get("Entry") or {}).get("FilePath")
+            if fp and fp.startswith(tmp):
+                r["Entry"]["FilePath"] = fp[len(tmp):].lstrip("/\\")
+
+    summary = report.get("Summary") or {}
+    score, severity, recommendation = _supply_chain_verdict(summary)
+
+    findings = []
+    for r in report.get("Results") or []:
+        entry = r.get("Entry") or {}
+        location = entry.get("FilePath", "")
+        if entry.get("Line"):
+            location += f":{entry['Line']}"
+        for f in r.get("Findings") or []:
+            findings.append({
+                "rule_id": f.get("id") or f.get("title", "unknown")[:64],
+                "category": f.get("type"),
+                "severity": (f.get("severity") or "").upper() or None,
+                "message": f.get("title"),
+                "location": f"{entry.get('Name', '?')} ({location})" if location else entry.get("Name"),
+            })
+
+    p["_supply_chain"] = {
+        "scan": {
+            "risk_score": score, "severity": severity, "recommendation": recommendation,
+            "finding_count": summary.get("Total", 0), "scan_mode": "static",
+            "extra": {"summary": summary, "missing_tools": report.get("MissingTools") or []},
+        },
+        "findings": findings,
+    }
+    return True, ms, f"score {score}/100 ({severity}), {summary.get('Total', 0)} finding(s)"
+
+
 CHECKS = {"ping": check_ping, "port": check_port, "url": check_url,
           "postgres": check_postgres, "mysql": check_mysql,
           "mssql": check_mssql, "oracle": check_oracle,
           "prometheus": check_prometheus, "nginx": check_nginx,
           "tomcat": check_tomcat, "jboss": check_jboss,
-          "proxmox": check_proxmox}
+          "proxmox": check_proxmox, "supply_chain": check_supply_chain}
 
 
-def run_one(p: dict) -> tuple[str, bool, int | None, str, dict | None, dict | None, dict | None]:
+def run_one(p: dict) -> tuple[str, bool, int | None, str, dict | None, dict | None,
+                              dict | None, dict | None]:
     fn = CHECKS.get(p["kind"])
     if not fn:
-        return p["id"], False, None, f"unknown probe kind {p['kind']}", None, None, None
+        return p["id"], False, None, f"unknown probe kind {p['kind']}", None, None, None, None
     try:
         ok, ms, detail = fn(p)
     except Exception as e:
@@ -1142,9 +1264,10 @@ def run_one(p: dict) -> tuple[str, bool, int | None, str, dict | None, dict | No
         log.exception("probe %s raised", p["name"])
         ok, ms, detail = False, None, f"probe error: {e}"[:200]
     # Database checks attach a measurement set; Proxmox attaches guests,
-    # storage and backups too; the others attach nothing.
+    # storage and backups too; supply-chain attaches a scan and its
+    # findings; the others attach nothing.
     return (p["id"], ok, ms, detail, p.get("_metrics"), p.get("_app_metrics"),
-            p.get("_proxmox"))
+            p.get("_proxmox"), p.get("_supply_chain"))
 
 
 # ---------------------------------------------------------------- net tools
@@ -1473,7 +1596,7 @@ def main():
                         """insert into probe_results (probe_id, ts, ok, latency_ms, detail)
                            values (%s, %s, %s, %s, %s)
                            on conflict (probe_id, ts) do nothing""",
-                        [(pid, ts, ok, ms, detail) for pid, ok, ms, detail, _, _, _ in results],
+                        [(pid, ts, ok, ms, detail) for pid, ok, ms, detail, _, _, _, _ in results],
                     )
 
                     # Database measurements go to their own table. One
@@ -1484,7 +1607,7 @@ def main():
                          m.get("slow_queries"), m.get("longest_query_s"),
                          m.get("replication_lag_s"), m.get("size_bytes"),
                          m.get("uptime_s"), m.get("qps"), json.dumps(m.get("extra") or {}))
-                        for pid, ok, _, _, m, _, _ in results if ok and m
+                        for pid, ok, _, _, m, _, _, _ in results if ok and m
                     ]
                     approws = [
                         (pid, ts, a.get("requests_total"), a.get("errors_total"),
@@ -1492,7 +1615,7 @@ def main():
                          a.get("avg_latency_s"), a.get("memory_bytes"),
                          a.get("cpu_seconds"), a.get("uptime_s"),
                          json.dumps(a.get("extra") or {}))
-                        for pid, ok, _, _, _, a, _ in results if ok and a
+                        for pid, ok, _, _, _, a, _, _ in results if ok and a
                     ]
                     if approws:
                         # app_metrics_key (024_iis.sql) is a coalesce()-based
@@ -1529,7 +1652,7 @@ def main():
                     # Proxmox attaches guests, storage and backups alongside
                     # the cluster-level metrics row - four writes instead of
                     # one, but still one round trip each for the whole cycle.
-                    pxrows = [(pid, px) for pid, ok, _, _, _, _, px in results if ok and px]
+                    pxrows = [(pid, px) for pid, ok, _, _, _, _, px, _ in results if ok and px]
                     if pxrows:
                         conn.cursor().executemany(
                             """insert into proxmox_metrics (probe_id, ts, nodes_total,
@@ -1600,11 +1723,49 @@ def main():
                                    on conflict (probe_id, upid) do nothing""",
                                 backup_rows)
 
+                    # Supply-chain attaches a scan rollup plus its current
+                    # findings, upserted like host_checks - what's wrong
+                    # right now, not a growing log of the same CVE
+                    # reappearing on every scan.
+                    scrows = [(pid, sc) for pid, ok, _, _, _, _, _, sc in results if ok and sc]
+                    if scrows:
+                        conn.cursor().executemany(
+                            """insert into supply_chain_scans (probe_id, ts, risk_score,
+                                   severity, recommendation, finding_count, scan_mode, extra)
+                               values (%s,%s,%s,%s,%s,%s,%s,%s)
+                               on conflict (probe_id, ts) do nothing""",
+                            [(pid, ts, s["scan"]["risk_score"], s["scan"]["severity"],
+                              s["scan"]["recommendation"], s["scan"]["finding_count"],
+                              s["scan"]["scan_mode"], json.dumps(s["scan"].get("extra") or {}))
+                             for pid, s in scrows])
+
+                        finding_rows = [(pid, f["rule_id"], f["category"], f["severity"],
+                                         f["message"], f["location"], ts, ts)
+                                        for pid, s in scrows for f in s["findings"]]
+                        if finding_rows:
+                            conn.cursor().executemany(
+                                """insert into supply_chain_findings (probe_id, rule_id,
+                                       category, severity, message, location,
+                                       first_seen, last_seen)
+                                   values (%s,%s,%s,%s,%s,%s,%s,%s)
+                                   on conflict (probe_id, rule_id) do update set
+                                       category = excluded.category, severity = excluded.severity,
+                                       message = excluded.message, location = excluded.location,
+                                       last_seen = excluded.last_seen""",
+                                finding_rows)
+                        # A finding that's gone was fixed or the dependency was
+                        # removed; leaving it would freeze a stale CVE in place.
+                        for pid, s in scrows:
+                            seen = [f["rule_id"] for f in s["findings"]]
+                            conn.execute(
+                                "delete from supply_chain_findings where probe_id = %s and rule_id <> all(%s)",
+                                (pid, seen or ["-"]))
+
                     now = time.monotonic()
                     for p in batch:
                         _last_run[p["id"]] = now
 
-                    failed = sum(1 for _, ok, _, _, _, _, _ in results if not ok)
+                    failed = sum(1 for _, ok, _, _, _, _, _, _ in results if not ok)
                     log.info("checked %d, %d failing", len(results), failed)
 
                 drain_nettools(conn)

@@ -518,6 +518,7 @@ let state = {
   probes:[], matrix:[], availability:[], mttr:[], latency:[],
   proxmoxClusters:[], proxmoxGuests:[], proxmoxStorage:[], proxmoxBackups:[],
   desktopAdmins:[],
+  supplyChain:[], supplyChainFindings:[],
   hostDetail:{ checks:[], packages:[], vulns:[], users:[], ports:[], fim:[], history:[] },
 };
 
@@ -700,6 +701,7 @@ const NAV = [
   ['Security', [
     ['posture',        'Posture',         {}],
     ['vulns',          'Vulnerabilities', {}],
+    ['supplychain',    'Supply Chain',    {}],
     ['activity?files', 'File Integrity',  {}],
     ['activity?users', 'Account Changes', {}],
     ['activity?auth',  'Sign-ins',        {}],
@@ -1131,6 +1133,8 @@ const CHECK_KINDS = {
               hint:'WildFly or JBoss EAP management API on port 9990. The account comes from add-user.sh in the management realm, not from the application.' },
   proxmox:  { label:'Proxmox VE', creds:true, token:true,
               hint:'Reads /cluster/resources and /cluster/tasks with an API token (Datacenter → Permissions → API Tokens). PVEAuditor is enough — this never writes.' },
+  supply_chain: { label:'Supply Chain', url:true, creds:true, git:true,
+              hint:'Clones the repository and scans it with ForgeGuardian (fgctl must already be installed on the probe host). Target is a git clone URL; leave username/password blank for a public repo, or use a personal access token as the password for a private one.' },
 };
 
 function pageChecks(){
@@ -2245,6 +2249,104 @@ pveum acl modify / -token 'nodewatch@pve!nodewatch' -role PVEAuditor</pre>
   </div>`;
 }
 
+// ═══════════════════════════ page: supply chain
+function pageSupplyChain(){
+  const admin = isAdmin();
+  const repos = state.supplyChain;
+
+  if(!repos.length) return `
+    <div class="space-y-4">
+      ${card(empty('No repository is monitored for supply-chain risk yet.'))}
+      ${admin?`<div class="bg-paper border border-rule px-5 py-4 space-y-2">
+        <p class="text-sm text-muted leading-relaxed">
+          Add one from <span class="font-mono text-[12px]">Checks</span> — choose Supply Chain and
+          give it a git clone URL. Scanning is done by
+          <a href="https://github.com/Mah3Sec/ForgeGuardian" target="_blank" rel="noopener"
+             class="text-signal hover:underline">ForgeGuardian</a>, which must already be installed
+          on the probe host — nodewatch calls it, it does not bundle it. A public repository needs
+          no credentials; a private one takes a personal access token as the password field.</p>
+      </div>`:''}
+    </div>`;
+
+  const findingsBy = {};
+  state.supplyChainFindings.forEach(f => (findingsBy[f.probe_id] ||= []).push(f));
+
+  const sevColour = { LOW:HEX.healthy, MEDIUM:HEX.degraded, HIGH:HEX.down, CRITICAL:HEX.down };
+  const up = repos.filter(r=>r.status==='up').length;
+  const flagged = repos.filter(r=>r.recommendation && r.recommendation!=='SAFE').length;
+  const worst = repos.reduce((a,r)=>Math.max(a, r.risk_score ?? 0), 0);
+
+  return `
+  <div class="space-y-4">
+    <div class="bg-paper border border-rule px-4 sm:px-5 py-3 flex flex-wrap items-center gap-x-6 gap-y-3">
+      <div class="flex items-baseline gap-1.5">
+        <span class="text-lg font-semibold tabular-nums">${repos.length}</span>
+        <span class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">repositories</span>
+      </div>
+      <div class="flex items-baseline gap-1.5">
+        <span class="text-lg font-semibold tabular-nums" style="color:${HEX.healthy}">${up}</span>
+        <span class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">reachable</span>
+      </div>
+      <div class="flex items-baseline gap-1.5">
+        <span class="text-lg font-semibold tabular-nums" style="color:${flagged?HEX.down:'var(--c-ink)'}">${flagged}</span>
+        <span class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">flagged</span>
+      </div>
+      <div class="flex items-baseline gap-1.5">
+        <span class="text-lg font-semibold tabular-nums"
+              style="color:${worst>=51?HEX.down:worst>=21?HEX.degraded:HEX.healthy}">${worst}</span>
+        <span class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">peak risk score</span>
+      </div>
+      <span class="flex-1"></span>
+      <span class="font-mono text-[10px] text-muted hidden lg:inline">
+        Scanned by ForgeGuardian on the probe host — score, severity and recommendation are
+        derived here from its findings, the same scale used across the rest of the dashboard.
+      </span>
+    </div>
+
+    <div class="grid gap-4 lg:grid-cols-2">${repos.map(r=>{
+      const down = r.status!=='up';
+      const findings = (findingsBy[r.id]||[]).slice(0,8);
+      return `
+      <section class="bg-paper border rise ${down?'border-down':'border-rule'}"
+               ${down?`style="border-left:3px solid ${HEX.down}"`:''}>
+        <div class="px-4 py-3 border-b border-hairline flex items-start justify-between gap-3">
+          <div class="min-w-0">
+            <div class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full shrink-0" style="background:${down?HEX.down:HEX.healthy}"></span>
+              <h3 class="font-semibold tracking-tight truncate">${esc(r.name)}</h3>
+              ${r.recommendation?`<span class="font-mono text-[9px] uppercase tracking-[.12em] px-1 shrink-0"
+                    style="color:${sevColour[r.severity]||HEX.muted};border:1px solid ${sevColour[r.severity]||'var(--c-rule)'}">${esc(r.recommendation)}</span>`:''}
+            </div>
+            <p class="font-mono text-[10px] text-muted mt-1 truncate">${esc(r.target||'—')}${r.site?' · '+esc(r.site):''}</p>
+          </div>
+          <div class="text-right shrink-0">
+            <p class="text-2xl font-semibold tabular-nums leading-none"
+               style="color:${(r.risk_score??0)>=51?HEX.down:(r.risk_score??0)>=21?HEX.degraded:HEX.healthy}">${r.risk_score ?? '—'}</p>
+            <p class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">risk score</p>
+          </div>
+        </div>
+
+        ${down ? `<p class="px-4 py-6 text-sm text-down">${esc(r.detail || 'unreachable')}</p>` : `
+        <div class="border-t border-hairline px-4 py-3 flex items-center justify-between font-mono text-[10px] text-muted">
+          <span>${r.finding_count ?? 0} finding(s) · every ${r.interval_s}s</span>
+          <span>${r.scanned_at ? ago(r.scanned_at)+' ago' : 'not scanned yet'}</span>
+        </div>
+
+        ${findings.length ? `<div class="px-4 py-3 border-t border-hairline space-y-2.5">${findings.map(f=>`
+          <div>
+            <div class="flex items-center gap-2">
+              <span class="font-mono text-[9px] uppercase tracking-[.1em] px-1 shrink-0"
+                    style="color:${sevColour[f.severity]||HEX.muted}">${esc(f.severity||'?')}</span>
+              <span class="text-sm truncate flex-1">${esc(f.message||f.rule_id)}</span>
+            </div>
+            <p class="font-mono text-[10px] text-muted mt-0.5 pl-[2.6rem] truncate">${esc(f.location||'')}</p>
+          </div>`).join('')}</div>`
+          : `<p class="px-4 py-3 border-t border-hairline text-xs text-muted">no findings</p>`}`}
+      </section>`;
+    }).join('')}</div>
+  </div>`;
+}
+
 // ═══════════════════════════ page: reports
 const REPORTS = {
   availability: { title:'Availability Report', rpc:'report_availability',
@@ -3037,6 +3139,7 @@ const TITLES = {
   network:['Network','Interfaces reported by the agents'],
   databases:['Databases','PostgreSQL and MySQL health'],
   proxmox:['Proxmox','Cluster, guest and storage status from the Proxmox VE API'],
+  supplychain:['Supply Chain','Dependency risk across monitored repositories, via ForgeGuardian'],
   desktops:['Desktops','End-user machines - laptops and workstations'],
   nettools:['Network Tools','Diagnostics run from the probe host'],
   report:['Report','Generated from collected telemetry'],
@@ -3083,6 +3186,7 @@ function render(){
     state.page==='automation'? pageAutomation():
     state.page==='databases'? pageDatabases():
     state.page==='proxmox'  ? pageProxmox()  :
+    state.page==='supplychain' ? pageSupplyChain() :
     state.page==='desktops' ? pageDesktops() :
     state.page==='nettools' ? pageNetTools() :
     state.page==='report'   ? pageReport()   :
@@ -3496,9 +3600,10 @@ function renderCheckKinds(){
   $('k-credwrap').classList.toggle('hidden', !isDb);
   $('k-targetlabel').textContent = isUrl ? 'URL' : 'Host or IP';
   $('k-target').placeholder =
-    checkKind === 'prometheus' ? 'http://10.0.0.5:8000/metrics'
-    : checkKind === 'nginx'    ? 'http://10.0.0.5/nginx_status'
-    : checkKind === 'url'      ? 'https://example.com/health' : '10.0.0.1';
+    checkKind === 'prometheus'   ? 'http://10.0.0.5:8000/metrics'
+    : checkKind === 'nginx'      ? 'http://10.0.0.5/nginx_status'
+    : checkKind === 'supply_chain' ? 'https://github.com/org/repo.git'
+    : checkKind === 'url'        ? 'https://example.com/health' : '10.0.0.1';
   if (isDb && !$('k-port').value) {
     $('k-port').value = { postgres:5432, mysql:3306, mssql:1433, oracle:1521, proxmox:8006 }[checkKind] || '';
   }
@@ -3557,7 +3662,11 @@ $('k-save').onclick = async () => {
   };
 
   const isDb = !!CHECK_KINDS[checkKind].creds;
-  if(isDb && !$('k-user').value.trim()){
+  // Every other creds:true kind needs a username unconditionally; a git
+  // clone target is the one exception, since a public repo needs no
+  // credentials at all and a private one only needs a token in the
+  // password field.
+  if(isDb && !CHECK_KINDS[checkKind].git && !$('k-user').value.trim()){
     $('k-msg').textContent = CHECK_KINDS[checkKind].token
       ? 'A Proxmox check needs its API token ID.' : 'A database check needs a username.';
     return;
@@ -3922,6 +4031,10 @@ const PAGE_QUERIES = {
     pxstorage:  sb.from('proxmox_storage').select('*').order('node').order('storage'),
     pxbackups:  sb.from('proxmox_backups').select('*').order('ts',{ascending:false}).limit(100),
   }),
+  supplychain: () => ({
+    screpos:    sb.from('supply_chain_overview').select('*').order('name'),
+    scfindings: sb.from('supply_chain_findings').select('*').order('last_seen',{ascending:false}),
+  }),
 };
 
 // The alert channel list is also shown on Settings; Alerts needs nothing extra.
@@ -3937,6 +4050,7 @@ const ASSIGN = {
   pxclusters:'proxmoxClusters', pxguests:'proxmoxGuests',
   pxstorage:'proxmoxStorage', pxbackups:'proxmoxBackups',
   desktopAdmins:'desktopAdmins',
+  screpos:'supplyChain', scfindings:'supplyChainFindings',
 };
 
 let polling = false;

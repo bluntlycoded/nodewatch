@@ -41,10 +41,14 @@ regardless — a check that only ran sometimes could not be trusted to have
 run at all.
 
 **Anything else, via agentless probes** — ping, TCP port, HTTP/URL, PostgreSQL,
-MySQL, SQL Server, Oracle, Prometheus, nginx, Tomcat, JBoss/WildFly, and
+MySQL, SQL Server, Oracle, Prometheus, nginx, Tomcat, JBoss/WildFly,
 Proxmox VE clusters (node status, VM/container inventory, storage pool
-capacity, backup outcomes). The probe runner polls on a schedule from a host
-with a route to the target, which is also how BMC and SNMP support will work.
+capacity, backup outcomes), and supply-chain risk in a git repository (risk
+score, severity and current findings, via [ForgeGuardian](https://github.com/Mah3Sec/ForgeGuardian) —
+the probe host clones the repo and calls `fgctl`, the same way it calls
+Proxmox's API or a database's DMVs, rather than nodewatch reimplementing a
+dependency scanner). The probe runner polls on a schedule from a host with
+a route to the target, which is also how BMC and SNMP support will work.
 
 **Enrolment covers** AWS, GCP, Azure and on-premise, each verified as strongly
 as the platform allows.
