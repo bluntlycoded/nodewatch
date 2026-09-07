@@ -1,0 +1,43 @@
+name: Supply chain scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  forgeguardian:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write   # needed to upload SARIF to Code Scanning
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ForgeGuardian CLI
+        # SKIP_SERVER: a CI runner is ephemeral and has no business running
+        # a persistent server with a default admin password - that's meant
+        # for a self-hosted dashboard, not a one-shot scan.
+        # SKIP_ENGINES: the three optional deep-scan engines (grype, trivy,
+        # semgrep) each add their own install step and this repo has no
+        # container artifacts for grype/trivy to scan. The five built-in
+        # engines (OSV, behavioral, malware pattern, AI model, MCP) run
+        # regardless and cover dependency CVEs and malicious-package
+        # patterns, which is what actually applies here.
+        env:
+          SKIP_SERVER: "1"
+          SKIP_ENGINES: "1"
+        run: curl -sSfL https://raw.githubusercontent.com/Mah3Sec/ForgeGuardian/main/install.sh | bash
+
+      - name: Scan dependencies
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          fgctl scan . --ci --fail-on=high --format=sarif > results.sarif
+
+      - name: Upload results to GitHub Code Scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results.sarif
