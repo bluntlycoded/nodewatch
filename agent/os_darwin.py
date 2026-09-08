@@ -305,7 +305,7 @@ def check_screen_lock():
     """
     user = _console_user()
     if not user:
-        return _error("mac-screen-lock", "Screen lock is enabled", "system", SEV_MED,
+        return _error("mac-screen-lock", "Screen lock is enabled", "euc", SEV_MED,
                       "no console user session found")
 
     ask = run(["sudo", "-u", user, "defaults", "-currentHost", "read",
@@ -314,9 +314,9 @@ def check_screen_lock():
                 "com.apple.screensaver", "askForPasswordDelay"]).strip()
 
     if ask not in ("0", "1"):
-        return _error("mac-screen-lock", "Screen lock is enabled", "system", SEV_MED,
+        return _error("mac-screen-lock", "Screen lock is enabled", "euc", SEV_MED,
                       f"could not read the screensaver setting for {user}")
-    return _check("mac-screen-lock", "Screen lock is enabled", "system", SEV_MED,
+    return _check("mac-screen-lock", "Screen lock is enabled", "euc", SEV_MED,
                   ask == "1", f"askForPassword = {ask}, delay {delay or '0'}s (user {user})")
 
 
@@ -333,7 +333,7 @@ EDR_PROCESSES = {
 def check_edr():
     procs = run(["ps", "-axo", "comm"])
     found = sorted({label for needle, label in EDR_PROCESSES.items() if needle in procs})
-    return _check("mac-edr", "A recognised security agent is running", "system",
+    return _check("mac-edr", "A recognised security agent is running", "euc",
                   SEV_MED, bool(found),
                   ", ".join(found) if found else "none of the known agents were found")
 
@@ -351,7 +351,7 @@ REMOTE_ACCESS_PROCESSES = {
 def check_remote_access():
     procs = run(["ps", "-axo", "comm"])
     found = sorted({label for needle, label in REMOTE_ACCESS_PROCESSES.items() if needle in procs})
-    return _check("mac-remote-access", "No remote-access software is running", "system",
+    return _check("mac-remote-access", "No remote-access software is running", "euc",
                   SEV_LOW, not found,
                   "none found" if not found else "running: " + ", ".join(found))
 
@@ -398,13 +398,13 @@ def check_ai_skills():
     dirs = _find_ai_skills()
     if not dirs:
         return _check("mac-ai-skills", "Installed AI-agent skills carry no unreviewed risk",
-                      "system", SEV_MED, True, "no AI-agent skills found")
+                      "ai_skills", SEV_MED, True, "no AI-agent skills found")
 
     total = sum(len(skills) for _, _, skills in dirs)
     scanner = shutil.which("skillspector")
     if not scanner:
         return _error("mac-ai-skills", "Installed AI-agent skills carry no unreviewed risk",
-                      "system", SEV_MED,
+                      "ai_skills", SEV_MED,
                       f"{total} skill(s) found but skillspector is not installed to assess them")
 
     order = {"SAFE": 0, "CAUTION": 1, "DO_NOT_INSTALL": 2}
@@ -432,7 +432,7 @@ def check_ai_skills():
     detail = f"{scanned} of {total} skill(s) scanned"
     detail += f", flagged: {', '.join(flagged)}" if flagged else ", none flagged"
     return _check("mac-ai-skills", "Installed AI-agent skills carry no unreviewed risk",
-                  "system", sev, worst == "SAFE", detail)
+                  "ai_skills", sev, worst == "SAFE", detail)
 
 
 # A browser dragged into /Applications rather than installed from a .pkg

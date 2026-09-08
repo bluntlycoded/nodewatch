@@ -403,14 +403,14 @@ def collect_checks():
         # on how a given machine's value was written; compare as strings
         # rather than gambling on which.
         src = "policy" if euc["LockSource"] == "policy" else f"user {euc.get('LockUser') or '?'}"
-        results.append(_check("win-screen-lock", "Screen lock is enabled", "system",
+        results.append(_check("win-screen-lock", "Screen lock is enabled", "euc",
                               SEV_MED, str(active) == "1" and str(secure) == "1",
                               f"ScreenSaveActive={active}, ScreenSaverIsSecure={secure} ({src})"))
     else:
-        results.append(_error("win-screen-lock", "Screen lock is enabled", "system",
+        results.append(_error("win-screen-lock", "Screen lock is enabled", "euc",
                               SEV_MED, "no policy set and no interactive user session found"))
 
-    results.append(_check("win-edr", "A recognised security agent is running", "system",
+    results.append(_check("win-edr", "A recognised security agent is running", "euc",
                           SEV_MED, bool(avs), ", ".join(avs) if avs else
                           "none of the known agents were found"))
 
@@ -418,28 +418,28 @@ def collect_checks():
     found_ra = sorted({label for needle, label in REMOTE_ACCESS_PROCESS_NAMES.items()
                        if needle in procs})
     results.append(_check("win-remote-access", "No remote-access software is running",
-                          "system", SEV_LOW, not found_ra,
+                          "euc", SEV_LOW, not found_ra,
                           "none found" if not found_ra else "running: " + ", ".join(found_ra)))
 
     sb = euc.get("SecureBoot")
     if sb is None:
-        results.append(_error("win-secureboot", "Secure Boot is enabled", "system",
+        results.append(_error("win-secureboot", "Secure Boot is enabled", "euc",
                               SEV_MED, "not UEFI, or Secure Boot state unavailable"))
     else:
-        results.append(_check("win-secureboot", "Secure Boot is enabled", "system",
+        results.append(_check("win-secureboot", "Secure Boot is enabled", "euc",
                               SEV_MED, sb is True, f"Secure Boot: {'on' if sb else 'off'}"))
 
     tpm_present, tpm_ready = euc.get("TpmPresent"), euc.get("TpmReady")
     if tpm_present is None:
-        results.append(_error("win-tpm", "A TPM is present and ready", "system",
+        results.append(_error("win-tpm", "A TPM is present and ready", "euc",
                               SEV_MED, "TPM state unavailable (module not present or accessible)"))
     else:
-        results.append(_check("win-tpm", "A TPM is present and ready", "system", SEV_MED,
+        results.append(_check("win-tpm", "A TPM is present and ready", "euc", SEV_MED,
                               bool(tpm_present) and bool(tpm_ready),
                               f"present={bool(tpm_present)}, ready={bool(tpm_ready)}"))
 
     usb = euc.get("UsbStorageStart")
-    results.append(_check("win-usb-storage", "USB mass storage is restricted", "system",
+    results.append(_check("win-usb-storage", "USB mass storage is restricted", "euc",
                           SEV_LOW, usb == 4,
                           f"USBSTOR start = {usb}" if usb is not None else "USBSTOR service not found"))
 
@@ -490,13 +490,13 @@ def check_ai_skills():
     dirs = _find_ai_skills()
     if not dirs:
         return _check("win-ai-skills", "Installed AI-agent skills carry no unreviewed risk",
-                      "system", SEV_MED, True, "no AI-agent skills found")
+                      "ai_skills", SEV_MED, True, "no AI-agent skills found")
 
     total = sum(len(skills) for _, _, skills in dirs)
     scanner = shutil.which("skillspector") or shutil.which("skillspector.exe")
     if not scanner:
         return _error("win-ai-skills", "Installed AI-agent skills carry no unreviewed risk",
-                      "system", SEV_MED,
+                      "ai_skills", SEV_MED,
                       f"{total} skill(s) found but skillspector is not installed to assess them")
 
     order = {"SAFE": 0, "CAUTION": 1, "DO_NOT_INSTALL": 2}
@@ -526,7 +526,7 @@ def check_ai_skills():
     detail = f"{scanned} of {total} skill(s) scanned"
     detail += f", flagged: {', '.join(flagged)}" if flagged else ", none flagged"
     return _check("win-ai-skills", "Installed AI-agent skills carry no unreviewed risk",
-                  "system", sev, worst == "SAFE", detail)
+                  "ai_skills", sev, worst == "SAFE", detail)
 
 
 # ---------------------------------------------------------------- packages

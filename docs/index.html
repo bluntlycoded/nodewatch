@@ -519,6 +519,7 @@ let state = {
   proxmoxClusters:[], proxmoxGuests:[], proxmoxStorage:[], proxmoxBackups:[],
   desktopAdmins:[],
   supplyChain:[], supplyChainFindings:[],
+  eucChecks:[], skillChecks:[],
   hostDetail:{ checks:[], packages:[], vulns:[], users:[], ports:[], fim:[], history:[] },
 };
 
@@ -700,6 +701,8 @@ const NAV = [
   ]],
   ['Security', [
     ['posture',        'Posture',         {}],
+    ['euc',            'EUC Posture',     {}],
+    ['skillcheck',     'AI Skill Risk',   {}],
     ['vulns',          'Vulnerabilities', {}],
     ['supplychain',    'Supply Chain',    {}],
     ['activity?files', 'File Integrity',  {}],
@@ -2971,6 +2974,110 @@ function pagePosture(){
   }).join('')}</div>`;
 }
 
+// ═══════════════════════════ page: EUC posture
+// Unlike Posture (failures only, fleet-wide), this reads every status so a
+// clean fleet isn't indistinguishable from one that hasn't reported yet.
+const EUC_CHECK_LABELS = {
+  'screen-lock':'Screen Lock', 'edr':'EDR / AV', 'remote-access':'Remote Access',
+  'secureboot':'Secure Boot', 'tpm':'TPM', 'usb-storage':'USB Storage',
+};
+const eucCheckType = id => String(id||'').replace(/^(sys|mac|win)-/, '');
+
+function pageEUC(){
+  const rows = state.eucChecks;
+  if(!rows.length) return card(empty('No end-user-computing posture data yet — checks run automatically as agents report in.'));
+
+  const types = Object.keys(EUC_CHECK_LABELS).filter(t => rows.some(r=>eucCheckType(r.check_id)===t));
+  const byHost = {};
+  rows.forEach(r => (byHost[r.agent_id] ||= {})[eucCheckType(r.check_id)] = r);
+  const hostIds = Object.keys(byHost).sort((a,b)=>nameOf(a).localeCompare(nameOf(b)));
+  const failing = rows.filter(r=>r.status==='fail').length;
+
+  return `
+  <div class="space-y-4">
+    <div class="bg-paper border border-rule px-4 sm:px-5 py-3 flex flex-wrap items-center gap-x-6 gap-y-3">
+      <div class="flex items-baseline gap-1.5">
+        <span class="text-lg font-semibold tabular-nums">${hostIds.length}</span>
+        <span class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">desktops checked</span>
+      </div>
+      <div class="flex items-baseline gap-1.5">
+        <span class="text-lg font-semibold tabular-nums" style="color:${failing?HEX.down:'var(--c-ink)'}">${failing}</span>
+        <span class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">failing checks</span>
+      </div>
+      <span class="flex-1"></span>
+      <span class="font-mono text-[10px] text-muted hidden lg:inline">
+        Screen lock, third-party EDR/AV presence, remote-access tooling, and — on Windows —
+        Secure Boot, TPM and USB storage policy. Runs on every host regardless of how it's classified.
+      </span>
+    </div>
+    ${card(`<div class="overflow-x-auto"><table class="w-full text-sm">
+      <thead><tr class="border-b border-hairline">
+        <th class="text-left font-mono text-[9px] uppercase tracking-[.12em] text-muted px-4 py-2">Host</th>
+        ${types.map(t=>`<th class="text-center font-mono text-[9px] uppercase tracking-[.12em] text-muted px-3 py-2">${esc(EUC_CHECK_LABELS[t])}</th>`).join('')}
+      </tr></thead>
+      <tbody class="divide-y divide-hairline">
+        ${hostIds.map(id=>{
+          const cells = byHost[id];
+          return `<tr class="rise">
+            <td class="px-4 py-2.5 truncate max-w-[12rem]">${esc(nameOf(id))}</td>
+            ${types.map(t=>{
+              const c = cells[t];
+              if(!c) return `<td class="text-center px-3 py-2.5 font-mono text-[10px] text-muted">—</td>`;
+              const ok = c.status==='pass';
+              return `<td class="text-center px-3 py-2.5" title="${esc(c.detail||'')}">
+                <span class="font-mono text-[9px] uppercase tracking-[.1em] px-1.5 py-0.5 ${ok?'text-healthy':'text-down'}"
+                      style="border:1px solid ${ok?HEX.healthy:HEX.down}">${ok?'ok':'fail'}</span>
+              </td>`;
+            }).join('')}
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table></div>`)}
+  </div>`;
+}
+
+// ═══════════════════════════ page: AI skill risk
+function pageSkillCheck(){
+  const rows = state.skillChecks;
+  if(!rows.length) return `<div class="space-y-4">
+    ${card(empty('No AI-agent skill risk data yet — checks run automatically as agents report in.'))}
+    <div class="bg-paper border border-rule px-5 py-4">
+      <p class="text-sm text-muted leading-relaxed">Scans installed AI-agent skills — Claude Code skills and
+        similar — for risk, via <a href="https://github.com/NVIDIA/skillspector" target="_blank" rel="noopener"
+        class="text-signal hover:underline">NVIDIA's SkillSpector</a>, when it happens to be present on the
+        host. A host with no skills installed reports a clean pass rather than staying silent.</p>
+    </div>
+  </div>`;
+
+  const flagged = rows.filter(r=>r.status==='fail').length;
+
+  return `
+  <div class="space-y-4">
+    <div class="bg-paper border border-rule px-4 sm:px-5 py-3 flex flex-wrap items-center gap-x-6 gap-y-3">
+      <div class="flex items-baseline gap-1.5">
+        <span class="text-lg font-semibold tabular-nums">${rows.length}</span>
+        <span class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">hosts checked</span>
+      </div>
+      <div class="flex items-baseline gap-1.5">
+        <span class="text-lg font-semibold tabular-nums" style="color:${flagged?HEX.down:'var(--c-ink)'}">${flagged}</span>
+        <span class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">flagged</span>
+      </div>
+      <span class="flex-1"></span>
+      <span class="font-mono text-[10px] text-muted hidden lg:inline">
+        Powered by NVIDIA's SkillSpector — runs only when present on the host.
+      </span>
+    </div>
+    ${card(`<div class="divide-y divide-hairline">${rows.map(r=>{
+      const ok = r.status==='pass';
+      return `<div class="px-5 py-2.5 rise flex items-center gap-3">
+        <span class="font-mono text-[9px] uppercase tracking-[.1em] w-12 shrink-0 ${ok?'text-healthy':'text-down'}">${ok?'ok':'fail'}</span>
+        <span class="text-sm truncate flex-1">${esc(nameOf(r.agent_id))}</span>
+        <span class="font-mono text-[11px] text-muted truncate max-w-[24rem]">${esc(r.detail||'')}</span>
+      </div>`;
+    }).join('')}</div>`)}
+  </div>`;
+}
+
 // ═══════════════════════════ page: settings
 const CHANNEL_KINDS = {
   telegram: { label:'Telegram', fields:[['bot_token','Bot token','123456:ABC-DEF...'],
@@ -3148,6 +3255,8 @@ const TITLES = {
   alerts:['Alerts','What fired, and whether it was delivered'],
   activity:['Activity','Port, account and sign-in events'],
   posture:['Posture','Failing configuration checks by node'],
+  euc:['EUC Posture','Screen lock, EDR, remote access, Secure Boot, TPM and USB policy by desktop'],
+  skillcheck:['AI Skill Risk','Installed AI-agent skills, scanned via NVIDIA SkillSpector'],
   vulns:['Vulnerabilities','Known CVEs across installed packages'],
   settings:['Settings','Global recipients and alert rules'],
 };
@@ -3193,6 +3302,8 @@ function render(){
     state.page==='alerts'   ? pageAlerts()   :
     state.page==='activity' ? pageActivity() :
     state.page==='posture'  ? pagePosture()  :
+    state.page==='euc'      ? pageEUC()      :
+    state.page==='skillcheck'? pageSkillCheck() :
     state.page==='host'     ? pageHost()     :
     state.page==='vulns'    ? pageVulns()    :
     state.page==='users'    ? pageUsers()    : pageSettings();
@@ -4035,6 +4146,17 @@ const PAGE_QUERIES = {
     screpos:    sb.from('supply_chain_overview').select('*').order('name'),
     scfindings: sb.from('supply_chain_findings').select('*').order('last_seen',{ascending:false}),
   }),
+  // Every status, not just failures - the core `checks` query filters to
+  // status='fail' for the fleet-wide Posture page, which would make a
+  // clean host indistinguishable from one that has never reported.
+  euc: () => ({
+    eucChecks: sb.from('host_checks').select('agent_id,check_id,title,severity,status,detail')
+                 .eq('category','euc').limit(2000),
+  }),
+  skillcheck: () => ({
+    skillChecks: sb.from('host_checks').select('agent_id,check_id,title,severity,status,detail')
+                   .eq('category','ai_skills').limit(500),
+  }),
 };
 
 // The alert channel list is also shown on Settings; Alerts needs nothing extra.
@@ -4051,6 +4173,7 @@ const ASSIGN = {
   pxstorage:'proxmoxStorage', pxbackups:'proxmoxBackups',
   desktopAdmins:'desktopAdmins',
   screpos:'supplyChain', scfindings:'supplyChainFindings',
+  eucChecks:'eucChecks', skillChecks:'skillChecks',
 };
 
 let polling = false;
