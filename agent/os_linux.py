@@ -262,7 +262,7 @@ def check_screen_lock():
             break
 
     if not user:
-        return [_error("sys-screen-lock", "Screen lock is enabled", "system", SEV_MED,
+        return [_error("sys-screen-lock", "Screen lock is enabled", "euc", SEV_MED,
                        "no active graphical session found")]
 
     uid = _run(["id", "-u", user]).strip()
@@ -272,9 +272,9 @@ def check_screen_lock():
     ]).strip().lower()
 
     if out not in ("true", "false"):
-        return [_error("sys-screen-lock", "Screen lock is enabled", "system", SEV_MED,
+        return [_error("sys-screen-lock", "Screen lock is enabled", "euc", SEV_MED,
                        f"could not read a GNOME screensaver setting for {user}")]
-    return [_check("sys-screen-lock", "Screen lock is enabled", "system", SEV_MED,
+    return [_check("sys-screen-lock", "Screen lock is enabled", "euc", SEV_MED,
                    out == "true", f"lock-enabled = {out} (user {user}, GNOME)")]
 
 
@@ -294,7 +294,7 @@ EDR_PROCESSES = {
 def check_edr():
     procs = _run(["ps", "-eo", "comm"], timeout=8)
     found = sorted({label for needle, label in EDR_PROCESSES.items() if needle in procs})
-    return [_check("sys-edr", "A recognised security agent is running", "system",
+    return [_check("sys-edr", "A recognised security agent is running", "euc",
                    SEV_MED, bool(found),
                    ", ".join(found) if found else "none of the known agents were found")]
 
@@ -314,7 +314,7 @@ REMOTE_ACCESS_PROCESSES = {
 def check_remote_access():
     procs = _run(["ps", "-eo", "comm"], timeout=8)
     found = sorted({label for needle, label in REMOTE_ACCESS_PROCESSES.items() if needle in procs})
-    return [_check("sys-remote-access", "No remote-access software is running", "system",
+    return [_check("sys-remote-access", "No remote-access software is running", "euc",
                    SEV_LOW, not found,
                    "none found" if not found else "running: " + ", ".join(found))]
 
@@ -372,13 +372,13 @@ def check_ai_skills():
     dirs = _find_ai_skills()
     if not dirs:
         return [_check("sys-ai-skills", "Installed AI-agent skills carry no unreviewed risk",
-                       "system", SEV_MED, True, "no AI-agent skills found")]
+                       "ai_skills", SEV_MED, True, "no AI-agent skills found")]
 
     total = sum(len(skills) for _, _, skills in dirs)
     scanner = shutil.which("skillspector")
     if not scanner:
         return [_error("sys-ai-skills", "Installed AI-agent skills carry no unreviewed risk",
-                       "system", SEV_MED,
+                       "ai_skills", SEV_MED,
                        f"{total} skill(s) found but skillspector is not installed to assess them")]
 
     order = {"SAFE": 0, "CAUTION": 1, "DO_NOT_INSTALL": 2}
@@ -406,7 +406,7 @@ def check_ai_skills():
     detail = f"{scanned} of {total} skill(s) scanned"
     detail += f", flagged: {', '.join(flagged)}" if flagged else ", none flagged"
     return [_check("sys-ai-skills", "Installed AI-agent skills carry no unreviewed risk",
-                   "system", sev, worst == "SAFE", detail)]
+                   "ai_skills", sev, worst == "SAFE", detail)]
 
 
 # ---------------------------------------------------------------- entry point
