@@ -26,6 +26,7 @@ import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
+import jwt
 import psycopg
 from psycopg.rows import dict_row
 
@@ -33,6 +34,12 @@ DATABASE_URL = os.environ["NW_DATABASE_URL"]
 WORKERS = int(os.environ.get("NW_PROBE_WORKERS", "16"))
 TICK_S = 5                    # how often to look for checks that are due
 USER_AGENT = "nodewatch-probe/1.0"
+
+# Same App as api/github_app.py's /oauth/github/* routes - both live on
+# nw-api and read the same private key file. Only used when a supply_chain
+# check's config carries installation_id instead of a personal access token.
+GITHUB_APP_ID = os.environ.get("NW_GITHUB_APP_ID", "")
+GITHUB_APP_PRIVATE_KEY_PATH = os.environ.get("NW_GITHUB_APP_PRIVATE_KEY_PATH", "")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("nodewatch-probe")
@@ -1159,13 +1166,42 @@ def _supply_chain_verdict(summary: dict) -> tuple[int, str, str]:
     return score, severity, recommendation
 
 
+def _github_installation_token(installation_id: int) -> str:
+    """
+    Mints a fresh 1-hour installation access token directly against
+    GitHub's API using the App's own private key - the same App
+    api/github_app.py's /oauth/github/* routes use to record which
+    installations exist, but the token itself is never persisted anywhere;
+    a scan mints its own right before cloning, not worth building a
+    refresh path for something that expires on its own regardless.
+    """
+    if not GITHUB_APP_ID or not GITHUB_APP_PRIVATE_KEY_PATH:
+        raise RuntimeError("GitHub App is not configured on this probe host")
+    with open(GITHUB_APP_PRIVATE_KEY_PATH) as f:
+        private_key = f.read()
+    now = int(time.time())
+    app_jwt = jwt.encode({"iat": now - 60, "exp": now + 9 * 60, "iss": GITHUB_APP_ID},
+                          private_key, algorithm="RS256")
+
+    req = urllib.request.Request(
+        f"https://api.github.com/app/installations/{installation_id}/access_tokens",
+        headers={"Authorization": f"Bearer {app_jwt}",
+                 "Accept": "application/vnd.github+json",
+                 "X-GitHub-Api-Version": "2022-11-28"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.loads(r.read())["token"]
+
+
 def check_supply_chain(p) -> tuple[bool, int | None, str]:
     """
     Clones the target repository shallow into a scratch directory, scans
     it with fgctl, and reports the worst finding. Credentials, if
-    configured, are a PAT inserted into the clone URL - the same
-    username/password fields probe_secrets already has, reused rather
-    than adding new ones, the same way Proxmox's API token is.
+    configured, are either a GitHub App installation (preferred - a fresh
+    1-hour token minted per scan, nothing long-lived to leak) or a PAT
+    inserted into the clone URL, the same username/password fields
+    probe_secrets already has for every other kind of check.
     """
     scanner = shutil.which("fgctl")
     if not scanner:
@@ -1175,7 +1211,15 @@ def check_supply_chain(p) -> tuple[bool, int | None, str]:
 
     cfg = p.get("config") or {}
     clone_url = p["target"]
-    if cfg.get("user") and cfg.get("password"):
+    if cfg.get("installation_id"):
+        try:
+            token = _github_installation_token(int(cfg["installation_id"]))
+        except Exception as e:
+            return False, None, f"could not mint a GitHub installation token: {e}"[:200]
+        scheme, sep, rest = clone_url.partition("://")
+        if sep:
+            clone_url = f"{scheme}://x-access-token:{token}@{rest}"
+    elif cfg.get("user") and cfg.get("password"):
         scheme, sep, rest = clone_url.partition("://")
         if sep:
             clone_url = f"{scheme}://{cfg['user']}:{cfg['password']}@{rest}"
