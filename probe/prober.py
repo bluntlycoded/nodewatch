@@ -17,10 +17,12 @@ import os
 import re
 import shutil
 import socket
+import ssl
 import subprocess
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
@@ -91,7 +93,64 @@ def check_port(p: dict) -> tuple[bool, int | None, str]:
     return True, int((time.monotonic() - t0) * 1000), "connected"
 
 
+def _check_tls_cert(url: str) -> dict | None:
+    """
+    Certificate expiry and chain validity for an https:// target. Runs
+    inside check_url() rather than as its own probe kind - it's a property
+    of the same connection an https url check already makes, not a
+    separate thing to schedule and poll.
+    """
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != "https" or not parsed.hostname:
+        return None
+    host, port = parsed.hostname, parsed.port or 443
+
+    def read_cert(ctx):
+        with socket.create_connection((host, port), timeout=8) as sock:
+            with ctx.wrap_socket(sock, server_hostname=host) as tls:
+                return tls.getpeercert()
+
+    chain_valid, chain_error, cert = True, None, None
+    try:
+        cert = read_cert(ssl.create_default_context())
+    except ssl.SSLCertVerificationError as e:
+        # The chain itself failed - still worth reconnecting without
+        # validation just to read the certificate's own dates. An admin
+        # needs to know it's broken AND how long until it's also expired.
+        chain_valid, chain_error = False, str(e).split("(_ssl.c:")[0].strip()[:300]
+        try:
+            cert = read_cert(ssl._create_unverified_context())
+        except Exception as e2:
+            return {"subject": None, "issuer": None, "not_after": None,
+                    "days_remaining": None, "chain_valid": False,
+                    "chain_error": f"{chain_error} (and could not read cert: {e2})"[:400]}
+    except Exception as e:
+        return {"subject": None, "issuer": None, "not_after": None,
+                "days_remaining": None, "chain_valid": False,
+                "chain_error": str(e)[:300]}
+
+    if not cert:
+        return None
+    not_after = datetime.fromtimestamp(ssl.cert_time_to_seconds(cert["notAfter"]), tz=timezone.utc)
+    not_before = datetime.fromtimestamp(ssl.cert_time_to_seconds(cert["notBefore"]), tz=timezone.utc)
+    subject = dict(x[0] for x in cert.get("subject", ())).get("commonName")
+    issuer = dict(x[0] for x in cert.get("issuer", ())).get("commonName")
+
+    return {
+        "subject": subject, "issuer": issuer,
+        "not_before": not_before.isoformat(), "not_after": not_after.isoformat(),
+        "days_remaining": (not_after - datetime.now(timezone.utc)).days,
+        "chain_valid": chain_valid, "chain_error": chain_error,
+    }
+
+
 def check_url(p: dict) -> tuple[bool, int | None, str]:
+    # Independent of the HTTP outcome below and run first: a broken chain
+    # makes urllib's own request fail closed before it ever gets a
+    # response, which is exactly the case worth still capturing cert
+    # detail for, not just "unreachable".
+    p["_tls_cert"] = _check_tls_cert(p["target"])
+
     req = urllib.request.Request(p["target"], headers={"User-Agent": USER_AGENT})
     t0 = time.monotonic()
     try:
@@ -1161,6 +1220,93 @@ def _supply_chain_verdict(summary: dict) -> tuple[int, str, str]:
 
 def check_supply_chain(p) -> tuple[bool, int | None, str]:
     """
+    Two target kinds share this probe kind and its tables: a git repo
+    (cloned and handed to fgctl) or a container image reference (handed
+    straight to grype - no clone, the registry is the artifact store).
+    cfg["target_kind"] picks which; "repo" is the default so every probe
+    created before this existed keeps behaving exactly as it did.
+    """
+    cfg = p.get("config") or {}
+    if cfg.get("target_kind") == "image":
+        return _check_supply_chain_image(p, cfg)
+    return _check_supply_chain_repo(p, cfg)
+
+
+def _check_supply_chain_image(p, cfg) -> tuple[bool, int | None, str]:
+    """
+    Scans a container image reference directly with grype - no clone, the
+    registry is the artifact store. Registry credentials, if configured,
+    go through grype's documented single-registry env vars; verify these
+    against the installed grype version before relying on a private
+    registry working; grype falls back to the probe host's own Docker
+    credential store (a prior `docker login`) when they're unset, which is
+    the simpler answer for anything already logged in there.
+    """
+    scanner = shutil.which("grype")
+    if not scanner:
+        return False, None, "grype is not installed on the probe host"
+
+    env = dict(os.environ)
+    if cfg.get("user") and cfg.get("password"):
+        env["GRYPE_REGISTRY_AUTH_USERNAME"] = cfg["user"]
+        env["GRYPE_REGISTRY_AUTH_PASSWORD"] = cfg["password"]
+
+    t0 = time.monotonic()
+    try:
+        scanned = subprocess.run(
+            [scanner, p["target"], "-o", "json"],
+            capture_output=True, text=True, timeout=SUPPLY_CHAIN_SCAN_TIMEOUT, env=env,
+        )
+    except subprocess.TimeoutExpired:
+        return False, None, f"grype scan timed out after {SUPPLY_CHAIN_SCAN_TIMEOUT}s"
+    ms = int((time.monotonic() - t0) * 1000)
+
+    try:
+        report = json.loads(scanned.stdout)
+    except json.JSONDecodeError:
+        detail = (scanned.stderr or "no output").strip().splitlines()
+        return False, ms, f"grype produced no parseable output: {detail[-1][:150] if detail else ''}"
+
+    # grype doesn't emit an aggregate severity count the way fgctl's
+    # Summary does; build the same shape _supply_chain_verdict already
+    # expects out of its per-match severities, so scoring is identical
+    # across both scan kinds.
+    sev_map = {"CRITICAL": "Critical", "HIGH": "High", "MEDIUM": "Medium", "LOW": "Low",
+               "NEGLIGIBLE": "Informational", "UNKNOWN": "Informational"}
+    summary = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0, "Informational": 0}
+    matches = report.get("matches") or []
+    for m in matches:
+        sev = ((m.get("vulnerability") or {}).get("severity") or "").upper()
+        summary[sev_map.get(sev, "Informational")] += 1
+    summary["Total"] = len(matches)
+
+    score, severity, recommendation = _supply_chain_verdict(summary)
+
+    findings = []
+    for m in matches:
+        vuln = m.get("vulnerability") or {}
+        artifact = m.get("artifact") or {}
+        findings.append({
+            "rule_id": vuln.get("id") or "unknown",
+            "category": artifact.get("type"),
+            "severity": (vuln.get("severity") or "").upper() or None,
+            "message": f"{artifact.get('name')}@{artifact.get('version')}: {vuln.get('id')}",
+            "location": artifact.get("name"),
+        })
+
+    p["_supply_chain"] = {
+        "scan": {
+            "risk_score": score, "severity": severity, "recommendation": recommendation,
+            "finding_count": summary["Total"], "scan_mode": "static", "target_kind": "image",
+            "extra": {"summary": summary},
+        },
+        "findings": findings,
+    }
+    return True, ms, f"score {score}/100 ({severity}), {summary['Total']} finding(s)"
+
+
+def _check_supply_chain_repo(p, cfg) -> tuple[bool, int | None, str]:
+    """
     Clones the target repository shallow into a scratch directory, scans
     it with fgctl, and reports the worst finding. Credentials, if
     configured, are a PAT inserted into the clone URL - the same
@@ -1173,7 +1319,6 @@ def check_supply_chain(p) -> tuple[bool, int | None, str]:
     if not shutil.which("git"):
         return False, None, "git is not installed on the probe host"
 
-    cfg = p.get("config") or {}
     clone_url = p["target"]
     if cfg.get("user") and cfg.get("password"):
         scheme, sep, rest = clone_url.partition("://")
@@ -1236,7 +1381,7 @@ def check_supply_chain(p) -> tuple[bool, int | None, str]:
     p["_supply_chain"] = {
         "scan": {
             "risk_score": score, "severity": severity, "recommendation": recommendation,
-            "finding_count": summary.get("Total", 0), "scan_mode": "static",
+            "finding_count": summary.get("Total", 0), "scan_mode": "static", "target_kind": "repo",
             "extra": {"summary": summary, "missing_tools": report.get("MissingTools") or []},
         },
         "findings": findings,
@@ -1253,10 +1398,10 @@ CHECKS = {"ping": check_ping, "port": check_port, "url": check_url,
 
 
 def run_one(p: dict) -> tuple[str, bool, int | None, str, dict | None, dict | None,
-                              dict | None, dict | None]:
+                              dict | None, dict | None, dict | None]:
     fn = CHECKS.get(p["kind"])
     if not fn:
-        return p["id"], False, None, f"unknown probe kind {p['kind']}", None, None, None, None
+        return p["id"], False, None, f"unknown probe kind {p['kind']}", None, None, None, None, None
     try:
         ok, ms, detail = fn(p)
     except Exception as e:
@@ -1265,9 +1410,10 @@ def run_one(p: dict) -> tuple[str, bool, int | None, str, dict | None, dict | No
         ok, ms, detail = False, None, f"probe error: {e}"[:200]
     # Database checks attach a measurement set; Proxmox attaches guests,
     # storage and backups too; supply-chain attaches a scan and its
-    # findings; the others attach nothing.
+    # findings; an https url check attaches its certificate's expiry and
+    # chain validity; the others attach nothing.
     return (p["id"], ok, ms, detail, p.get("_metrics"), p.get("_app_metrics"),
-            p.get("_proxmox"), p.get("_supply_chain"))
+            p.get("_proxmox"), p.get("_supply_chain"), p.get("_tls_cert"))
 
 
 # ---------------------------------------------------------------- net tools
@@ -1596,7 +1742,7 @@ def main():
                         """insert into probe_results (probe_id, ts, ok, latency_ms, detail)
                            values (%s, %s, %s, %s, %s)
                            on conflict (probe_id, ts) do nothing""",
-                        [(pid, ts, ok, ms, detail) for pid, ok, ms, detail, _, _, _, _ in results],
+                        [(pid, ts, ok, ms, detail) for pid, ok, ms, detail, _, _, _, _, _ in results],
                     )
 
                     # Database measurements go to their own table. One
@@ -1607,7 +1753,7 @@ def main():
                          m.get("slow_queries"), m.get("longest_query_s"),
                          m.get("replication_lag_s"), m.get("size_bytes"),
                          m.get("uptime_s"), m.get("qps"), json.dumps(m.get("extra") or {}))
-                        for pid, ok, _, _, m, _, _, _ in results if ok and m
+                        for pid, ok, _, _, m, _, _, _, _ in results if ok and m
                     ]
                     approws = [
                         (pid, ts, a.get("requests_total"), a.get("errors_total"),
@@ -1615,7 +1761,7 @@ def main():
                          a.get("avg_latency_s"), a.get("memory_bytes"),
                          a.get("cpu_seconds"), a.get("uptime_s"),
                          json.dumps(a.get("extra") or {}))
-                        for pid, ok, _, _, _, a, _, _ in results if ok and a
+                        for pid, ok, _, _, _, a, _, _, _ in results if ok and a
                     ]
                     if approws:
                         # app_metrics_key (024_iis.sql) is a coalesce()-based
@@ -1652,7 +1798,7 @@ def main():
                     # Proxmox attaches guests, storage and backups alongside
                     # the cluster-level metrics row - four writes instead of
                     # one, but still one round trip each for the whole cycle.
-                    pxrows = [(pid, px) for pid, ok, _, _, _, _, px, _ in results if ok and px]
+                    pxrows = [(pid, px) for pid, ok, _, _, _, _, px, _, _ in results if ok and px]
                     if pxrows:
                         conn.cursor().executemany(
                             """insert into proxmox_metrics (probe_id, ts, nodes_total,
@@ -1727,16 +1873,18 @@ def main():
                     # findings, upserted like host_checks - what's wrong
                     # right now, not a growing log of the same CVE
                     # reappearing on every scan.
-                    scrows = [(pid, sc) for pid, ok, _, _, _, _, _, sc in results if ok and sc]
+                    scrows = [(pid, sc) for pid, ok, _, _, _, _, _, sc, _ in results if ok and sc]
                     if scrows:
                         conn.cursor().executemany(
                             """insert into supply_chain_scans (probe_id, ts, risk_score,
-                                   severity, recommendation, finding_count, scan_mode, extra)
-                               values (%s,%s,%s,%s,%s,%s,%s,%s)
+                                   severity, recommendation, finding_count, scan_mode,
+                                   target_kind, extra)
+                               values (%s,%s,%s,%s,%s,%s,%s,%s,%s)
                                on conflict (probe_id, ts) do nothing""",
                             [(pid, ts, s["scan"]["risk_score"], s["scan"]["severity"],
                               s["scan"]["recommendation"], s["scan"]["finding_count"],
-                              s["scan"]["scan_mode"], json.dumps(s["scan"].get("extra") or {}))
+                              s["scan"]["scan_mode"], s["scan"].get("target_kind", "repo"),
+                              json.dumps(s["scan"].get("extra") or {}))
                              for pid, s in scrows])
 
                         finding_rows = [(pid, f["rule_id"], f["category"], f["severity"],
@@ -1761,11 +1909,28 @@ def main():
                                 "delete from supply_chain_findings where probe_id = %s and rule_id <> all(%s)",
                                 (pid, seen or ["-"]))
 
+                    # TLS certificate detail attaches to https url checks
+                    # independent of whether the check itself passed - a
+                    # broken chain is exactly the case worth still
+                    # recording, not just "unreachable".
+                    tlsrows = [(pid, tc) for pid, ok, _, _, _, _, _, _, tc in results if tc]
+                    if tlsrows:
+                        conn.cursor().executemany(
+                            """insert into tls_cert_scans (probe_id, ts, subject, issuer,
+                                   not_before, not_after, days_remaining, chain_valid,
+                                   chain_error)
+                               values (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                               on conflict (probe_id, ts) do nothing""",
+                            [(pid, ts, tc["subject"], tc["issuer"], tc["not_before"],
+                              tc["not_after"], tc["days_remaining"], tc["chain_valid"],
+                              tc["chain_error"])
+                             for pid, tc in tlsrows])
+
                     now = time.monotonic()
                     for p in batch:
                         _last_run[p["id"]] = now
 
-                    failed = sum(1 for _, ok, _, _, _, _, _, _ in results if not ok)
+                    failed = sum(1 for _, ok, _, _, _, _, _, _, _ in results if not ok)
                     log.info("checked %d, %d failing", len(results), failed)
 
                 drain_nettools(conn)

@@ -291,6 +291,13 @@ tailwind.config = { theme: { extend: {
                  class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
         </div>
       </div>
+      <div id="k-targetkindwrap" class="hidden">
+        <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Scan target</label>
+        <select id="k-targetkind" class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+          <option value="repo">Git repository (fgctl)</option>
+          <option value="image">Container image (grype)</option>
+        </select>
+      </div>
       <div id="k-credwrap" class="hidden space-y-3">
         <div class="grid sm:grid-cols-2 gap-3">
           <div>
@@ -519,7 +526,7 @@ let state = {
   proxmoxClusters:[], proxmoxGuests:[], proxmoxStorage:[], proxmoxBackups:[],
   desktopAdmins:[],
   supplyChain:[], supplyChainFindings:[],
-  eucChecks:[], skillChecks:[],
+  eucChecks:[], skillChecks:[], tlsCerts:[],
   hostDetail:{ checks:[], packages:[], vulns:[], users:[], ports:[], fim:[], history:[] },
 };
 
@@ -705,6 +712,7 @@ const NAV = [
     ['skillcheck',     'AI Skill Risk',   {}],
     ['vulns',          'Vulnerabilities', {}],
     ['supplychain',    'Supply Chain',    {}],
+    ['tlscerts',       'TLS Certificates', {}],
     ['activity?files', 'File Integrity',  {}],
     ['activity?users', 'Account Changes', {}],
     ['activity?auth',  'Sign-ins',        {}],
@@ -1137,7 +1145,7 @@ const CHECK_KINDS = {
   proxmox:  { label:'Proxmox VE', creds:true, token:true,
               hint:'Reads /cluster/resources and /cluster/tasks with an API token (Datacenter → Permissions → API Tokens). PVEAuditor is enough — this never writes.' },
   supply_chain: { label:'Supply Chain', url:true, creds:true, git:true,
-              hint:'Clones the repository and scans it with ForgeGuardian (fgctl must already be installed on the probe host). Target is a git clone URL; leave username/password blank for a public repo, or use a personal access token as the password for a private one.' },
+              hint:'Git repository: clones and scans with ForgeGuardian (fgctl must be on the probe host); leave username/password blank for a public repo, or use a personal access token as the password for a private one. Container image: scanned directly with grype (must be on the probe host), no clone — leave username/password blank for a public image.' },
 };
 
 function pageChecks(){
@@ -2317,6 +2325,7 @@ function pageSupplyChain(){
             <div class="flex items-center gap-2">
               <span class="w-2 h-2 rounded-full shrink-0" style="background:${down?HEX.down:HEX.healthy}"></span>
               <h3 class="font-semibold tracking-tight truncate">${esc(r.name)}</h3>
+              <span class="font-mono text-[9px] uppercase tracking-[.1em] px-1 shrink-0 text-muted" style="border:1px solid var(--c-rule)">${r.target_kind==='image'?'image':'repo'}</span>
               ${r.recommendation?`<span class="font-mono text-[9px] uppercase tracking-[.12em] px-1 shrink-0"
                     style="color:${sevColour[r.severity]||HEX.muted};border:1px solid ${sevColour[r.severity]||'var(--c-rule)'}">${esc(r.recommendation)}</span>`:''}
             </div>
@@ -2347,6 +2356,51 @@ function pageSupplyChain(){
           : `<p class="px-4 py-3 border-t border-hairline text-xs text-muted">no findings</p>`}`}
       </section>`;
     }).join('')}</div>
+  </div>`;
+}
+
+// ═══════════════════════════ page: TLS certificates
+function pageTLSCerts(){
+  const rows = state.tlsCerts;
+  if(!rows.length) return card(empty('No https:// checks are registered yet — add one from Checks to start watching certificate expiry.'));
+
+  const checked = rows.filter(r=>r.checked_at);
+  const invalid = checked.filter(r=>r.chain_valid===false).length;
+  const expiring = checked.filter(r=>r.chain_valid!==false && r.days_remaining!=null && r.days_remaining<=14).length;
+  const dayColour = d => d==null?HEX.muted : d<=3?HEX.down : d<=14?HEX.degraded : HEX.healthy;
+
+  return `
+  <div class="space-y-4">
+    <div class="bg-paper border border-rule px-4 sm:px-5 py-3 flex flex-wrap items-center gap-x-6 gap-y-3">
+      <div class="flex items-baseline gap-1.5">
+        <span class="text-lg font-semibold tabular-nums">${rows.length}</span>
+        <span class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">certificates</span>
+      </div>
+      <div class="flex items-baseline gap-1.5">
+        <span class="text-lg font-semibold tabular-nums" style="color:${invalid?HEX.down:'var(--c-ink)'}">${invalid}</span>
+        <span class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">chain invalid</span>
+      </div>
+      <div class="flex items-baseline gap-1.5">
+        <span class="text-lg font-semibold tabular-nums" style="color:${expiring?HEX.degraded:'var(--c-ink)'}">${expiring}</span>
+        <span class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">expiring ≤14d</span>
+      </div>
+    </div>
+    ${card(`<div class="divide-y divide-hairline">${rows.map(r=>{
+      const down = r.status!=='up';
+      return `<div class="px-5 py-3 rise">
+        <div class="flex items-center gap-3">
+          <span class="w-2 h-2 rounded-full shrink-0" style="background:${down?HEX.down:HEX.healthy}"></span>
+          <span class="text-sm truncate flex-1">${esc(r.name)}</span>
+          ${r.chain_valid===false?`<span class="font-mono text-[9px] uppercase tracking-[.12em] px-1 shrink-0 text-down" style="border:1px solid ${HEX.down}">chain invalid</span>`:''}
+          ${r.days_remaining!=null?`<span class="font-mono text-xs font-semibold tabular-nums shrink-0" style="color:${dayColour(r.days_remaining)}">${r.days_remaining}d</span>`:''}
+        </div>
+        <p class="font-mono text-[10px] text-muted mt-1 truncate pl-5">${esc(r.target||'')}</p>
+        ${r.checked_at?`<p class="font-mono text-[10px] text-muted mt-1 pl-5">
+          ${r.subject?`subject ${esc(r.subject)} · `:''}${r.issuer?`issuer ${esc(r.issuer)} · `:''}
+          ${r.chain_error?esc(r.chain_error):(r.not_after?`expires ${esc(r.not_after)}`:'')}</p>`
+          :`<p class="font-mono text-[10px] text-muted mt-1 pl-5">not checked yet</p>`}
+      </div>`;
+    }).join('')}</div>`)}
   </div>`;
 }
 
@@ -2983,6 +3037,26 @@ const EUC_CHECK_LABELS = {
 };
 const eucCheckType = id => String(id||'').replace(/^(sys|mac|win)-/, '');
 
+// Severity-weighted composite per host: not a claim of certified CIS
+// Benchmark compliance (these checks aren't mapped to numbered CIS
+// controls), just the same "weight by severity" idea CIS scoring uses,
+// applied to the checks nodewatch actually runs. Same honesty the trust
+// score in the README already applies to itself - a reasoned heuristic,
+// not a validated certification.
+const EUC_SEV_WEIGHT = { high:3, medium:2, low:1 };
+function eucComplianceScore(cells){
+  let got=0, max=0;
+  for(const t in cells){
+    const w = EUC_SEV_WEIGHT[cells[t].severity] || 1;
+    max += w;
+    if(cells[t].status==='pass') got += w;
+  }
+  return max ? Math.round(100*got/max) : null;
+}
+function scoreColour(s){
+  return s>=90?HEX.healthy:s>=70?HEX.degraded:HEX.down;
+}
+
 function pageEUC(){
   const rows = state.eucChecks;
   if(!rows.length) return card(empty('No end-user-computing posture data yet — checks run automatically as agents report in.'));
@@ -2992,6 +3066,8 @@ function pageEUC(){
   rows.forEach(r => (byHost[r.agent_id] ||= {})[eucCheckType(r.check_id)] = r);
   const hostIds = Object.keys(byHost).sort((a,b)=>nameOf(a).localeCompare(nameOf(b)));
   const failing = rows.filter(r=>r.status==='fail').length;
+  const scores = hostIds.map(id=>eucComplianceScore(byHost[id])).filter(s=>s!=null);
+  const fleetScore = scores.length ? Math.round(scores.reduce((a,b)=>a+b,0)/scores.length) : null;
 
   return `
   <div class="space-y-4">
@@ -3004,8 +3080,13 @@ function pageEUC(){
         <span class="text-lg font-semibold tabular-nums" style="color:${failing?HEX.down:'var(--c-ink)'}">${failing}</span>
         <span class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">failing checks</span>
       </div>
+      ${fleetScore!=null?`<div class="flex items-baseline gap-1.5">
+        <span class="text-lg font-semibold tabular-nums" style="color:${scoreColour(fleetScore)}">${fleetScore}</span>
+        <span class="font-mono text-[9px] tracking-[.16em] uppercase text-muted">avg compliance score</span>
+      </div>`:''}
       <span class="flex-1"></span>
-      <span class="font-mono text-[10px] text-muted hidden lg:inline">
+      <span class="font-mono text-[10px] text-muted hidden lg:inline"
+            title="Severity-weighted pass rate across a host's applicable checks - not a certified CIS Benchmark score.">
         Screen lock, third-party EDR/AV presence, remote-access tooling, and — on Windows —
         Secure Boot, TPM and USB storage policy. Runs on every host regardless of how it's classified.
       </span>
@@ -3013,13 +3094,18 @@ function pageEUC(){
     ${card(`<div class="overflow-x-auto"><table class="w-full text-sm">
       <thead><tr class="border-b border-hairline">
         <th class="text-left font-mono text-[9px] uppercase tracking-[.12em] text-muted px-4 py-2">Host</th>
+        <th class="text-center font-mono text-[9px] uppercase tracking-[.12em] text-muted px-3 py-2">Score</th>
         ${types.map(t=>`<th class="text-center font-mono text-[9px] uppercase tracking-[.12em] text-muted px-3 py-2">${esc(EUC_CHECK_LABELS[t])}</th>`).join('')}
       </tr></thead>
       <tbody class="divide-y divide-hairline">
         ${hostIds.map(id=>{
           const cells = byHost[id];
+          const score = eucComplianceScore(cells);
           return `<tr class="rise">
             <td class="px-4 py-2.5 truncate max-w-[12rem]">${esc(nameOf(id))}</td>
+            <td class="text-center px-3 py-2.5">
+              ${score!=null?`<span class="font-mono text-xs font-semibold tabular-nums" style="color:${scoreColour(score)}">${score}</span>`:'<span class="font-mono text-[10px] text-muted">—</span>'}
+            </td>
             ${types.map(t=>{
               const c = cells[t];
               if(!c) return `<td class="text-center px-3 py-2.5 font-mono text-[10px] text-muted">—</td>`;
@@ -3258,6 +3344,7 @@ const TITLES = {
   euc:['EUC Posture','Screen lock, EDR, remote access, Secure Boot, TPM and USB policy by desktop'],
   skillcheck:['AI Skill Risk','Installed AI-agent skills, scanned via NVIDIA SkillSpector'],
   vulns:['Vulnerabilities','Known CVEs across installed packages'],
+  tlscerts:['TLS Certificates','Expiry and chain validity for monitored https:// checks'],
   settings:['Settings','Global recipients and alert rules'],
 };
 
@@ -3296,6 +3383,7 @@ function render(){
     state.page==='databases'? pageDatabases():
     state.page==='proxmox'  ? pageProxmox()  :
     state.page==='supplychain' ? pageSupplyChain() :
+    state.page==='tlscerts' ? pageTLSCerts() :
     state.page==='desktops' ? pageDesktops() :
     state.page==='nettools' ? pageNetTools() :
     state.page==='report'   ? pageReport()   :
@@ -3681,7 +3769,7 @@ function openCheck(row){
   $('k-timeout').value  = String(row?.timeout_ms || 5000);
   $('k-enabled').checked = row ? !!row.enabled : true;
   $('k-user').value = ''; $('k-pass').value = ''; $('k-db').value = '';
-  $('k-ssl').value = 'prefer';
+  $('k-ssl').value = 'prefer'; $('k-targetkind').value = 'repo';
   $('k-msg').textContent = '';
   renderCheckKinds();
   // probe_secrets is admin-only under RLS, so this returns nothing for a
@@ -3701,19 +3789,24 @@ function renderCheckKinds(){
       ${checkKind===k?'border-ink bg-ground':'border-rule hover:border-ink'}">${v.label}</button>`).join('');
   $('k-kinds').querySelectorAll('[data-kkind]').forEach(b =>
     b.onclick=()=>{ checkKind=b.dataset.kkind; renderCheckKinds(); });
+  $('k-targetkind').onchange = renderCheckKinds;
 
   $('k-hint').textContent = CHECK_KINDS[checkKind].hint;
   // Port only applies to a port check; the URL assertions only to a URL check.
   const isDb  = !!CHECK_KINDS[checkKind].creds;
   const isUrl = checkKind === 'url' || !!CHECK_KINDS[checkKind].url;
+  const isSupplyChain = checkKind === 'supply_chain';
+  const scanImage = isSupplyChain && $('k-targetkind').value === 'image';
   $('k-portwrap').classList.toggle('hidden', checkKind !== 'port' && !(isDb && !isUrl));
   $('k-urlwrap').classList.toggle('hidden', checkKind !== 'url');
   $('k-credwrap').classList.toggle('hidden', !isDb);
-  $('k-targetlabel').textContent = isUrl ? 'URL' : 'Host or IP';
+  $('k-targetkindwrap').classList.toggle('hidden', !isSupplyChain);
+  $('k-targetlabel').textContent = scanImage ? 'Container image' : isUrl ? 'URL' : 'Host or IP';
   $('k-target').placeholder =
     checkKind === 'prometheus'   ? 'http://10.0.0.5:8000/metrics'
     : checkKind === 'nginx'      ? 'http://10.0.0.5/nginx_status'
-    : checkKind === 'supply_chain' ? 'https://github.com/org/repo.git'
+    : scanImage                  ? 'docker.io/library/nginx:1.27'
+    : isSupplyChain               ? 'https://github.com/org/repo.git'
     : checkKind === 'url'        ? 'https://example.com/health' : '10.0.0.1';
   if (isDb && !$('k-port').value) {
     $('k-port').value = { postgres:5432, mysql:3306, mssql:1433, oracle:1521, proxmox:8006 }[checkKind] || '';
@@ -3727,7 +3820,8 @@ function renderCheckKinds(){
     $('k-user').placeholder = isToken ? 'root@pam!nodewatch' : '';
   }
   if ($('k-passlabel')) $('k-passlabel').textContent = isToken ? 'API token secret' : 'Password';
-  if ($('k-dbwrap')) $('k-dbwrap').classList.toggle('hidden', isToken);
+  // A container image or git repo has no host/port/db to prompt for.
+  if ($('k-dbwrap')) $('k-dbwrap').classList.toggle('hidden', isToken || isSupplyChain);
   if ($('k-dblabel')) {
     // Oracle connects to a service, not a database name, and getting that
     // wrong is the usual reason a first connection fails.
@@ -3744,6 +3838,8 @@ async function loadCheckCreds(id){
   $('k-pass').value = c.password || '';
   $('k-db').value   = c.dbname || '';
   $('k-ssl').value  = c.sslmode || 'prefer';
+  $('k-targetkind').value = c.target_kind || 'repo';
+  renderCheckKinds();
 }
 
 $('k-save').onclick = async () => {
@@ -3802,6 +3898,7 @@ $('k-save').onclick = async () => {
         dbname: $('k-db').value.trim() || null,
         service_name: checkKind==='oracle' ? ($('k-db').value.trim() || null) : undefined,
         sslmode: $('k-ssl').value,
+        target_kind: checkKind==='supply_chain' ? $('k-targetkind').value : undefined,
       },
       updated_at: new Date().toISOString(),
     }, { onConflict: 'probe_id' }));
@@ -4146,6 +4243,9 @@ const PAGE_QUERIES = {
     screpos:    sb.from('supply_chain_overview').select('*').order('name'),
     scfindings: sb.from('supply_chain_findings').select('*').order('last_seen',{ascending:false}),
   }),
+  tlscerts: () => ({
+    tlscerts: sb.from('tls_cert_overview').select('*').order('name'),
+  }),
   // Every status, not just failures - the core `checks` query filters to
   // status='fail' for the fleet-wide Posture page, which would make a
   // clean host indistinguishable from one that has never reported.
@@ -4174,6 +4274,7 @@ const ASSIGN = {
   desktopAdmins:'desktopAdmins',
   screpos:'supplyChain', scfindings:'supplyChainFindings',
   eucChecks:'eucChecks', skillChecks:'skillChecks',
+  tlscerts:'tlsCerts',
 };
 
 let polling = false;
