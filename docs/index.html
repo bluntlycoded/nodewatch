@@ -502,6 +502,13 @@ const PAGES = [
 // on-premise or campus machine needs.
 const INGEST_HINT = 'https://life-travelling-marketing-norfolk.trycloudflare.com';
 
+// Set once, from the #/settings?slack=...  or ?teams=... redirect a
+// provider sends the browser back to after a Connect attempt; read and
+// cleared the next time pageSettings() renders, so each shows exactly once.
+let slackReturnMsg = null;
+let teamsReturnMsg = null;
+let teamsFetchedFor = null;
+
 let state = {
   page:'servers', tab:'ports', filter:'all', query:'', alertFilter:'all',
   host:null, hostTab:'checks',
@@ -519,6 +526,7 @@ let state = {
   proxmoxClusters:[], proxmoxGuests:[], proxmoxStorage:[], proxmoxBackups:[],
   desktopAdmins:[],
   supplyChain:[], supplyChainFindings:[],
+  teamsPending:null, teamsTeams:[], teamsChannels:[],
   eucChecks:[], skillChecks:[],
   hostDetail:{ checks:[], packages:[], vulns:[], users:[], ports:[], fim:[], history:[] },
 };
@@ -646,6 +654,21 @@ async function enter(){
     else if(page==='activity'){ state.page='activity'; state.tab=arg||'ports'; }
     else if(page==='report'){ state.page='report'; state.reportKind=arg||'availability'; }
     else if(page.startsWith('todo:')||PAGES.some(([k])=>k===page)) state.page=page;
+    if (arg) {
+      const qs = new URLSearchParams(arg);
+      if (qs.has('slack')) {
+        const s = qs.get('slack');
+        slackReturnMsg = s==='connected' ? 'Slack connected.'
+          : s==='cancelled' ? 'Slack connection was cancelled.' : 'Could not connect Slack.';
+      }
+      if (qs.has('teams')) {
+        const t = qs.get('teams');
+        if (t==='pick') state.teamsPending = qs.get('pending');
+        else teamsReturnMsg = t==='connected' ? 'Teams connected.'
+          : t==='cancelled' ? 'Teams connection was cancelled.' : 'Could not connect Teams.';
+      }
+      if (qs.has('slack') || qs.has('teams')) history.replaceState(null, '', location.pathname + '#/settings');
+    }
   }
   applyThemeLabel();
   refresh();
@@ -3095,6 +3118,10 @@ const CHANNEL_KINDS = {
 };
 
 function pageSettings(){
+  // Read-once: shown in this render, then cleared so it doesn't linger
+  // across every subsequent poll cycle on the page.
+  const slackMsg = slackReturnMsg; slackReturnMsg = null;
+  const teamsMsg = teamsReturnMsg; teamsReturnMsg = null;
   const global=state.recipients.filter(r=>!r.agent_id);
   const admin=isAdmin();
 
@@ -3122,11 +3149,32 @@ function pageSettings(){
       Settings are read-only, and channel credentials are not readable by your account.</p></div>`:''}
 
     ${card(sectionHead('Alert channels', admin
-      ? `<button id="s-newchan" class="font-mono text-[10px] uppercase tracking-[.12em] text-signal hover:underline">Add channel</button>` : '')
+      ? `<span class="flex gap-3">
+           <button id="s-connect-slack" class="font-mono text-[10px] uppercase tracking-[.12em] text-signal hover:underline">Connect Slack</button>
+           <button id="s-connect-teams" class="font-mono text-[10px] uppercase tracking-[.12em] text-signal hover:underline">Connect Teams</button>
+           <button id="s-newchan" class="font-mono text-[10px] uppercase tracking-[.12em] text-signal hover:underline">Add channel</button>
+         </span>` : '')
       + `<div class="divide-y divide-hairline">${chanRows}</div>
          <p class="px-4 py-3 font-mono text-[11px] text-muted border-t border-rule">
-           Telegram, Botim, Slack and plain webhooks. Credentials are stored server-side and
-           are never sent to a viewer's browser.</p>`)}
+           Telegram, Botim, Slack, Teams and plain webhooks. Credentials are stored server-side
+           and are never sent to a viewer's browser.</p>
+         ${slackMsg?`<p class="px-4 py-2 font-mono text-[11px] ${slackMsg.startsWith('Slack connected')?'text-healthy':'text-down'} border-t border-rule">${esc(slackMsg)}</p>`:''}
+         ${teamsMsg?`<p class="px-4 py-2 font-mono text-[11px] ${teamsMsg.startsWith('Teams connected')?'text-healthy':'text-down'} border-t border-rule">${esc(teamsMsg)}</p>`:''}`)}
+
+    ${admin && state.teamsPending ? card(sectionHead('Finish connecting Teams')
+      + `<div class="px-4 sm:px-5 py-4 space-y-3">
+        <p class="text-sm text-muted">Pick which team and channel alerts should post into.</p>
+        <div class="grid sm:grid-cols-2 gap-3">
+          <select id="tm-team" class="border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+            <option value="">Loading teams…</option>
+          </select>
+          <select id="tm-channel" class="border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none" disabled>
+            <option value="">Pick a team first</option>
+          </select>
+        </div>
+        <button id="tm-finish" class="bg-ink text-paper px-4 py-2 text-sm hover:bg-signal transition-colors" disabled>Connect</button>
+        <p id="tm-msg" class="text-sm text-down min-h-[1.25rem]"></p>
+      </div>`):''}
 
     ${card(sectionHead('Email recipients on every server')
       + `<div class="px-4 sm:px-5 py-4 space-y-3">
@@ -3499,6 +3547,87 @@ function bind(){
     if (error && $('s-msg')) $('s-msg').textContent =
       /admin/i.test(error.message) ? 'Only an admin can issue enrolment tokens.' : error.message;
     refresh();
+  };
+
+  const startOAuth = async (provider) => {
+    const { data: { session } } = await sb.auth.getSession();
+    const base = localStorage_get('nw-ingest-2') || INGEST_HINT;
+    try {
+      const res = await fetch(`${base}/oauth/${provider}/start`,
+        { headers: { 'Authorization': `Bearer ${session?.access_token}` } });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.detail || res.status);
+      location.href = json.url;
+    } catch(e) {
+      $('err').textContent = `Could not start ${provider}: ${e.message}`;
+    }
+  };
+  if ($('s-connect-slack')) $('s-connect-slack').onclick = () => startOAuth('slack');
+  if ($('s-connect-teams')) $('s-connect-teams').onclick = () => startOAuth('teams');
+
+  // Teams needs a second step after the OAuth redirect returns - pick a
+  // team, then a channel, before there's enough to finalize a channel.
+  if ($('tm-team') && state.teamsPending && teamsFetchedFor !== state.teamsPending) {
+    teamsFetchedFor = state.teamsPending;
+    (async () => {
+      const { data: { session } } = await sb.auth.getSession();
+      const base = localStorage_get('nw-ingest-2') || INGEST_HINT;
+      try {
+        const res = await fetch(`${base}/teams/list-teams?pending=${encodeURIComponent(state.teamsPending)}`,
+          { headers: { 'Authorization': `Bearer ${session?.access_token}` } });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.detail || res.status);
+        state.teamsTeams = json.data || [];
+        $('tm-team').innerHTML = '<option value="">Pick a team…</option>' +
+          state.teamsTeams.map(t=>`<option value="${t.id}">${esc(t.name)}</option>`).join('');
+      } catch(e) {
+        if ($('tm-msg')) $('tm-msg').textContent = 'Could not load teams: '+e.message;
+      }
+    })();
+  }
+  if ($('tm-team')) $('tm-team').onchange = async () => {
+    const teamId = $('tm-team').value;
+    $('tm-finish').disabled = true;
+    $('tm-channel').disabled = true;
+    $('tm-channel').innerHTML = '<option value="">'+(teamId?'Loading…':'Pick a team first')+'</option>';
+    if (!teamId) return;
+    const { data: { session } } = await sb.auth.getSession();
+    const base = localStorage_get('nw-ingest-2') || INGEST_HINT;
+    try {
+      const res = await fetch(`${base}/teams/list-channels?pending=${encodeURIComponent(state.teamsPending)}&team_id=${encodeURIComponent(teamId)}`,
+        { headers: { 'Authorization': `Bearer ${session?.access_token}` } });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.detail || res.status);
+      state.teamsChannels = json.data || [];
+      $('tm-channel').innerHTML = '<option value="">Pick a channel…</option>' +
+        state.teamsChannels.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');
+      $('tm-channel').disabled = false;
+    } catch(e) {
+      if ($('tm-msg')) $('tm-msg').textContent = 'Could not load channels: '+e.message;
+    }
+  };
+  if ($('tm-channel')) $('tm-channel').onchange = () => { $('tm-finish').disabled = !$('tm-channel').value; };
+  if ($('tm-finish')) $('tm-finish').onclick = async () => {
+    const teamId = $('tm-team').value, channelId = $('tm-channel').value;
+    const teamName = $('tm-team').selectedOptions[0]?.textContent || '';
+    const channelName = $('tm-channel').selectedOptions[0]?.textContent || '';
+    const { data: { session } } = await sb.auth.getSession();
+    const base = localStorage_get('nw-ingest-2') || INGEST_HINT;
+    try {
+      const res = await fetch(`${base}/teams/finalize`, {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json', 'Authorization': `Bearer ${session?.access_token}` },
+        body: JSON.stringify({ pending: state.teamsPending, team_id: teamId, team_name: teamName,
+                                channel_id: channelId, channel_name: channelName }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.detail || res.status);
+      state.teamsPending = null; teamsFetchedFor = null;
+      teamsReturnMsg = 'Teams connected.';
+      refresh();
+    } catch(e) {
+      if ($('tm-msg')) $('tm-msg').textContent = 'Could not finish connecting Teams: '+e.message;
+    }
   };
 
   document.querySelectorAll('[data-rule]').forEach(el =>
