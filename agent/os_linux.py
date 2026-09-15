@@ -409,12 +409,77 @@ def check_ai_skills():
                    "ai_skills", sev, worst == "SAFE", detail)]
 
 
+# ---------------------------------------------------------------- reclaimable space
+#
+# Read-only, like every check here: this reports what's using space, it
+# never deletes anything - deletion belongs to a human with a cleanup
+# tool, not an unattended monitoring agent. Deliberately bounded to
+# well-known cache/build-artifact locations rather than a filesystem-wide
+# crawl for arbitrary project directories, which would be slow and
+# unpredictable on a large host.
+
+RECLAIMABLE_SYSTEM_PATHS = {
+    "APT cache":    ["/var/cache/apt/archives"],
+    "Snap cache":   ["/var/lib/snapd/cache"],
+    "Journal logs": ["/var/log/journal"],
+    "Docker":       ["/var/lib/docker"],
+}
+RECLAIMABLE_USER_PATHS = {
+    "Browser cache":    [".cache/google-chrome", ".cache/chromium", ".mozilla/firefox"],
+    "npm cache":        [".npm/_cacache"],
+    "pip cache":        [".cache/pip"],
+    "cargo registry":   [".cargo/registry"],
+    "Maven repository": [".m2/repository"],
+    "Gradle cache":     [".gradle/caches"],
+    "General cache":    [".cache"],
+}
+RECLAIMABLE_DU_TIMEOUT = 5
+RECLAIMABLE_FAIL_BYTES = 10 * 1024 ** 3   # a nudge past this size, not a security finding
+
+
+def _du_bytes(path):
+    """
+    Directory size via du, bounded by a short timeout - an unresponsive or
+    huge mount must not stall the whole check cycle over one path.
+    """
+    out = _run(["du", "-sk", path], timeout=RECLAIMABLE_DU_TIMEOUT)
+    try:
+        return int(out.split()[0]) * 1024
+    except (IndexError, ValueError):
+        return 0
+
+
+def _fmt_bytes(n):
+    return f"{n / 1024**3:.1f} GB" if n >= 1024**3 else f"{n / 1024**2:.0f} MB"
+
+
+def check_reclaimable_space():
+    totals = {}
+    for label, paths in RECLAIMABLE_SYSTEM_PATHS.items():
+        for p in paths:
+            if os.path.isdir(p):
+                totals[label] = totals.get(label, 0) + _du_bytes(p)
+    for home in _real_user_homes():
+        for label, rels in RECLAIMABLE_USER_PATHS.items():
+            for rel in rels:
+                p = os.path.join(home, rel)
+                if os.path.isdir(p):
+                    totals[label] = totals.get(label, 0) + _du_bytes(p)
+
+    total = sum(totals.values())
+    top = sorted(totals.items(), key=lambda kv: -kv[1])[:6]
+    detail = ", ".join(f"{label} {_fmt_bytes(size)}" for label, size in top if size) or "nothing found"
+    return [_check("sys-reclaimable-space", "Reclaimable cache and build space is small",
+                   "euc", SEV_LOW, total < RECLAIMABLE_FAIL_BYTES, detail)]
+
+
 # ---------------------------------------------------------------- entry point
 
 COLLECTORS = [
     check_sshd, check_permissions, check_world_writable, check_sysctl,
     check_accounts, check_firewall, check_auto_updates, check_pending_updates,
     check_screen_lock, check_edr, check_remote_access, check_ai_skills,
+    check_reclaimable_space,
 ]
 
 
