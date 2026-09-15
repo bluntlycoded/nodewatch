@@ -55,6 +55,15 @@ log = logging.getLogger("nodewatch-api")
 app = FastAPI(title="nodewatch ingest", version="0.1.0")
 pool = ConnectionPool(DATABASE_URL, min_size=1, max_size=8, open=True)
 
+# GitHub App installation flow (/oauth/github/*) - connects private repos
+# to Supply Chain checks without a hand-entered personal access token.
+# Only active once NW_GITHUB_APP_ID/NW_GITHUB_APP_SLUG/
+# NW_GITHUB_APP_PRIVATE_KEY_PATH/NW_SUPABASE_JWT_SECRET are set; unset,
+# the two routes 500 with a clear "not configured" rather than the rest of
+# the API failing to start.
+import github_app as _github_app  # noqa: E402
+_github_app.install(app, pool)
+
 
 # ---------------------------------------------------------------- models
 

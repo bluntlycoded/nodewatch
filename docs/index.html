@@ -294,8 +294,14 @@ tailwind.config = { theme: { extend: {
       <div id="k-targetkindwrap" class="hidden">
         <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Scan target</label>
         <select id="k-targetkind" class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
-          <option value="repo">Git repository (fgctl)</option>
-          <option value="image">Container image (grype)</option>
+          <option value="repo">Git repository</option>
+          <option value="image">Container image</option>
+        </select>
+      </div>
+      <div id="k-ghinstallwrap" class="hidden">
+        <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Git access</label>
+        <select id="k-ghinstall" class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+          <option value="">Manual credentials below</option>
         </select>
       </div>
       <div id="k-credwrap" class="hidden space-y-3">
@@ -509,6 +515,11 @@ const PAGES = [
 // on-premise or campus machine needs.
 const INGEST_HINT = 'https://life-travelling-marketing-norfolk.trycloudflare.com';
 
+// Set once, from the #/settings?github=... redirect GitHub sends the
+// browser back to after a Connect GitHub attempt; read and cleared the
+// next time pageSettings() renders, so it shows exactly once.
+let githubReturnMsg = null;
+
 let state = {
   page:'servers', tab:'ports', filter:'all', query:'', alertFilter:'all',
   host:null, hostTab:'checks',
@@ -525,7 +536,7 @@ let state = {
   probes:[], matrix:[], availability:[], mttr:[], latency:[],
   proxmoxClusters:[], proxmoxGuests:[], proxmoxStorage:[], proxmoxBackups:[],
   desktopAdmins:[],
-  supplyChain:[], supplyChainFindings:[],
+  supplyChain:[], supplyChainFindings:[], githubInstallations:[],
   eucChecks:[], skillChecks:[], tlsCerts:[],
   hostDetail:{ checks:[], packages:[], vulns:[], users:[], ports:[], fim:[], history:[] },
 };
@@ -653,6 +664,9 @@ async function enter(){
     else if(page==='activity'){ state.page='activity'; state.tab=arg||'ports'; }
     else if(page==='report'){ state.page='report'; state.reportKind=arg||'availability'; }
     else if(page.startsWith('todo:')||PAGES.some(([k])=>k===page)) state.page=page;
+    if (arg && arg.includes('github=connected')) githubReturnMsg = 'GitHub connected.';
+    else if (arg && arg.includes('github=cancelled')) githubReturnMsg = 'GitHub connection was cancelled.';
+    if (arg && arg.startsWith('github=')) history.replaceState(null, '', location.pathname + '#/settings');
   }
   applyThemeLabel();
   refresh();
@@ -1145,7 +1159,7 @@ const CHECK_KINDS = {
   proxmox:  { label:'Proxmox VE', creds:true, token:true,
               hint:'Reads /cluster/resources and /cluster/tasks with an API token (Datacenter → Permissions → API Tokens). PVEAuditor is enough — this never writes.' },
   supply_chain: { label:'Supply Chain', url:true, creds:true, git:true,
-              hint:'Git repository: clones and scans with ForgeGuardian (fgctl must be on the probe host); leave username/password blank for a public repo, or use a personal access token as the password for a private one. Container image: scanned directly with grype (must be on the probe host), no clone — leave username/password blank for a public image.' },
+              hint:'Git repository: clones and scans with the dependency scanner already installed on the probe host; leave username/password blank for a public repo, use a personal access token as the password for a private one, or pick a connected GitHub App installation (Settings → Git access) instead of either. Container image: scanned directly against the registry, no clone — leave username/password blank for a public image.' },
 };
 
 function pageChecks(){
@@ -2271,11 +2285,9 @@ function pageSupplyChain(){
       ${admin?`<div class="bg-paper border border-rule px-5 py-4 space-y-2">
         <p class="text-sm text-muted leading-relaxed">
           Add one from <span class="font-mono text-[12px]">Checks</span> — choose Supply Chain and
-          give it a git clone URL. Scanning is done by
-          <a href="https://github.com/Mah3Sec/ForgeGuardian" target="_blank" rel="noopener"
-             class="text-signal hover:underline">ForgeGuardian</a>, which must already be installed
-          on the probe host — nodewatch calls it, it does not bundle it. A public repository needs
-          no credentials; a private one takes a personal access token as the password field.</p>
+          give it a git clone URL. The scanner must already be installed on the probe host —
+          nodewatch calls it, it does not bundle one. A public repository needs no credentials;
+          a private one takes a personal access token as the password field.</p>
       </div>`:''}
     </div>`;
 
@@ -2309,7 +2321,7 @@ function pageSupplyChain(){
       </div>
       <span class="flex-1"></span>
       <span class="font-mono text-[10px] text-muted hidden lg:inline">
-        Scanned by ForgeGuardian on the probe host — score, severity and recommendation are
+        Scanned by the probe host's dependency scanner — score, severity and recommendation are
         derived here from its findings, the same scale used across the rest of the dashboard.
       </span>
     </div>
@@ -3129,9 +3141,9 @@ function pageSkillCheck(){
     ${card(empty('No AI-agent skill risk data yet — checks run automatically as agents report in.'))}
     <div class="bg-paper border border-rule px-5 py-4">
       <p class="text-sm text-muted leading-relaxed">Scans installed AI-agent skills — Claude Code skills and
-        similar — for risk, via <a href="https://github.com/NVIDIA/skillspector" target="_blank" rel="noopener"
-        class="text-signal hover:underline">NVIDIA's SkillSpector</a>, when it happens to be present on the
-        host. A host with no skills installed reports a clean pass rather than staying silent.</p>
+        similar — for risk, via the skill risk scanner already installed on the host, when it
+        happens to be present. A host with no skills installed reports a clean pass rather than
+        staying silent.</p>
     </div>
   </div>`;
 
@@ -3150,7 +3162,7 @@ function pageSkillCheck(){
       </div>
       <span class="flex-1"></span>
       <span class="font-mono text-[10px] text-muted hidden lg:inline">
-        Powered by NVIDIA's SkillSpector — runs only when present on the host.
+        Runs via a skill risk scanner installed on the host, only when present.
       </span>
     </div>
     ${card(`<div class="divide-y divide-hairline">${rows.map(r=>{
@@ -3181,6 +3193,10 @@ const CHANNEL_KINDS = {
 };
 
 function pageSettings(){
+  // Read-once: shown in this render, then cleared so it doesn't linger
+  // across every subsequent poll cycle on the page.
+  const githubMsg = githubReturnMsg;
+  githubReturnMsg = null;
   const global=state.recipients.filter(r=>!r.agent_id);
   const admin=isAdmin();
 
@@ -3259,6 +3275,22 @@ function pageSettings(){
           </div>`).join('')}</div>`:'<p class="text-sm text-muted">No tokens issued.</p>'}
       </div>`):''}
 
+    ${admin?card(sectionHead('Git access',
+      `<button id="s-github-connect" class="font-mono text-[10px] uppercase tracking-[.12em] text-signal hover:underline">Connect GitHub</button>`)
+      + `<div class="px-4 sm:px-5 py-4 space-y-3">
+        <p class="text-sm text-muted">Authorizes a Supply Chain check to clone a private repository
+          without a personal access token — a short-lived token is minted per scan instead of a
+          credential sitting in the database. Choosing which repositories during the GitHub prompt
+          also works, rather than granting the whole account.</p>
+        ${state.githubInstallations.length?`<div class="border border-rule divide-y divide-hairline">${state.githubInstallations.map(g=>`
+          <div class="flex items-center gap-3 px-3 py-2">
+            <span class="font-mono text-sm truncate flex-1">${esc(g.account_login)}</span>
+            <span class="font-mono text-[10px] uppercase tracking-[.1em] text-muted">${esc(g.account_type||'')}</span>
+            <span class="font-mono text-[10px] text-muted">${ago(g.installed_at)} ago</span>
+          </div>`).join('')}</div>`:'<p class="text-sm text-muted">Nothing connected yet.</p>'}
+        <p id="s-github-msg" class="text-sm ${githubMsg&&githubMsg.startsWith('GitHub connected')?'text-healthy':'text-down'} min-h-[1.25rem]">${esc(githubMsg||'')}</p>
+      </div>`):''}
+
     ${card(sectionHead('Schedule')
       + `<div class="px-4 sm:px-5 py-4 font-mono text-[12px] text-muted space-y-1">
         <p>Critical alerts are queued the moment the event lands and sent within a minute.</p>
@@ -3332,7 +3364,7 @@ const TITLES = {
   network:['Network','Interfaces reported by the agents'],
   databases:['Databases','PostgreSQL and MySQL health'],
   proxmox:['Proxmox','Cluster, guest and storage status from the Proxmox VE API'],
-  supplychain:['Supply Chain','Dependency risk across monitored repositories, via ForgeGuardian'],
+  supplychain:['Supply Chain','Dependency risk across monitored repositories'],
   desktops:['Desktops','End-user machines - laptops and workstations'],
   nettools:['Network Tools','Diagnostics run from the probe host'],
   report:['Report','Generated from collected telemetry'],
@@ -3342,7 +3374,7 @@ const TITLES = {
   activity:['Activity','Port, account and sign-in events'],
   posture:['Posture','Failing configuration checks by node'],
   euc:['EUC Posture','Screen lock, EDR, remote access, Secure Boot, TPM and USB policy by desktop'],
-  skillcheck:['AI Skill Risk','Installed AI-agent skills, scanned via NVIDIA SkillSpector'],
+  skillcheck:['AI Skill Risk','Installed AI-agent skills and their assessed risk'],
   vulns:['Vulnerabilities','Known CVEs across installed packages'],
   tlscerts:['TLS Certificates','Expiry and chain validity for monitored https:// checks'],
   settings:['Settings','Global recipients and alert rules'],
@@ -3589,6 +3621,22 @@ function bind(){
     refresh();
   };
 
+  if ($('s-github-connect')) $('s-github-connect').onclick=async()=>{
+    if ($('s-github-msg')) $('s-github-msg').textContent='';
+    const { data: { session } } = await sb.auth.getSession();
+    const base = localStorage_get('nw-ingest-2') || INGEST_HINT;
+    try {
+      const res = await fetch(`${base}/oauth/github/start`, {
+        headers: { 'Authorization': `Bearer ${session?.access_token}` },
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.detail || res.status);
+      location.href = json.url;
+    } catch(e) {
+      if ($('s-github-msg')) $('s-github-msg').textContent = 'Could not start the GitHub connection: '+e.message;
+    }
+  };
+
   document.querySelectorAll('[data-rule]').forEach(el =>
     el.onchange=async()=>{ await sb.from('alert_rules').update({enabled:el.checked}).eq('rule',el.dataset.rule); refresh(); });
 }
@@ -3769,7 +3817,7 @@ function openCheck(row){
   $('k-timeout').value  = String(row?.timeout_ms || 5000);
   $('k-enabled').checked = row ? !!row.enabled : true;
   $('k-user').value = ''; $('k-pass').value = ''; $('k-db').value = '';
-  $('k-ssl').value = 'prefer'; $('k-targetkind').value = 'repo';
+  $('k-ssl').value = 'prefer'; $('k-targetkind').value = 'repo'; $('k-ghinstall').value = '';
   $('k-msg').textContent = '';
   renderCheckKinds();
   // probe_secrets is admin-only under RLS, so this returns nothing for a
@@ -3791,15 +3839,25 @@ function renderCheckKinds(){
     b.onclick=()=>{ checkKind=b.dataset.kkind; renderCheckKinds(); });
   $('k-targetkind').onchange = renderCheckKinds;
 
+  $('k-ghinstall').onchange = renderCheckKinds;
+
   $('k-hint').textContent = CHECK_KINDS[checkKind].hint;
   // Port only applies to a port check; the URL assertions only to a URL check.
   const isDb  = !!CHECK_KINDS[checkKind].creds;
   const isUrl = checkKind === 'url' || !!CHECK_KINDS[checkKind].url;
   const isSupplyChain = checkKind === 'supply_chain';
   const scanImage = isSupplyChain && $('k-targetkind').value === 'image';
+  // Installation-based git access only makes sense for a repo target, not
+  // a container image - a GitHub App installation clones nothing.
+  if (isSupplyChain && !scanImage && state.githubInstallations.length && $('k-ghinstall').options.length <= 1) {
+    $('k-ghinstall').innerHTML = '<option value="">Manual credentials below</option>' +
+      state.githubInstallations.map(g=>`<option value="${g.installation_id}">${esc(g.account_login)}</option>`).join('');
+  }
+  $('k-ghinstallwrap').classList.toggle('hidden', !isSupplyChain || scanImage || !state.githubInstallations.length);
+  const usingInstall = isSupplyChain && !scanImage && !!$('k-ghinstall').value;
   $('k-portwrap').classList.toggle('hidden', checkKind !== 'port' && !(isDb && !isUrl));
   $('k-urlwrap').classList.toggle('hidden', checkKind !== 'url');
-  $('k-credwrap').classList.toggle('hidden', !isDb);
+  $('k-credwrap').classList.toggle('hidden', !isDb || usingInstall);
   $('k-targetkindwrap').classList.toggle('hidden', !isSupplyChain);
   $('k-targetlabel').textContent = scanImage ? 'Container image' : isUrl ? 'URL' : 'Host or IP';
   $('k-target').placeholder =
@@ -3839,6 +3897,7 @@ async function loadCheckCreds(id){
   $('k-db').value   = c.dbname || '';
   $('k-ssl').value  = c.sslmode || 'prefer';
   $('k-targetkind').value = c.target_kind || 'repo';
+  $('k-ghinstall').value = c.installation_id || '';
   renderCheckKinds();
 }
 
@@ -3899,6 +3958,8 @@ $('k-save').onclick = async () => {
         service_name: checkKind==='oracle' ? ($('k-db').value.trim() || null) : undefined,
         sslmode: $('k-ssl').value,
         target_kind: checkKind==='supply_chain' ? $('k-targetkind').value : undefined,
+        installation_id: checkKind==='supply_chain' && $('k-ghinstall').value
+          ? $('k-ghinstall').value : undefined,
       },
       updated_at: new Date().toISOString(),
     }, { onConflict: 'probe_id' }));
@@ -4204,6 +4265,7 @@ const PAGE_QUERIES = {
     chans:  sb.from('alert_channel_status').select('*').order('kind'),
     audit:  sb.from('audit_log').select('actor_email,action,target,created_at')
               .order('id',{ascending:false}).limit(40),
+    ghinstall: sb.from('github_installations').select('*').order('installed_at',{ascending:false}),
   }),
   databases:    () => ({ databases: sb.from('database_overview').select('*').order('name') }),
   network:      () => ({ ifaces: sb.from('network_overview').select('*').order('host') }),
@@ -4275,6 +4337,7 @@ const ASSIGN = {
   screpos:'supplyChain', scfindings:'supplyChainFindings',
   eucChecks:'eucChecks', skillChecks:'skillChecks',
   tlscerts:'tlsCerts',
+  ghinstall:'githubInstallations',
 };
 
 let polling = false;
