@@ -1181,7 +1181,7 @@ const CHECK_KINDS = {
   proxmox:  { label:'Proxmox VE', creds:true, token:true,
               hint:'Reads /cluster/resources and /cluster/tasks with an API token (Datacenter → Permissions → API Tokens). PVEAuditor is enough — this never writes.' },
   supply_chain: { label:'Supply Chain', url:true, creds:true, git:true,
-              hint:'Git repository: clones and scans with the dependency scanner already installed on the probe host; leave username/password blank for a public repo, use a personal access token as the password for a private one, or pick a connected GitHub App installation (Settings → Git access) instead of either. Container image: scanned directly against the registry, no clone — leave username/password blank for a public image.' },
+              hint:'Git repository: clones and scans with the dependency scanner already installed on the probe host, plus a code-quality scanner if that’s also installed (dead code, secrets, quality regressions, AI-generated-code mistakes — folded into the same score); leave username/password blank for a public repo, use a personal access token as the password for a private one, or pick a connected GitHub App installation (Settings → Git access) instead of either. Container image: scanned directly against the registry, no clone — leave username/password blank for a public image.' },
 };
 
 function pageChecks(){
@@ -3068,6 +3068,7 @@ function pagePosture(){
 const EUC_CHECK_LABELS = {
   'screen-lock':'Screen Lock', 'edr':'EDR / AV', 'remote-access':'Remote Access',
   'secureboot':'Secure Boot', 'tpm':'TPM', 'usb-storage':'USB Storage',
+  'reclaimable-space':'Reclaimable Space',
 };
 const eucCheckType = id => String(id||'').replace(/^(sys|mac|win)-/, '');
 
@@ -3121,8 +3122,9 @@ function pageEUC(){
       <span class="flex-1"></span>
       <span class="font-mono text-[10px] text-muted hidden lg:inline"
             title="Severity-weighted pass rate across a host's applicable checks - not a certified CIS Benchmark score.">
-        Screen lock, third-party EDR/AV presence, remote-access tooling, and — on Windows —
-        Secure Boot, TPM and USB storage policy. Runs on every host regardless of how it's classified.
+        Screen lock, third-party EDR/AV presence, remote-access tooling, reclaimable cache and
+        build-artifact space, and — on Windows — Secure Boot, TPM and USB storage policy. Runs
+        on every host regardless of how it's classified.
       </span>
     </div>
     ${card(`<div class="overflow-x-auto"><table class="w-full text-sm">

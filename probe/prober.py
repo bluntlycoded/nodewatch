@@ -1340,6 +1340,62 @@ def _check_supply_chain_image(p, cfg) -> tuple[bool, int | None, str]:
     return True, ms, f"score {score}/100 ({severity}), {summary['Total']} finding(s)"
 
 
+def _run_skylos(tmp: str) -> tuple[list[dict], dict]:
+    """
+    Optional second engine on the same cloned tree fgctl already scanned -
+    dead code, secrets, quality regressions, and AI-generated-code
+    mistakes, none of which fgctl's dependency-CVE focus covers. Skipped
+    silently when not installed; a repo check that predates this engine
+    keeps behaving exactly as it did with fgctl alone. Verified against a
+    real `skylos . -a --json` run rather than assumed from its docs, same
+    as every other scanner integration here.
+    """
+    scanner = shutil.which("skylos")
+    if not scanner:
+        return [], {}
+    try:
+        scanned = subprocess.run(
+            [scanner, tmp, "-a", "--json", "--no-upload"],
+            capture_output=True, text=True, timeout=SUPPLY_CHAIN_SCAN_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return [], {}
+    try:
+        report = json.loads(scanned.stdout)
+    except json.JSONDecodeError:
+        return [], {}
+
+    # skylos's severities (CRITICAL/HIGH/MEDIUM/LOW/WARN) fold onto the
+    # same Critical/High/Medium/Low/Informational buckets fgctl's Summary
+    # uses, so _supply_chain_verdict scores both engines' findings on one
+    # scale rather than needing a second, incompatible verdict function.
+    sev_map = {"CRITICAL": "Critical", "HIGH": "High", "MEDIUM": "Medium",
+               "LOW": "Low", "WARN": "Informational"}
+    summary = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0, "Informational": 0}
+    findings = []
+
+    def add(items, default_category):
+        for item in items:
+            sev = (item.get("severity") or "").upper()
+            summary[sev_map.get(sev, "Informational")] += 1
+            loc = item.get("file") or ""
+            if loc.startswith(tmp):
+                loc = loc[len(tmp):].lstrip("/\\")
+            if item.get("line"):
+                loc += f":{item['line']}"
+            findings.append({
+                "rule_id": item.get("rule_id") or "unknown",
+                "category": item.get("kind") or default_category,
+                "severity": sev or None,
+                "message": item.get("message"),
+                "location": loc,
+            })
+
+    add(report.get("danger") or [], "security")
+    add(report.get("quality") or [], "quality")
+    return findings, summary
+
+
 def _check_supply_chain_repo(p, cfg) -> tuple[bool, int | None, str]:
     """
     Clones the target repository shallow into a scratch directory, scans
@@ -1404,9 +1460,11 @@ def _check_supply_chain_repo(p, cfg) -> tuple[bool, int | None, str]:
             if fp and fp.startswith(tmp):
                 r["Entry"]["FilePath"] = fp[len(tmp):].lstrip("/\\")
 
-    summary = report.get("Summary") or {}
-    score, severity, recommendation = _supply_chain_verdict(summary)
+        # Second engine on the same clone, before tmp is deleted - see
+        # _run_skylos for why its findings fold into fgctl's the way they do.
+        skylos_findings, skylos_summary = _run_skylos(tmp)
 
+    summary = report.get("Summary") or {}
     findings = []
     for r in report.get("Results") or []:
         entry = r.get("Entry") or {}
@@ -1422,15 +1480,21 @@ def _check_supply_chain_repo(p, cfg) -> tuple[bool, int | None, str]:
                 "location": f"{entry.get('Name', '?')} ({location})" if location else entry.get("Name"),
             })
 
+    merged_summary = {k: (summary.get(k) or 0) + (skylos_summary.get(k) or 0)
+                       for k in ("Critical", "High", "Medium", "Low", "Informational")}
+    merged_summary["Total"] = summary.get("Total", 0) + len(skylos_findings)
+    findings.extend(skylos_findings)
+    score, severity, recommendation = _supply_chain_verdict(merged_summary)
+
     p["_supply_chain"] = {
         "scan": {
             "risk_score": score, "severity": severity, "recommendation": recommendation,
-            "finding_count": summary.get("Total", 0), "scan_mode": "static", "target_kind": "repo",
-            "extra": {"summary": summary, "missing_tools": report.get("MissingTools") or []},
+            "finding_count": merged_summary["Total"], "scan_mode": "static", "target_kind": "repo",
+            "extra": {"summary": merged_summary, "missing_tools": report.get("MissingTools") or []},
         },
         "findings": findings,
     }
-    return True, ms, f"score {score}/100 ({severity}), {summary.get('Total', 0)} finding(s)"
+    return True, ms, f"score {score}/100 ({severity}), {merged_summary['Total']} finding(s)"
 
 
 CHECKS = {"ping": check_ping, "port": check_port, "url": check_url,

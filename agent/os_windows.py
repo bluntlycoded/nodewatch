@@ -444,6 +444,7 @@ def collect_checks():
                           f"USBSTOR start = {usb}" if usb is not None else "USBSTOR service not found"))
 
     results.append(check_ai_skills())
+    results.append(check_reclaimable_space())
 
     return results
 
@@ -527,6 +528,66 @@ def check_ai_skills():
     detail += f", flagged: {', '.join(flagged)}" if flagged else ", none flagged"
     return _check("win-ai-skills", "Installed AI-agent skills carry no unreviewed risk",
                   "ai_skills", sev, worst == "SAFE", detail)
+
+
+# ---------------------------------------------------------------- reclaimable space
+#
+# Read-only, like every check here: this reports what's using space, it
+# never deletes anything - deletion belongs to a human with a cleanup
+# tool, not an unattended monitoring agent. One PowerShell invocation
+# measures every known cache location across every real user profile,
+# since each separate powershell.exe call has real startup overhead.
+
+RECLAIMABLE_QUERY = r"""
+$ErrorActionPreference='SilentlyContinue'
+$labels = @{
+  'Browser cache'    = @('AppData\Local\Google\Chrome\User Data\*\Cache',
+                          'AppData\Local\Microsoft\Edge\User Data\*\Cache',
+                          'AppData\Local\Mozilla\Firefox\Profiles\*\cache2')
+  'npm cache'        = @('AppData\Roaming\npm-cache')
+  'pip cache'        = @('AppData\Local\pip\Cache')
+  'NuGet cache'      = @('.nuget\packages')
+  'Maven repository' = @('.m2\repository')
+  'Gradle cache'     = @('.gradle\caches')
+}
+$users = Get-ChildItem 'C:\Users' -Directory |
+  Where-Object { $_.Name -notin @('Public','Default','Default User','All Users') }
+$totals = @{}
+foreach ($label in $labels.Keys) { $totals[$label] = 0 }
+foreach ($u in $users) {
+  foreach ($label in $labels.Keys) {
+    foreach ($rel in $labels[$label]) {
+      Get-Item (Join-Path $u.FullName $rel) | ForEach-Object {
+        $size = (Get-ChildItem $_ -Recurse -File | Measure-Object -Property Length -Sum).Sum
+        if ($size) { $totals[$label] += $size }
+      }
+    }
+  }
+}
+if (Test-Path 'C:\Windows\Temp') {
+  $totals['Windows Temp'] = (Get-ChildItem 'C:\Windows\Temp' -Recurse -File |
+    Measure-Object -Property Length -Sum).Sum
+}
+$totals.GetEnumerator() | ForEach-Object { [PSCustomObject]@{Label=$_.Key; Bytes=[int64]$_.Value} } |
+  ConvertTo-Json
+"""
+
+RECLAIMABLE_FAIL_BYTES = 10 * 1024 ** 3   # a nudge past this size, not a security finding
+
+
+def _fmt_bytes(n):
+    return f"{n / 1024**3:.1f} GB" if n >= 1024**3 else f"{n / 1024**2:.0f} MB"
+
+
+def check_reclaimable_space():
+    rows = ps(RECLAIMABLE_QUERY, timeout=90) or []
+    totals = {r["Label"]: int(r.get("Bytes") or 0) for r in rows if r.get("Label")}
+
+    total = sum(totals.values())
+    top = sorted(totals.items(), key=lambda kv: -kv[1])[:6]
+    detail = ", ".join(f"{label} {_fmt_bytes(size)}" for label, size in top if size) or "nothing found"
+    return _check("win-reclaimable-space", "Reclaimable cache and build space is small",
+                  "euc", SEV_LOW, total < RECLAIMABLE_FAIL_BYTES, detail)
 
 
 # ---------------------------------------------------------------- packages

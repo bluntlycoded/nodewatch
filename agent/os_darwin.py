@@ -280,6 +280,7 @@ def collect_checks():
     results.append(check_edr())
     results.append(check_remote_access())
     results.append(check_ai_skills())
+    results.append(check_reclaimable_space())
 
     return results
 
@@ -433,6 +434,65 @@ def check_ai_skills():
     detail += f", flagged: {', '.join(flagged)}" if flagged else ", none flagged"
     return _check("mac-ai-skills", "Installed AI-agent skills carry no unreviewed risk",
                   "ai_skills", sev, worst == "SAFE", detail)
+
+
+# ---------------------------------------------------------------- reclaimable space
+#
+# Read-only, like every check here: this reports what's using space, it
+# never deletes anything - deletion belongs to a human with a cleanup
+# tool, not an unattended monitoring agent. ~/Library/Caches already
+# covers most app and browser caches on macOS, so this stays a short,
+# well-known list rather than a filesystem-wide crawl.
+
+RECLAIMABLE_USER_PATHS = {
+    "Application caches": ["Library/Caches"],
+    "npm cache":           [".npm/_cacache"],
+    "cargo registry":      [".cargo/registry"],
+    "Maven repository":    [".m2/repository"],
+    "Gradle cache":        [".gradle/caches"],
+    "Xcode derived data":  ["Library/Developer/Xcode/DerivedData"],
+}
+RECLAIMABLE_DU_TIMEOUT = 5
+RECLAIMABLE_FAIL_BYTES = 10 * 1024 ** 3   # a nudge past this size, not a security finding
+
+
+def _du_bytes(path):
+    """
+    Directory size via du, bounded by a short timeout - an unresponsive or
+    huge mount must not stall the whole check cycle over one path.
+    """
+    out = run(["du", "-sk", path], timeout=RECLAIMABLE_DU_TIMEOUT)
+    try:
+        return int(out.split()[0]) * 1024
+    except (IndexError, ValueError):
+        return 0
+
+
+def _fmt_bytes(n):
+    return f"{n / 1024**3:.1f} GB" if n >= 1024**3 else f"{n / 1024**2:.0f} MB"
+
+
+def check_reclaimable_space():
+    try:
+        homes = [f"/Users/{d}" for d in os.listdir("/Users")
+                 if d not in ("Shared", "Guest") and not d.startswith(".")
+                 and os.path.isdir(f"/Users/{d}")]
+    except OSError:
+        homes = []
+
+    totals = {}
+    for home in homes:
+        for label, rels in RECLAIMABLE_USER_PATHS.items():
+            for rel in rels:
+                p = os.path.join(home, rel)
+                if os.path.isdir(p):
+                    totals[label] = totals.get(label, 0) + _du_bytes(p)
+
+    total = sum(totals.values())
+    top = sorted(totals.items(), key=lambda kv: -kv[1])[:6]
+    detail = ", ".join(f"{label} {_fmt_bytes(size)}" for label, size in top if size) or "nothing found"
+    return _check("mac-reclaimable-space", "Reclaimable cache and build space is small",
+                  "euc", SEV_LOW, total < RECLAIMABLE_FAIL_BYTES, detail)
 
 
 # A browser dragged into /Applications rather than installed from a .pkg
