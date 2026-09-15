@@ -529,7 +529,7 @@ let state = {
   hosts:[], metrics:{}, series:{}, alerts:[], ports:[], auth:[],
   checks:[], recipients:[], rules:[], fim:[], tokens:[], history:[], vulns:[],
   role:'viewer', channels:[], userEvents:[], dashUsers:[], audit:[], me:null,
-  navOpen:null, checkKind:null, dbKind:null, databases:[],
+  navOpen:null, checkKind:null, dbKind:null, databases:[], settingsTab:null,
   netView:null, interfaces:[], appKind:null, applications:[],
   topoNodes:[], topoEdges:[],
   escalations:[], awaiting:[], services:[], serviceComponents:[],
@@ -666,6 +666,13 @@ async function enter(){
     else if(page==='applications'){ state.page='applications'; state.appKind=arg||null; }
     else if(page==='databases'){ state.page='databases'; state.dbKind=arg||null; }
     else if(page==='activity'){ state.page='activity'; state.tab=arg||'ports'; }
+    else if(page==='settings'){
+      state.page='settings';
+      // A bare tab name (#/settings?channels) sets the tab; an OAuth
+      // return (#/settings?github=connected) has an '=' and is handled
+      // by the arg-parsing block below instead, tab left at its default.
+      if (arg && !arg.includes('=')) state.settingsTab = arg;
+    }
     else if(page==='report'){ state.page='report'; state.reportKind=arg||'availability'; }
     else if(page.startsWith('todo:')||PAGES.some(([k])=>k===page)) state.page=page;
     if (arg) {
@@ -702,42 +709,37 @@ sb.auth.getSession().then(({data})=>{ if(data.session) enter(); });
 // Items marked todo are deliberate placeholders: the route exists and the
 // page explains what the feature would collect, rather than being a dead
 // link or a fake screen.
+// Every page key appears exactly once - no entry duplicated across two
+// group labels pointing at the same destination (servers, desktops,
+// network?links, posture and settings each used to appear twice, once
+// under a redundant "Dashboards" overview tier and again under the
+// group that actually owns it). Not-yet-built pages live in their own
+// group at the bottom instead of being interleaved with working ones.
 const NAV = [
-  ['Dashboards', [
-    ['servers',      'Server Overview',       {}],
-    ['checks',       'Synthetic Overview',    {}],
-    ['posture',      'Security Overview',     {}],
-    ['applications', 'Application Overview',  {}],
-    ['databases',    'Database Overview',    {}],
-    ['desktops',     'Desktop Overview',      {}],
-    ['network',      'Network Overview',      {}],
-    ['network?links','Link Overview',         {}],
-  ]],
   ['Monitoring', [
-    ['servers',        'Server Monitoring',   {}],
-    ['todo:idrac',     'iDRAC Monitoring',    {todo:'idrac'}],
-    ['todo:ilo',       'HP iLO Monitoring',   {todo:'ilo'}],
-    ['proxmox',        'Proxmox Monitoring',  {}],
-    ['todo:nutanix',   'Nutanix Monitoring',  {todo:'nutanix'}],
-    ['desktops',       'Desktop Monitoring',  {}],
-    ['todo:snmp',      'SNMP Monitoring',     {todo:'snmp'}],
-    ['network?links',  'Link Monitoring',     {}],
-    ['topology',      'Topology Map',    {}],
+    ['servers',        'Servers',           {}],
+    ['proxmox',        'Proxmox',           {}],
+    ['desktops',       'Desktops',          {}],
+    ['network',        'Network',           {}],
+    ['network?links',  'Link Monitoring',   {}],
+    ['topology',       'Topology Map',      {}],
   ]],
   ['Synthetic', [
-    ['checks?ping', 'Ping Monitoring', {}],
-    ['checks?port', 'Port Monitoring', {}],
-    ['checks?url',  'URL Monitoring',  {}],
+    ['checks',      'Synthetic Overview', {}],
+    ['checks?ping', 'Ping Monitoring',    {}],
+    ['checks?port', 'Port Monitoring',    {}],
+    ['checks?url',  'URL Monitoring',     {}],
   ]],
   ['Database', [
-    ['databases?postgres', 'PostgreSQL Monitoring', {}],
-    ['databases?mysql',    'MySQL Monitoring',      {}],
-    ['databases?mssql',    'SQL Server Monitoring', {}],
-    ['databases?oracle',   'Oracle DB Monitoring',  {}],
+    ['databases',           'Database Overview',     {}],
+    ['databases?postgres',  'PostgreSQL Monitoring', {}],
+    ['databases?mysql',     'MySQL Monitoring',      {}],
+    ['databases?mssql',     'SQL Server Monitoring', {}],
+    ['databases?oracle',    'Oracle DB Monitoring',  {}],
   ]],
   ['Application', [
-    ['applications',       'Applications',      {}],
-    ['applications?nginx', 'Nginx Monitoring',  {}],
+    ['applications',        'Application Overview', {}],
+    ['applications?nginx',  'Nginx Monitoring',  {}],
     ['applications?tomcat', 'Tomcat Monitoring', {}],
     ['applications?jboss',  'JBoss Monitoring',  {}],
     ['applications?iis',    'IIS Monitoring',    {}],
@@ -754,9 +756,9 @@ const NAV = [
     ['activity?auth',  'Sign-ins',        {}],
   ]],
   ['Alerting', [
-    ['alerts',   'Alerts',        {}],
-    ['settings', 'Channels',      {}],
-    ['escalation',      'Escalation Policies', {}],
+    ['alerts',             'Alerts',               {}],
+    ['settings?channels',  'Channels',             {}],
+    ['escalation',          'Escalation Policies', {}],
   ]],
   ['Reports', [
     ['report?availability', 'Availability Report',     {}],
@@ -770,6 +772,12 @@ const NAV = [
     ['nettools',      'Network Tools', {}],
     ['automation',     'Automation',   {}],
     ['services',      'Business Service Mapping', {}],
+  ]],
+  ['Not built yet', [
+    ['todo:idrac',   'iDRAC Monitoring',   {todo:'idrac'}],
+    ['todo:ilo',     'HP iLO Monitoring',  {todo:'ilo'}],
+    ['todo:nutanix', 'Nutanix Monitoring', {todo:'nutanix'}],
+    ['todo:snmp',    'SNMP Monitoring',    {todo:'snmp'}],
   ]],
 ];
 
@@ -848,10 +856,20 @@ const isAdmin = () => state.role === 'admin';
 function renderNav(){
   const b=badges();
   // Which group is open. Default to whichever contains the current page, so
-  // arriving by deep link does not present a collapsed tree.
+  // arriving by deep link does not present a collapsed tree. Settings is
+  // the one page reachable via two distinct routes in two different
+  // groups (Alerting's "Channels" shortcut into a specific tab, and
+  // Administration's general "Settings") - prefer an exact route match
+  // over a same-page-different-arg one, so the tab you're actually on
+  // opens the group that owns it rather than whichever group happens to
+  // come first in the array.
   if(!state.navOpen){
-    state.navOpen = NAV.find(([,items]) =>
-      items.some(([route]) => route.split('?')[0] === state.page))?.[0] || 'Dashboards';
+    const cur = currentRoute();
+    const exact = NAV.find(([,items]) => items.some(([route]) => route === cur));
+    const bare  = NAV.find(([,items]) => items.some(([route]) => route === state.page));
+    const anyMatch = NAV.find(([,items]) =>
+      items.some(([route]) => route.split('?')[0] === state.page));
+    state.navOpen = exact?.[0] || bare?.[0] || anyMatch?.[0] || 'Monitoring';
   }
 
   $('nav').innerHTML = NAV.map(([group, items])=>{
@@ -891,7 +909,7 @@ function renderNav(){
 }
 
 // Groups that carry a count of things needing attention.
-const GROUP_BADGE = { Dashboards:'servers', Monitoring:'servers',
+const GROUP_BADGE = { Monitoring:'servers',
                       Synthetic:'checks', Security:'posture', Alerting:'alerts' };
 
 // A route is "page" or "page?filter". The filter selects a tab or a probe
@@ -903,6 +921,7 @@ function currentRoute(){
   if(state.page==='databases' && state.dbKind) return 'databases?'+state.dbKind;
   if(state.page==='network' && state.netView) return 'network?'+state.netView;
   if(state.page==='applications' && state.appKind) return 'applications?'+state.appKind;
+  if(state.page==='settings' && state.settingsTab) return 'settings?'+state.settingsTab;
   return state.page;
 }
 
@@ -913,6 +932,7 @@ function goRoute(route){
   else if(page==='applications'){ state.appKind = arg || null; }
   else if(page==='databases'){ state.dbKind = arg || null; }
   else if(page==='activity'){ state.tab = arg || 'ports'; }
+  else if(page==='settings'){ state.settingsTab = arg || null; }
   else if(page==='report'){
     state.reportKind = arg || 'availability';
     state.reportRows = []; loadReport();
@@ -3216,6 +3236,12 @@ const CHANNEL_KINDS = {
               help:'Slack incoming webhook.' },
 };
 
+// Was 8 full-width cards stacked in one long scroll - same tab-strip
+// pattern pageActivity() already uses for its 4 sections, just applied
+// here too, so Settings doesn't need a scrollbar to find anything.
+const SETTINGS_TABS=[['channels','Channels'],['recipients','Recipients & Rules'],
+                      ['enrolment','Enrolment & Access'],['activity','Activity']];
+
 function pageSettings(){
   // Read-once: shown in this render, then cleared so it doesn't linger
   // across every subsequent poll cycle on the page.
@@ -3224,6 +3250,13 @@ function pageSettings(){
   const teamsMsg = teamsReturnMsg; teamsReturnMsg = null;
   const global=state.recipients.filter(r=>!r.agent_id);
   const admin=isAdmin();
+  const tab = state.settingsTab || 'channels';
+
+  const tabs=SETTINGS_TABS.map(([k,l])=>`
+    <button data-settingstab="${k}" role="tab" aria-selected="${tab===k}"
+      class="font-mono text-[11px] uppercase tracking-[.14em] px-4 py-2.5 border border-b-0 -mb-px
+      ${tab===k?'bg-paper border-rule text-ink':'border-transparent text-muted hover:text-ink'}">
+      ${l}</button>`).join('');
 
   const chanRows = state.channels.length ? state.channels.map(c=>`
     <div class="flex flex-wrap items-center gap-3 px-4 py-2.5">
@@ -3242,12 +3275,7 @@ function pageSettings(){
       ${c.last_error?`<p class="w-full font-mono text-[10px] text-down truncate">${esc(c.last_error)}</p>`:''}
     </div>`).join('') : '<p class="px-4 py-4 text-sm text-muted">No channels configured. Alerts go by email only.</p>';
 
-  return `
-  <div class="space-y-6 max-w-4xl">
-    ${!admin?`<div class="bg-paper border border-rule px-5 py-3">
-      <p class="text-sm text-muted">You have <span class="font-mono">viewer</span> access.
-      Settings are read-only, and channel credentials are not readable by your account.</p></div>`:''}
-
+  const channelsTab = `
     ${card(sectionHead('Alert channels', admin
       ? `<span class="flex gap-3">
            <button id="s-connect-slack" class="font-mono text-[10px] uppercase tracking-[.12em] text-signal hover:underline">Connect Slack</button>
@@ -3274,8 +3302,9 @@ function pageSettings(){
         </div>
         <button id="tm-finish" class="bg-ink text-paper px-4 py-2 text-sm hover:bg-signal transition-colors" disabled>Connect</button>
         <p id="tm-msg" class="text-sm text-down min-h-[1.25rem]"></p>
-      </div>`):''}
+      </div>`):''}`;
 
+  const recipientsTab = `
     ${card(sectionHead('Email recipients on every server')
       + `<div class="px-4 sm:px-5 py-4 space-y-3">
         <p class="text-sm text-muted">These addresses receive alerts for all servers, in addition to per-server recipients.</p>
@@ -3304,8 +3333,9 @@ function pageSettings(){
             ${r.severity==='critical'?'text-down':r.severity==='warning'?'text-degraded':'text-muted'}">${esc(r.severity)}</span>
           <span class="font-mono text-[11px] text-muted w-24 text-right shrink-0 hidden sm:inline">
             ${r.cooldown==='00:00:00'?'no cooldown':esc(r.cooldown)}</span>
-        </div>`).join('')}</div>`)}
+        </div>`).join('')}</div>`)}`;
 
+  const enrolmentTab = `
     ${admin?card(sectionHead('Enrolment tokens',
       `<button id="s-newtoken" class="font-mono text-[10px] uppercase tracking-[.12em] text-signal hover:underline">Issue token</button>`)
       + `<div class="px-4 sm:px-5 py-4 space-y-3">
@@ -3335,8 +3365,9 @@ function pageSettings(){
             <span class="font-mono text-[10px] text-muted">${ago(g.installed_at)} ago</span>
           </div>`).join('')}</div>`:'<p class="text-sm text-muted">Nothing connected yet.</p>'}
         <p id="s-github-msg" class="text-sm ${githubMsg&&githubMsg.startsWith('GitHub connected')?'text-healthy':'text-down'} min-h-[1.25rem]">${esc(githubMsg||'')}</p>
-      </div>`):''}
+      </div>`):''}`;
 
+  const activityTab = `
     ${card(sectionHead('Schedule')
       + `<div class="px-4 sm:px-5 py-4 font-mono text-[12px] text-muted space-y-1">
         <p>Critical alerts are queued the moment the event lands and sent within a minute.</p>
@@ -3351,7 +3382,19 @@ function pageSettings(){
           <span class="font-mono text-[11px] flex-1 truncate">${esc(a.action)}</span>
           <span class="font-mono text-[11px] text-muted truncate w-40 text-right hidden sm:inline">${esc(a.target||'')}</span>
           <span class="font-mono text-[10px] text-muted tabular-nums w-10 text-right shrink-0">${ago(a.created_at)}</span>
-        </div>`).join('')}</div>`:empty('No changes recorded.')))}
+        </div>`).join('')}</div>`:empty('No changes recorded.')))}`;
+
+  return `
+  <div class="space-y-5 max-w-4xl">
+    ${!admin?`<div class="bg-paper border border-rule px-5 py-3">
+      <p class="text-sm text-muted">You have <span class="font-mono">viewer</span> access.
+      Settings are read-only, and channel credentials are not readable by your account.</p></div>`:''}
+
+    <div class="flex items-center gap-1 border-b border-rule">${tabs}</div>
+    <div class="space-y-6">
+      ${tab==='channels'?channelsTab:tab==='recipients'?recipientsTab:
+        tab==='enrolment'?enrolmentTab:activityTab}
+    </div>
   </div>`;
 }
 
@@ -3500,6 +3543,9 @@ function bind(){
 
   document.querySelectorAll('[data-tab]').forEach(el =>
     el.onclick=()=>{ state.tab=el.dataset.tab; render(); });
+
+  document.querySelectorAll('[data-settingstab]').forEach(el =>
+    el.onclick=()=>{ state.settingsTab=el.dataset.settingstab; render(); });
 
   document.querySelectorAll('[data-alertchip]').forEach(el =>
     el.onclick=()=>{ state.alertFilter=el.dataset.alertchip; render(); });
