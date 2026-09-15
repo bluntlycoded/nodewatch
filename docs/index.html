@@ -47,11 +47,22 @@ tailwind.config = { theme: { extend: {
   .live::after { content:''; position:absolute; inset:0; border-radius:9999px;
                  box-shadow:0 0 0 0 currentColor; animation:ping 2.6s ease-out infinite }
   @keyframes ping { 70%,100%{box-shadow:0 0 0 6px transparent} }
+  /* Indeterminate, not a real percentage - refresh()/loadReport() don't
+     know how much work is left, only that something is in flight. */
+  #loadbar { position:absolute; left:0; right:0; bottom:-1px; height:2px;
+             overflow:hidden; opacity:0; transition:opacity .15s; pointer-events:none }
+  #loadbar.on { opacity:1 }
+  #loadbar span { position:absolute; top:0; left:-35%; width:35%; height:100%;
+                  background:var(--c-signal); animation:loadbar 1.1s ease-in-out infinite }
+  @keyframes loadbar { 0%{left:-35%} 55%{left:60%} 100%{left:100%} }
   :focus-visible { outline:2px solid #1F4BD8; outline-offset:2px }
   ::-webkit-scrollbar { width:10px;height:10px }
   ::-webkit-scrollbar-thumb { background:var(--c-rule) }
   ::-webkit-scrollbar-track { background:transparent }
-  @media (prefers-reduced-motion:reduce){ .rise,.live::after{animation:none!important} }
+  @media (prefers-reduced-motion:reduce){
+    .rise,.live::after,#loadbar span{animation:none!important}
+    #loadbar.on span{left:0;width:100%;opacity:.6}
+  }
   /* Print drops the chrome so a report prints as a document, not a screenshot
      of an application. */
   @media print {
@@ -132,6 +143,7 @@ tailwind.config = { theme: { extend: {
   <!-- page -->
   <main class="flex-1 min-w-0">
     <header class="sticky top-0 z-20 bg-ground/95 backdrop-blur border-b border-rule">
+      <div id="loadbar" role="progressbar" aria-label="Loading"><span></span></div>
       <div class="px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-3">
         <div class="flex items-center gap-3 min-w-0">
           <button id="railopen" class="lg:hidden font-mono text-lg leading-none px-1 -ml-1" aria-label="Open menu">☰</button>
@@ -2483,7 +2495,7 @@ const REPORTS = {
 async function loadReport(){
   const spec = REPORTS[state.reportKind];
   if(!spec) return;
-  state.reportLoading = true; render();
+  state.reportLoading = true; setLoading(true); render();
   try {
     const { data, error } = await sb.rpc(spec.rpc, { p_days: state.reportDays });
     if (error) throw error;
@@ -2496,7 +2508,7 @@ async function loadReport(){
     $('err').textContent = 'Could not generate the report: ' + (e.message || e);
     state.reportRows = [];
   }
-  state.reportLoading = false; render();
+  state.reportLoading = false; setLoading(false); render();
 }
 
 function pageReport(){
@@ -3436,7 +3448,8 @@ function pageUsers(){
 function openHost(id){
   state.host=id; state.page='host'; state.hostTab='checks';
   location.hash='#/host/'+id; closeRail();
-  loadHostDetail(id).then(render);
+  setLoading(true);
+  loadHostDetail(id).then(render).finally(()=>setLoading(false));
   render();
 }
 
@@ -4515,11 +4528,17 @@ const ASSIGN = {
 
 let polling = false;
 
+function setLoading(on){
+  const el = $('loadbar');
+  if (el) el.classList.toggle('on', on);
+}
+
 async function refresh(){
   // A slow cycle must not stack on the next one, which would multiply the
   // connection load rather than reduce it.
   if (polling) return;
   polling = true;
+  setLoading(true);
   try{
     const page = state.page === 'host' ? 'servers' : state.page;
     const queries = { ...coreQueries(), ...((PAGE_QUERIES[page] || (()=>({})))()) };
@@ -4562,6 +4581,7 @@ async function refresh(){
       : 'Could not load telemetry: '+(e.message||e);
   } finally {
     polling = false;
+    setLoading(false);
   }
 }
 
