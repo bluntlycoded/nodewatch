@@ -64,6 +64,16 @@ pool = ConnectionPool(DATABASE_URL, min_size=1, max_size=8, open=True)
 import github_app as _github_app  # noqa: E402
 _github_app.install(app, pool)
 
+# Slack/Teams OAuth for alert channels (/oauth/slack/*, /oauth/teams/*,
+# /teams/*) - connects a channel via a real install flow instead of
+# pasting a webhook URL by hand. Only active once each provider's env
+# vars are set; unset, those routes 500 with a clear "not configured"
+# rather than the rest of the API failing to start.
+import slack_app as _slack_app  # noqa: E402
+import teams_app as _teams_app  # noqa: E402
+_slack_app.install(app, pool)
+_teams_app.install(app, pool)
+
 
 # ---------------------------------------------------------------- models
 
