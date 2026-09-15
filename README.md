@@ -40,15 +40,19 @@ or a desktop from the dashboard, but every check still runs on every host
 regardless — a check that only ran sometimes could not be trusted to have
 run at all.
 
-**Anything else, via agentless probes** — ping, TCP port, HTTP/URL, PostgreSQL,
-MySQL, SQL Server, Oracle, Prometheus, nginx, Tomcat, JBoss/WildFly,
-Proxmox VE clusters (node status, VM/container inventory, storage pool
-capacity, backup outcomes), and supply-chain risk in a git repository (risk
-score, severity and current findings, via [ForgeGuardian](https://github.com/Mah3Sec/ForgeGuardian) —
-the probe host clones the repo and calls `fgctl`, the same way it calls
-Proxmox's API or a database's DMVs, rather than nodewatch reimplementing a
-dependency scanner). The probe runner polls on a schedule from a host with
-a route to the target, which is also how BMC and SNMP support will work.
+**Anything else, via agentless probes** — ping, TCP port, HTTP/URL (plus, for
+an `https://` target, certificate expiry and chain validity — the same
+connection the check already makes, not a separate thing to schedule),
+PostgreSQL, MySQL, SQL Server, Oracle, Prometheus, nginx, Tomcat,
+JBoss/WildFly, Proxmox VE clusters (node status, VM/container inventory,
+storage pool capacity, backup outcomes), and supply-chain risk — either a
+git repository (via [ForgeGuardian](https://github.com/Mah3Sec/ForgeGuardian),
+the probe host clones it and calls `fgctl`) or a container image (via
+`grype` directly against the registry, no clone) — score, severity and
+current findings either way, rather than nodewatch reimplementing a
+dependency or vulnerability scanner. The probe runner polls on a schedule
+from a host with a route to the target, which is also how BMC and SNMP
+support will work.
 
 **Enrolment covers** AWS, GCP, Azure and on-premise, each verified as strongly
 as the platform allows.
