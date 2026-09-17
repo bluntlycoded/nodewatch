@@ -94,7 +94,12 @@ tailwind.config = { theme: { extend: {
       <h1 class="text-2xl font-semibold tracking-tight mt-1">nodewatch</h1>
     </div>
     <div class="px-6 py-6 space-y-4">
-      <p class="text-sm text-muted leading-relaxed">Telemetry is protected by row-level security. Sign in to read it.</p>
+      <p id="gate-intro" class="text-sm text-muted leading-relaxed">Telemetry is protected by row-level security. Sign in to read it.</p>
+      <div id="gate-org-field" class="hidden">
+        <label for="org" class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Organization</label>
+        <input id="org" type="text" autocomplete="organization"
+               class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+      </div>
       <div>
         <label for="email" class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Email</label>
         <input id="email" type="email" autocomplete="username"
@@ -106,7 +111,37 @@ tailwind.config = { theme: { extend: {
                class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
       </div>
       <button id="signin" class="w-full bg-ink text-paper py-2.5 text-sm font-medium hover:bg-signal transition-colors">Sign in</button>
+      <button id="signup" class="hidden w-full bg-ink text-paper py-2.5 text-sm font-medium hover:bg-signal transition-colors">Create account</button>
       <p id="gate-msg" class="text-sm text-down min-h-[1.25rem]"></p>
+      <button id="gate-toggle" type="button"
+              class="w-full font-mono text-[11px] uppercase tracking-[.1em] text-muted hover:text-ink">
+        Need an account? Create one
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════ finish signup: pick an organization name ════════════════════ -->
+<div id="provision-gate" class="hidden min-h-screen flex items-center justify-center px-5">
+  <div class="w-full max-w-sm bg-paper border border-rule">
+    <div class="border-b border-rule px-6 py-5">
+      <p class="font-mono text-[10px] tracking-[.22em] text-muted uppercase">One more step</p>
+      <h1 class="text-2xl font-semibold tracking-tight mt-1">Name your organization</h1>
+    </div>
+    <div class="px-6 py-6 space-y-4">
+      <p class="text-sm text-muted leading-relaxed">Your account is confirmed. Every server, check and
+        alert you add lives under this organization, and nobody outside it can see it.</p>
+      <div>
+        <label for="provision-org" class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Organization</label>
+        <input id="provision-org" type="text" autocomplete="organization"
+               class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+      </div>
+      <button id="provision-submit" class="w-full bg-ink text-paper py-2.5 text-sm font-medium hover:bg-signal transition-colors">Continue</button>
+      <p id="provision-msg" class="text-sm text-down min-h-[1.25rem]"></p>
+      <button id="provision-signout" type="button"
+              class="w-full font-mono text-[11px] uppercase tracking-[.1em] text-muted hover:text-ink">
+        Sign out
+      </button>
     </div>
   </div>
 </div>
@@ -647,14 +682,71 @@ function trustBar(r) {
 }
 
 // ═══════════════════════════ auth
+
 $('signin').onclick = async () => {
+  $('gate-msg').className = 'text-sm text-down min-h-[1.25rem]';
   $('gate-msg').textContent='';
   const { error } = await sb.auth.signInWithPassword({ email:$('email').value.trim(), password:$('pw').value });
   if (error) { $('gate-msg').textContent = error.message; return; }
   enter();
 };
-$('pw').addEventListener('keydown', e => { if(e.key==='Enter') $('signin').click(); });
+$('pw').addEventListener('keydown', e => { if(e.key==='Enter') (gateMode==='signup'?$('signup'):$('signin')).click(); });
 $('signout').onclick = async () => { await sb.auth.signOut(); location.reload(); };
+
+let gateMode = 'signin';
+$('gate-toggle').onclick = () => {
+  gateMode = gateMode==='signin' ? 'signup' : 'signin';
+  $('gate-org-field').classList.toggle('hidden', gateMode!=='signup');
+  $('signin').classList.toggle('hidden', gateMode!=='signin');
+  $('signup').classList.toggle('hidden', gateMode!=='signup');
+  $('gate-intro').textContent = gateMode==='signup'
+    ? 'Create an account and an organization for your own fleet - nobody outside it can see it.'
+    : 'Telemetry is protected by row-level security. Sign in to read it.';
+  $('gate-toggle').textContent = gateMode==='signup' ? 'Already have an account? Sign in' : 'Need an account? Create one';
+  $('gate-msg').className = 'text-sm text-down min-h-[1.25rem]';
+  $('gate-msg').textContent = '';
+};
+
+$('signup').onclick = async () => {
+  const msg = $('gate-msg');
+  msg.className = 'text-sm text-down min-h-[1.25rem]'; msg.textContent = '';
+  const orgName = $('org').value.trim();
+  const email = $('email').value.trim();
+  const password = $('pw').value;
+  if (!orgName) { msg.textContent = 'Enter an organization name.'; return; }
+  if (!email || !password) { msg.textContent = 'Enter an email and password.'; return; }
+
+  const { data, error } = await sb.auth.signUp({ email, password });
+  if (error) { msg.textContent = error.message; return; }
+
+  if (!data.session) {
+    // This project requires confirming the email address before a session
+    // exists, so provision_tenant() (which needs auth.uid() to resolve)
+    // cannot run yet - it runs from enter()'s tenant check once they come
+    // back with a real session. The org name has to survive that round
+    // trip somehow, and localStorage is the only thing that will.
+    localStorage_set('nw-pending-org', orgName);
+    msg.className = 'text-sm text-healthy min-h-[1.25rem]';
+    msg.textContent = 'Check your email to confirm your account, then sign in.';
+    return;
+  }
+
+  const { error: provErr } = await sb.rpc('provision_tenant', { p_name: orgName });
+  if (provErr) { msg.textContent = provErr.message; return; }
+  enter();
+};
+
+$('provision-submit').onclick = async () => {
+  const msg = $('provision-msg');
+  const name = $('provision-org').value.trim();
+  if (!name) { msg.textContent = 'Enter an organization name.'; return; }
+  const { error } = await sb.rpc('provision_tenant', { p_name: name });
+  if (error) { msg.textContent = error.message; return; }
+  localStorage_remove('nw-pending-org');
+  $('provision-gate').classList.add('hidden');
+  enter();
+};
+$('provision-signout').onclick = async () => { await sb.auth.signOut(); location.reload(); };
 
 async function loadMe(){
   const { data:{ user } } = await sb.auth.getUser();
@@ -666,8 +758,21 @@ async function loadMe(){
 
 async function enter(){
   $('gate').classList.add('hidden');
-  $('app').classList.remove('hidden');
   await loadMe();
+
+  // A profile with no tenant yet is either mid-signup (email confirmation
+  // pending) or has just confirmed and never finished provisioning - the
+  // dashboard has nothing to show them until this resolves, so ask rather
+  // than rendering pages full of RLS-empty data.
+  const { data: tid } = await sb.rpc('current_tenant');
+  if (!tid) {
+    const pending = localStorage_get('nw-pending-org');
+    if (pending) $('provision-org').value = pending;
+    $('provision-gate').classList.remove('hidden');
+    return;
+  }
+  $('provision-gate').classList.add('hidden');
+  $('app').classList.remove('hidden');
   if (state.page==='users' && !isAdmin()) state.page='servers';
   const h=(location.hash||'').replace('#/','');
   if (h.startsWith('host/')) { state.page='host'; state.host=h.slice(5); }
@@ -3976,6 +4081,7 @@ function closeAdd(){ $('addmodal').classList.add('hidden'); $('addmodal').classL
 
 function localStorage_get(k){ try { return localStorage.getItem(k); } catch(e){ return null; } }
 function localStorage_set(k,v){ try { localStorage.setItem(k,v); } catch(e){} }
+function localStorage_remove(k){ try { localStorage.removeItem(k); } catch(e){} }
 
 function renderPlatforms(){
   $('a-platforms').innerHTML = PLATFORMS.map(([k,label])=>`
