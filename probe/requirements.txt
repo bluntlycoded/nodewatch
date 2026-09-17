@@ -1,6 +1,12 @@
 # Probe runner dependencies. All pure pip: no vendor client libraries,
 # no system packages beyond iputils-ping.
-psycopg[binary,pool]>=3.1   # PostgreSQL, and the runner's own connection
+#
+# 2.31 permitted several now-known-vulnerable releases (.netrc credential
+# leak via malicious URL, Session not re-verifying after a redirect,
+# insecure temp file reuse in extract_zipped_paths) - 2.33.0 is the floor
+# that excludes all of them, same version an agent already requires.
+requests>=2.33.0             # talks to the ingest API - the runner no longer holds NW_DATABASE_URL
+psycopg[binary,pool]>=3.1   # only for check_postgres() - monitoring a target's own database
 pymysql>=1.1.1               # MySQL and MariaDB - 1.1 permits a SQL injection CVE fixed in 1.1.1
 pymssql>=2.3                # SQL Server, prebuilt wheels
 oracledb>=2.0               # Oracle, thin mode needs no Instant Client

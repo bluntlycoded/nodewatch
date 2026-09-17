@@ -542,7 +542,7 @@ let state = {
   checks:[], recipients:[], rules:[], fim:[], tokens:[], history:[], vulns:[],
   role:'viewer', channels:[], userEvents:[], dashUsers:[], audit:[], me:null,
   navOpen:null, checkKind:null, dbKind:null, databases:[], settingsTab:null,
-  tenant:[],
+  tenant:[], masterNodes:[],
   netView:null, interfaces:[], appKind:null, applications:[],
   topoNodes:[], topoEdges:[],
   escalations:[], awaiting:[], services:[], serviceComponents:[],
@@ -3351,19 +3351,36 @@ function pageSettings(){
 
   const enrolmentTab = `
     ${admin?card(sectionHead('Enrolment tokens',
-      `<button id="s-newtoken" class="font-mono text-[10px] uppercase tracking-[.12em] text-signal hover:underline">Issue token</button>`)
+      `<span class="flex gap-3">
+         <button id="s-newtoken" class="font-mono text-[10px] uppercase tracking-[.12em] text-signal hover:underline">Issue token</button>
+         <button id="s-newprobetoken" class="font-mono text-[10px] uppercase tracking-[.12em] text-signal hover:underline">Issue master node token</button>
+       </span>`)
       + `<div class="px-4 sm:px-5 py-4 space-y-3">
-        <p class="text-sm text-muted">Single use, expires in 24 hours. Required for on-premise
-          servers, which have no cloud identity to verify.</p>
+        <p class="text-sm text-muted">Single use, expires in 24 hours. An agent token is required for
+          on-premise servers, which have no cloud identity to verify; a master node token is required
+          the first time a probe runner (<span class="font-mono">NW_PROBE_ENROLL_TOKEN</span>) enrols
+          on your own network to run agentless checks.</p>
         ${state.tokens.length?`<div class="border border-rule divide-y divide-hairline">${state.tokens.map(t=>`
           <div class="flex items-center gap-3 px-3 py-2">
             <span class="font-mono text-xs truncate flex-1">${esc(t.status==='open'?t.token:t.token.slice(0,12)+'…')}</span>
+            <span class="font-mono text-[10px] uppercase tracking-[.1em] text-muted w-24 shrink-0">${t.kind==='probe_runner'?'master node':'agent'}</span>
             <span class="font-mono text-[11px] text-muted truncate w-28 hidden sm:inline">${esc(t.label||'')}</span>
             <span class="font-mono text-[10px] uppercase tracking-[.12em] w-16 text-right
               ${t.status==='open'?'text-healthy':t.status==='used'?'text-muted':'text-degraded'}">${esc(t.status)}</span>
             ${t.status==='open'?`<button data-revoke="${esc(t.token)}" class="font-mono text-[10px] text-down hover:underline">Revoke</button>`:''}
           </div>`).join('')}</div>`:'<p class="text-sm text-muted">No tokens issued.</p>'}
+        <p id="s-probetoken-msg" class="text-sm min-h-[1.25rem]"></p>
       </div>`):''}
+
+    ${admin?card(sectionHead('Master nodes')
+      + (state.masterNodes.length?`<div class="divide-y divide-hairline">${state.masterNodes.map(m=>`
+        <div class="flex flex-wrap items-center gap-3 px-4 sm:px-5 py-2.5">
+          <span class="text-sm truncate flex-1 min-w-0">${esc(m.label||m.hostname||'unnamed')}
+            <span class="font-mono text-[10px] text-muted">${esc(m.hostname||'')}</span></span>
+          <span class="font-mono text-[10px] text-muted">v${esc(m.version||'?')}</span>
+          <span class="font-mono text-[10px] text-muted">${m.enroll_count} enrolment${m.enroll_count===1?'':'s'}</span>
+          <span class="font-mono text-[10px] text-muted tabular-nums">${m.last_seen?ago(m.last_seen)+' ago':'never seen'}</span>
+        </div>`).join('')}</div>`:'<p class="px-4 py-4 text-sm text-muted">No probe runner has enrolled yet.</p>')):''}
 
     ${admin?card(sectionHead('Git access',
       `<button id="s-github-connect" class="font-mono text-[10px] uppercase tracking-[.12em] text-signal hover:underline">Connect GitHub</button>`)
@@ -3814,6 +3831,15 @@ function bind(){
     const { error } = await sb.rpc('new_enroll_token', { p_label:'issued from dashboard', p_hours:24 });
     if (error && $('s-msg')) $('s-msg').textContent =
       /admin/i.test(error.message) ? 'Only an admin can issue enrolment tokens.' : error.message;
+    refresh();
+  };
+
+  if ($('s-newprobetoken')) $('s-newprobetoken').onclick=async()=>{
+    const msg = $('s-probetoken-msg');
+    const { error } = await sb.rpc('new_enroll_token',
+      { p_label:'master node', p_hours:24, p_kind:'probe_runner' });
+    if (msg) msg.textContent = error ? error.message :
+      'Issued - set NW_PROBE_ENROLL_TOKEN to the new token shown below on the probe runner host.';
     refresh();
   };
 
@@ -4544,6 +4570,7 @@ const PAGE_QUERIES = {
               .order('id',{ascending:false}).limit(40),
     ghinstall: sb.from('github_installations').select('*').order('installed_at',{ascending:false}),
     tenant: sb.from('tenants').select('*'),
+    masternodes: sb.from('master_nodes').select('*').order('enrolled_at',{ascending:false}),
   }),
   databases:    () => ({ databases: sb.from('database_overview').select('*').order('name') }),
   network:      () => ({ ifaces: sb.from('network_overview').select('*').order('host') }),
@@ -4617,6 +4644,7 @@ const ASSIGN = {
   tlscerts:'tlsCerts',
   ghinstall:'githubInstallations',
   tenant:'tenant',
+  masternodes:'masterNodes',
 };
 
 let polling = false;
