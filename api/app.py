@@ -47,6 +47,15 @@ AWS_CERT_PATH = os.environ.get("NW_AWS_CERT_PATH", "")
 # the token proves somebody invited it.
 REQUIRE_TOKEN = os.environ.get("NW_REQUIRE_TOKEN", "false").lower() == "true"
 
+# The tenant db/043_multi_tenant.sql backfilled all of this deployment's
+# pre-existing data into. With REQUIRE_TOKEN off, a token (the only signal
+# that says which tenant a brand new host belongs to) may be absent, so a
+# tokenless first contact falls back to this tenant - the same behaviour a
+# single-tenant deployment had before multi-tenancy existed. A real
+# multi-tenant deployment sets NW_REQUIRE_TOKEN=true so every tenant's hosts
+# can only ever enrol with that tenant's own token.
+TENANT_ZERO = "00000000-0000-0000-0000-000000000001"
+
 MAX_EVENTS_PER_BATCH = 500
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -166,11 +175,16 @@ def verify_pkcs7(doc: dict, doc_raw: str | None, pkcs7: str | None) -> bool:
     return True
 
 
-def consume_token(conn, token: str | None, instance_id: str) -> None:
-    """Single use, time limited, revocable. Consumed inside the enrolment txn."""
+def consume_token(conn, token: str | None, instance_id: str) -> str:
+    """
+    Single use, time limited, revocable. Consumed inside the enrolment txn.
+    Returns the tenant the token belongs to, so the new agent joins the
+    right tenant - or TENANT_ZERO when REQUIRE_TOKEN is off and no token
+    was sent.
+    """
     if not token:
         if not REQUIRE_TOKEN:
-            return
+            return TENANT_ZERO
         raise HTTPException(403, "enrolment token required")
 
     row = conn.execute(
@@ -181,7 +195,7 @@ def consume_token(conn, token: str | None, instance_id: str) -> None:
            and used_at is null
            and not revoked
            and expires_at > now()
-        returning token
+        returning tenant_id
         """,
         (instance_id, token),
     ).fetchone()
@@ -189,6 +203,8 @@ def consume_token(conn, token: str | None, instance_id: str) -> None:
     if not row:
         log.warning("enrolment rejected for %s: token invalid, used or expired", instance_id)
         raise HTTPException(403, "enrolment token is invalid, already used, or expired")
+
+    return row[0]
 
 
 def verify_instance(doc: dict, source_ip: str) -> None:
@@ -342,28 +358,33 @@ def verify_azure(ident: dict) -> tuple[str, str]:
     return node_id, "signed"
 
 
-def verify_generic(ident: dict, conn) -> tuple[str, str, bool]:
+def verify_generic(ident: dict, conn) -> tuple[str, str, bool, str | None]:
     """
     Nothing vouches for an on-premise host, so an enrolment token is required
-    to introduce one. Returns (node_id, proof, is_returning).
+    to introduce one. Returns (node_id, proof, is_returning, tenant_id).
 
     A returning node does NOT need a token. Agents re-enrol whenever their
     short-lived JWT expires - every 15 minutes - and tokens are single use,
     so demanding one every time would lock a host out permanently on its
     first renewal. The token is an invitation to join; the machine id is the
-    evidence of continuity afterwards.
+    evidence of continuity afterwards - which is also why tenant_id for a
+    returning node comes from its existing row rather than a fresh token: a
+    machine id collision between two different tenants' hosts is the same
+    astronomically unlikely event as a UUID collision (machine ids are
+    cryptographically random on modern systems), the same residual risk
+    already accepted for agents.instance_id's uniqueness elsewhere.
     """
     node_id = ident.get("machine_id") or ident.get("node_id")
     if not node_id:
         raise HTTPException(400, "generic host sent no machine id")
 
     prev = conn.execute(
-        "select machine_id, fingerprint from agents where instance_id = %s",
+        "select machine_id, fingerprint, tenant_id from agents where instance_id = %s",
         (node_id,),
     ).fetchone()
 
     if prev is None:
-        return node_id, "token", False
+        return node_id, "token", False, None
 
     # For a generic host the node id IS the machine id, so a different
     # machine is simply a different node and needs its own invitation. What
@@ -382,7 +403,7 @@ def verify_generic(ident: dict, conn) -> tuple[str, str, bool]:
                 "delete it from the dashboard and enrol it again if this is expected",
             )
 
-    return node_id, "token", True
+    return node_id, "token", True, prev[2]
 
 
 @app.post("/v1/enroll")
@@ -411,6 +432,7 @@ def enroll(body: EnrollBody, request: Request):
     # re-sent token has already been consumed. Refined below to true first
     # contact once node_id is known.
     first_contact = True
+    tenant_id = None
 
     with pool.connection() as conn:
         if provider == "aws":
@@ -435,7 +457,7 @@ def enroll(body: EnrollBody, request: Request):
             node_id, proof = verify_azure(ident)
 
         else:
-            node_id, proof, returning = verify_generic(ident, conn)
+            node_id, proof, returning, tenant_id = verify_generic(ident, conn)
             if not returning and not body.enroll_token:
                 # An unattested host must be invited the first time, whatever
                 # the global setting says.
@@ -447,23 +469,30 @@ def enroll(body: EnrollBody, request: Request):
         if provider != "generic":
             # aws/gcp/azure prove identity fresh every time, but the token is
             # still single-use: only spend it the first time this instance_id
-            # is seen, the same way the generic branch already does.
+            # is seen, the same way the generic branch already does. A
+            # returning node's tenant is whatever it already belongs to, not
+            # re-derived from a token it isn't sending.
             known = conn.execute(
-                "select 1 from agents where instance_id = %s", (str(node_id),)
+                "select tenant_id from agents where instance_id = %s", (str(node_id),)
             ).fetchone()
             first_contact = known is None
+            if known is not None:
+                tenant_id = known[0]
 
         if first_contact:
-            consume_token(conn, body.enroll_token, node_id)
+            # The only source of tenant_id for a genuinely new host: which
+            # tenant issued the token it showed up with.
+            tenant_id = consume_token(conn, body.enroll_token, node_id)
 
         cur = conn.cursor(row_factory=dict_row)
         row = cur.execute(
             """
             insert into agents (instance_id, provider, platform, account_id, account,
                                 region, instance_type, hostname, os, agent_version,
-                                machine_id, fingerprint, identity_proof, last_seen)
-            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
-            on conflict (instance_id) do update set
+                                machine_id, fingerprint, identity_proof, last_seen,
+                                tenant_id)
+            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), %s)
+            on conflict (tenant_id, instance_id) do update set
                 hostname       = excluded.hostname,
                 os             = excluded.os,
                 agent_version  = excluded.agent_version,
@@ -486,7 +515,7 @@ def enroll(body: EnrollBody, request: Request):
              body.hostname, body.os, body.agent_version,
              ident.get("machine_id"),
              json.dumps(ident.get("fingerprint")) if ident.get("fingerprint") else None,
-             proof),
+             proof, tenant_id),
         ).fetchone()
 
     log.info("enrolled %s [%s, proof=%s] (%s)", node_id, provider, proof, body.hostname)
@@ -500,6 +529,16 @@ def ingest(body: IngestBody, authorization: str | None = Header(default=None)):
     counts = {"heartbeat": 0, "auth": 0, "ports": 0, "port_changes": 0, "checks": 0, "users": 0, "user_changes": 0, "fim": 0, "packages": 0, "interfaces": 0, "apps": 0, "virt": 0}
 
     with pool.connection() as conn:
+        # Every event in this batch is from the same agent, so its tenant is
+        # resolved once, from the agents row itself (denormalized there at
+        # enrolment) rather than trusted from a client-supplied claim.
+        tenant_row = conn.execute(
+            "select tenant_id from agents where id = %s", (agent_id,)
+        ).fetchone()
+        if tenant_row is None:
+            raise HTTPException(401, "unknown agent")
+        tenant_id = tenant_row[0]
+
         for ev in body.events:
             ts = datetime.fromtimestamp(ev.ts, tz=timezone.utc)
 
@@ -508,13 +547,13 @@ def ingest(body: IngestBody, authorization: str | None = Header(default=None)):
                 conn.execute(
                     """
                     insert into metrics (agent_id, ts, cpu_pct, mem_pct, disk_pct,
-                                         load1, uptime_s, proc_count)
-                    values (%s, %s, %s, %s, %s, %s, %s, %s)
+                                         load1, uptime_s, proc_count, tenant_id)
+                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     on conflict (agent_id, ts) do nothing
                     """,
                     (agent_id, ts, d.get("cpu_pct"), d.get("mem_pct"),
                      d.get("disk_pct"), d.get("load1"), d.get("uptime_s"),
-                     d.get("proc_count")),
+                     d.get("proc_count"), tenant_id),
                 )
                 counts["heartbeat"] += 1
 
@@ -522,46 +561,46 @@ def ingest(body: IngestBody, authorization: str | None = Header(default=None)):
                 d = ev.data
                 conn.execute(
                     """
-                    insert into auth_events (agent_id, ts, kind, username, source_ip, raw)
-                    values (%s, %s, %s, %s, %s, %s)
+                    insert into auth_events (agent_id, ts, kind, username, source_ip, raw, tenant_id)
+                    values (%s, %s, %s, %s, %s, %s, %s)
                     on conflict do nothing
                     """,
                     (agent_id,
                      datetime.fromtimestamp(d.get("ts", ev.ts), tz=timezone.utc),
                      d.get("kind"), d.get("username"), d.get("source_ip"),
-                     d.get("raw")),
+                     d.get("raw"), tenant_id),
                 )
                 counts["auth"] += 1
 
             elif ev.kind == "ports":
                 counts["port_changes"] += diff_ports(
-                    conn, agent_id, ts, ev.data.get("listening", [])
+                    conn, agent_id, ts, ev.data.get("listening", []), tenant_id
                 )
                 counts["ports"] += 1
 
             elif ev.kind == "users":
                 counts["users"] += 1
                 counts["user_changes"] += diff_users(
-                    conn, agent_id, ts, ev.data.get("accounts", [])
+                    conn, agent_id, ts, ev.data.get("accounts", []), tenant_id
                 )
 
             elif ev.kind == "interfaces":
                 counts["interfaces"] += sync_interfaces(
-                    conn, agent_id, ts, ev.data.get("interfaces", []))
+                    conn, agent_id, ts, ev.data.get("interfaces", []), tenant_id)
 
             elif ev.kind == "apps":
-                counts["apps"] += sync_apps(conn, agent_id, ts, ev.data.get("apps", []))
+                counts["apps"] += sync_apps(conn, agent_id, ts, ev.data.get("apps", []), tenant_id)
 
             elif ev.kind == "fim":
-                counts["fim"] += sync_fim(conn, agent_id, ts, ev.data)
+                counts["fim"] += sync_fim(conn, agent_id, ts, ev.data, tenant_id)
 
             elif ev.kind == "packages":
                 counts["packages"] += sync_packages(
-                    conn, agent_id, ts, ev.data.get("packages", []))
+                    conn, agent_id, ts, ev.data.get("packages", []), tenant_id)
 
             elif ev.kind == "checks":
                 counts["checks"] += sync_checks(
-                    conn, agent_id, ts, ev.data.get("results", [])
+                    conn, agent_id, ts, ev.data.get("results", []), tenant_id
                 )
 
             elif ev.kind == "virt":
@@ -574,7 +613,7 @@ def ingest(body: IngestBody, authorization: str | None = Header(default=None)):
     return {"accepted": len(body.events), **counts}
 
 
-def diff_ports(conn, agent_id: str, ts: datetime, listening: list) -> int:
+def diff_ports(conn, agent_id: str, ts: datetime, listening: list, tenant_id: str) -> int:
     """
     The agent ships a full snapshot; we derive the change log. Keeping the
     diff server-side means a crashed or restarted agent cannot desync it.
@@ -599,17 +638,17 @@ def diff_ports(conn, agent_id: str, ts: datetime, listening: list) -> int:
         if key not in known:
             conn.execute(
                 """insert into port_events
-                   (agent_id, ts, port, proto, bind_addr, external, process, action)
-                   values (%s, %s, %s, %s, %s, %s, %s, 'opened')""",
+                   (agent_id, ts, port, proto, bind_addr, external, process, action, tenant_id)
+                   values (%s, %s, %s, %s, %s, %s, %s, 'opened', %s)""",
                 (agent_id, ts, p["port"], p["proto"], p["bind_addr"],
-                 p.get("external", False), p.get("process")),
+                 p.get("external", False), p.get("process"), tenant_id),
             )
             changes += 1
         conn.execute(
             """
             insert into port_state (agent_id, port, proto, bind_addr, external,
-                                    pid, process, last_seen)
-            values (%s, %s, %s, %s, %s, %s, %s, %s)
+                                    pid, process, last_seen, tenant_id)
+            values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             on conflict (agent_id, port, proto, bind_addr) do update set
                 last_seen = excluded.last_seen,
                 pid       = excluded.pid,
@@ -617,7 +656,7 @@ def diff_ports(conn, agent_id: str, ts: datetime, listening: list) -> int:
                 external  = excluded.external
             """,
             (agent_id, p["port"], p["proto"], p["bind_addr"],
-             p.get("external", False), p.get("pid"), p.get("process"), ts),
+             p.get("external", False), p.get("pid"), p.get("process"), ts, tenant_id),
         )
 
     for key in known - set(seen):
@@ -629,10 +668,10 @@ def diff_ports(conn, agent_id: str, ts: datetime, listening: list) -> int:
         ).fetchone()
         conn.execute(
             """insert into port_events
-               (agent_id, ts, port, proto, bind_addr, external, process, action)
-               values (%s, %s, %s, %s, %s, %s, %s, 'closed')""",
+               (agent_id, ts, port, proto, bind_addr, external, process, action, tenant_id)
+               values (%s, %s, %s, %s, %s, %s, %s, 'closed', %s)""",
             (agent_id, ts, port, proto, bind,
-             row[0] if row else False, row[1] if row else None),
+             row[0] if row else False, row[1] if row else None, tenant_id),
         )
         conn.execute(
             """delete from port_state
@@ -644,7 +683,7 @@ def diff_ports(conn, agent_id: str, ts: datetime, listening: list) -> int:
     return changes
 
 
-def sync_checks(conn, agent_id: str, ts: datetime, results: list) -> int:
+def sync_checks(conn, agent_id: str, ts: datetime, results: list, tenant_id: str) -> int:
     """
     Upsert the posture snapshot. last_changed only moves when the status
     actually flips, so "this started failing 10 minutes ago" stays
@@ -662,13 +701,13 @@ def sync_checks(conn, agent_id: str, ts: datetime, results: list) -> int:
         crows.append(
             (agent_id, cid, c.get("title", cid), c.get("category", "other"),
              c.get("severity", "low"), c.get("status", "error"),
-             c.get("detail"), ts))
+             c.get("detail"), ts, tenant_id))
     if crows:
         conn.cursor().executemany(
             """
             insert into host_checks (agent_id, check_id, title, category,
-                                     severity, status, detail, last_seen)
-            values (%s, %s, %s, %s, %s, %s, %s, %s)
+                                     severity, status, detail, last_seen, tenant_id)
+            values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             on conflict (agent_id, check_id) do update set
                 title        = excluded.title,
                 category     = excluded.category,
@@ -697,7 +736,7 @@ def sync_checks(conn, agent_id: str, ts: datetime, results: list) -> int:
 TRACKED_USER_FIELDS = ["uid", "shell", "sudoer", "can_login", "password", "groups"]
 
 
-def diff_users(conn, agent_id: str, ts: datetime, accounts: list) -> int:
+def diff_users(conn, agent_id: str, ts: datetime, accounts: list, tenant_id: str) -> int:
     """Derive added / removed / modified account events from a snapshot."""
     if not accounts:
         return 0
@@ -725,12 +764,12 @@ def diff_users(conn, agent_id: str, ts: datetime, accounts: list) -> int:
         if prev is None:
             if not seeding:
                 conn.execute(
-                    """insert into user_events (agent_id, ts, username, action, uid, sudoer, detail)
-                       values (%s, %s, %s, 'added', %s, %s, %s)""",
+                    """insert into user_events (agent_id, ts, username, action, uid, sudoer, detail, tenant_id)
+                       values (%s, %s, %s, 'added', %s, %s, %s, %s)""",
                     (agent_id, ts, name, a.get("uid"), a.get("sudoer", False),
                      f"uid {a.get('uid')}, shell {a.get('shell')}, "
                      f"{'sudoer' if a.get('sudoer') else 'unprivileged'}, "
-                     f"password {a.get('password')}"),
+                     f"password {a.get('password')}", tenant_id),
                 )
                 changes += 1
         else:
@@ -743,16 +782,16 @@ def diff_users(conn, agent_id: str, ts: datetime, accounts: list) -> int:
                     diffs.append(f"{k}: {old} -> {new}")
             if diffs:
                 conn.execute(
-                    """insert into user_events (agent_id, ts, username, action, uid, sudoer, detail)
-                       values (%s, %s, %s, 'modified', %s, %s, %s)""",
+                    """insert into user_events (agent_id, ts, username, action, uid, sudoer, detail, tenant_id)
+                       values (%s, %s, %s, 'modified', %s, %s, %s, %s)""",
                     (agent_id, ts, name, a.get("uid"), a.get("sudoer", False),
-                     "; ".join(diffs)[:400]),
+                     "; ".join(diffs)[:400], tenant_id),
                 )
                 changes += 1
 
         rows.append((agent_id, name, a.get("uid"), a.get("gid"), a.get("shell"),
                      a.get("home"), a.get("groups", []), a.get("sudoer", False),
-                     a.get("can_login", False), a.get("password"), ts))
+                     a.get("can_login", False), a.get("password"), ts, tenant_id))
 
     # One pipelined round trip instead of one per account. Latency to a
     # cross-region database makes per-row writes untenable: 24 accounts was
@@ -761,8 +800,8 @@ def diff_users(conn, agent_id: str, ts: datetime, accounts: list) -> int:
         conn.cursor().executemany(
             """
             insert into user_state (agent_id, username, uid, gid, shell, home,
-                                    groups, sudoer, can_login, password, last_seen)
-            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                    groups, sudoer, can_login, password, last_seen, tenant_id)
+            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             on conflict (agent_id, username) do update set
                 uid = excluded.uid, gid = excluded.gid, shell = excluded.shell,
                 home = excluded.home, groups = excluded.groups,
@@ -773,10 +812,10 @@ def diff_users(conn, agent_id: str, ts: datetime, accounts: list) -> int:
     for name in set(known) - set(snap):
         prev = known[name]
         conn.execute(
-            """insert into user_events (agent_id, ts, username, action, uid, sudoer, detail)
-               values (%s, %s, %s, 'removed', %s, %s, %s)""",
+            """insert into user_events (agent_id, ts, username, action, uid, sudoer, detail, tenant_id)
+               values (%s, %s, %s, 'removed', %s, %s, %s, %s)""",
             (agent_id, ts, name, prev.get("uid"), prev.get("sudoer", False),
-             f"was uid {prev.get('uid')}, shell {prev.get('shell')}"),
+             f"was uid {prev.get('uid')}, shell {prev.get('shell')}", tenant_id),
         )
         conn.execute("delete from user_state where agent_id = %s and username = %s",
                      (agent_id, name))
@@ -785,7 +824,7 @@ def diff_users(conn, agent_id: str, ts: datetime, accounts: list) -> int:
     return changes
 
 
-def sync_fim(conn, agent_id: str, ts: datetime, data: dict) -> int:
+def sync_fim(conn, agent_id: str, ts: datetime, data: dict, tenant_id: str) -> int:
     """
     Record file-integrity changes. Unlike ports, the agent has already
     diffed: /etc is thousands of files and shipping a full manifest every
@@ -797,8 +836,8 @@ def sync_fim(conn, agent_id: str, ts: datetime, data: dict) -> int:
 
     conn.execute(
         """
-        insert into fim_state (agent_id, files_watched, digest, paths, last_scan)
-        values (%s, %s, %s, %s, %s)
+        insert into fim_state (agent_id, files_watched, digest, paths, last_scan, tenant_id)
+        values (%s, %s, %s, %s, %s, %s)
         on conflict (agent_id) do update set
             files_watched = excluded.files_watched,
             digest        = excluded.digest,
@@ -806,7 +845,7 @@ def sync_fim(conn, agent_id: str, ts: datetime, data: dict) -> int:
             last_scan     = excluded.last_scan
         """,
         (agent_id, summary.get("files_watched", 0), summary.get("digest"),
-         summary.get("paths", []), ts),
+         summary.get("paths", []), ts, tenant_id),
     )
 
     if not events:
@@ -814,27 +853,27 @@ def sync_fim(conn, agent_id: str, ts: datetime, data: dict) -> int:
 
     conn.cursor().executemany(
         """insert into fim_events
-           (agent_id, ts, path, action, critical, sha256, mode, size, detail)
-           values (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+           (agent_id, ts, path, action, critical, sha256, mode, size, detail, tenant_id)
+           values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
         [(agent_id, ts, e.get("path"), e.get("action"), e.get("critical", False),
-          e.get("sha256"), e.get("mode"), e.get("size"), e.get("detail"))
+          e.get("sha256"), e.get("mode"), e.get("size"), e.get("detail"), tenant_id)
          for e in events if e.get("path") and e.get("action")],
     )
     return len(events)
 
 
-def sync_packages(conn, agent_id: str, ts: datetime, packages: list) -> int:
+def sync_packages(conn, agent_id: str, ts: datetime, packages: list, tenant_id: str) -> int:
     """Replace the host's package inventory. OSV lookup happens separately."""
     if not packages:
         return 0
 
-    rows = [(agent_id, p["name"], p["version"], p.get("arch"), ts)
+    rows = [(agent_id, p["name"], p["version"], p.get("arch"), ts, tenant_id)
             for p in packages if p.get("name") and p.get("version")]
 
     conn.cursor().executemany(
         """
-        insert into host_packages (agent_id, name, version, arch, last_seen)
-        values (%s, %s, %s, %s, %s)
+        insert into host_packages (agent_id, name, version, arch, last_seen, tenant_id)
+        values (%s, %s, %s, %s, %s, %s)
         on conflict (agent_id, name) do update set
             version = excluded.version, arch = excluded.arch,
             last_seen = excluded.last_seen
@@ -849,7 +888,7 @@ def sync_packages(conn, agent_id: str, ts: datetime, packages: list) -> int:
     return len(rows)
 
 
-def sync_interfaces(conn, agent_id: str, ts: datetime, ifaces: list) -> int:
+def sync_interfaces(conn, agent_id: str, ts: datetime, ifaces: list, tenant_id: str) -> int:
     """
     Current interface state plus a counter sample. State is upserted so the
     inventory reflects now; counters are appended so throughput can be
@@ -859,14 +898,14 @@ def sync_interfaces(conn, agent_id: str, ts: datetime, ifaces: list) -> int:
         return 0
 
     rows = [(agent_id, i.get("name"), bool(i.get("is_up")), i.get("speed_mbps"),
-             i.get("mtu"), i.get("ipv4"), i.get("mac"), ts)
+             i.get("mtu"), i.get("ipv4"), i.get("mac"), ts, tenant_id)
             for i in ifaces if i.get("name")]
 
     conn.cursor().executemany(
         """
         insert into net_interfaces (agent_id, name, is_up, speed_mbps, mtu,
-                                    ipv4, mac, last_seen)
-        values (%s, %s, %s, %s, %s, %s, %s, %s)
+                                    ipv4, mac, last_seen, tenant_id)
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         on conflict (agent_id, name) do update set
             is_up = excluded.is_up, speed_mbps = excluded.speed_mbps,
             mtu = excluded.mtu, ipv4 = excluded.ipv4, mac = excluded.mac,
@@ -877,13 +916,13 @@ def sync_interfaces(conn, agent_id: str, ts: datetime, ifaces: list) -> int:
         """
         insert into net_traffic (agent_id, name, ts, bytes_sent, bytes_recv,
                                  packets_sent, packets_recv,
-                                 errin, errout, dropin, dropout)
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                 errin, errout, dropin, dropout, tenant_id)
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         on conflict (agent_id, name, ts) do nothing
         """,
         [(agent_id, i.get("name"), ts, i.get("bytes_sent"), i.get("bytes_recv"),
           i.get("packets_sent"), i.get("packets_recv"), i.get("errin"),
-          i.get("errout"), i.get("dropin"), i.get("dropout"))
+          i.get("errout"), i.get("dropin"), i.get("dropout"), tenant_id)
          for i in ifaces if i.get("name")])
 
     # An interface that disappeared was removed or renamed; leaving it would
@@ -895,7 +934,7 @@ def sync_interfaces(conn, agent_id: str, ts: datetime, ifaces: list) -> int:
     return len(rows)
 
 
-def sync_apps(conn, agent_id: str, ts: datetime, apps: list) -> int:
+def sync_apps(conn, agent_id: str, ts: datetime, apps: list, tenant_id: str) -> int:
     """
     Application measurements read locally by the agent. Only IIS today. The
     row is keyed by agent and app name rather than a probe, since there is no
@@ -905,15 +944,15 @@ def sync_apps(conn, agent_id: str, ts: datetime, apps: list) -> int:
         return 0
     rows = [(agent_id, a.get("app_name"), ts,
              a.get("requests_total"), a.get("errors_total"),
-             a.get("active_conns"), json.dumps(a.get("extra") or {}))
+             a.get("active_conns"), json.dumps(a.get("extra") or {}), tenant_id)
             for a in apps if a.get("app_name")]
     if not rows:
         return 0
     conn.cursor().executemany(
         """
         insert into app_metrics (agent_id, app_name, ts, requests_total,
-                                 errors_total, active_conns, extra)
-        values (%s, %s, %s, %s, %s, %s, %s)
+                                 errors_total, active_conns, extra, tenant_id)
+        values (%s, %s, %s, %s, %s, %s, %s, %s)
         on conflict do nothing
         """, rows)
     return len(rows)
