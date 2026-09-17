@@ -16,6 +16,8 @@ import logging
 import os
 import subprocess
 import tempfile
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 
 import jwt
@@ -63,6 +65,60 @@ log = logging.getLogger("nodewatch-api")
 
 app = FastAPI(title="nodewatch ingest", version="0.1.0")
 pool = ConnectionPool(DATABASE_URL, min_size=1, max_size=8, open=True)
+
+
+# ---------------------------------------------------------------- rate limiting
+
+class RateLimiter:
+    """
+    Token bucket, one per key. In-memory, so this only works correctly
+    because the API runs as a single uvicorn process (see
+    api/deploy/nodewatch-api.service - no --workers flag); a multi-process
+    or multi-replica deployment would need a shared store (e.g. Redis)
+    instead, since each process would otherwise track its own quota.
+    """
+
+    def __init__(self, capacity: float, refill_per_sec: float, idle_evict_s: float = 3600):
+        self.capacity = capacity
+        self.refill_per_sec = refill_per_sec
+        self.idle_evict_s = idle_evict_s
+        self._buckets: dict[str, tuple[float, float]] = {}
+        self._lock = threading.Lock()
+        self._calls_since_evict = 0
+
+    def allow(self, key: str, cost: float = 1.0) -> bool:
+        now = time.monotonic()
+        with self._lock:
+            self._calls_since_evict += 1
+            if self._calls_since_evict >= 1000:
+                self._evict_stale(now)
+                self._calls_since_evict = 0
+
+            tokens, last = self._buckets.get(key, (self.capacity, now))
+            tokens = min(self.capacity, tokens + (now - last) * self.refill_per_sec)
+            if tokens < cost:
+                self._buckets[key] = (tokens, now)
+                return False
+            self._buckets[key] = (tokens - cost, now)
+            return True
+
+    def _evict_stale(self, now: float) -> None:
+        stale = [k for k, (_, last) in self._buckets.items() if now - last > self.idle_evict_s]
+        for k in stale:
+            del self._buckets[k]
+
+
+# A tenant's whole fleet, aggregated: generous enough for hundreds of hosts
+# heartbeating every ~60s, but caps one tenant's traffic from degrading
+# ingest latency for everyone else on this shared process.
+ingest_tenant_limiter = RateLimiter(capacity=120, refill_per_sec=6)
+# A single agent: catches one misbehaving/misconfigured host retrying in a
+# tight loop without penalizing the rest of its own tenant's fleet.
+ingest_agent_limiter = RateLimiter(capacity=20, refill_per_sec=1)
+# Enrolment is rarer and more sensitive (token guessing, identity-document
+# replay) than steady-state telemetry, so it's keyed by source IP rather
+# than an identity the request hasn't proven yet.
+enroll_ip_limiter = RateLimiter(capacity=20, refill_per_sec=0.2)
 
 # GitHub App installation flow (/oauth/github/*) - connects private repos
 # to Supply Chain checks without a hand-entered personal access token.
@@ -408,6 +464,9 @@ def verify_generic(ident: dict, conn) -> tuple[str, str, bool, str | None]:
 
 @app.post("/v1/enroll")
 def enroll(body: EnrollBody, request: Request):
+    if not enroll_ip_limiter.allow(client_ip(request)):
+        raise HTTPException(429, "too many enrolment attempts from this address")
+
     # Accept both shapes: the new provider envelope, and the older AWS-only
     # payload from an agent that has not been upgraded yet.
     ident = body.identity or {
@@ -526,6 +585,12 @@ def enroll(body: EnrollBody, request: Request):
 @app.post("/v1/ingest")
 def ingest(body: IngestBody, authorization: str | None = Header(default=None)):
     agent_id = agent_from_token(authorization)
+
+    # Cheap check before any DB work: one misbehaving host retrying in a
+    # tight loop shouldn't cost a connection-pool checkout every time.
+    if not ingest_agent_limiter.allow(agent_id):
+        raise HTTPException(429, "too many requests from this agent")
+
     counts = {"heartbeat": 0, "auth": 0, "ports": 0, "port_changes": 0, "checks": 0, "users": 0, "user_changes": 0, "fim": 0, "packages": 0, "interfaces": 0, "apps": 0, "virt": 0}
 
     with pool.connection() as conn:
@@ -538,6 +603,12 @@ def ingest(body: IngestBody, authorization: str | None = Header(default=None)):
         if tenant_row is None:
             raise HTTPException(401, "unknown agent")
         tenant_id = tenant_row[0]
+
+        # Costed by event count, not request count: a batch of 500 events
+        # is real aggregate load on this tenant's slice of the process,
+        # even from a single well-behaved request.
+        if not ingest_tenant_limiter.allow(str(tenant_id), cost=max(1, len(body.events))):
+            raise HTTPException(429, "this tenant's ingest rate limit was exceeded")
 
         for ev in body.events:
             ts = datetime.fromtimestamp(ev.ts, tz=timezone.utc)
