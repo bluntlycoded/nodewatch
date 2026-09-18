@@ -7,8 +7,13 @@ Wants=network-online.target
 Type=simple
 User=root
 WorkingDirectory=/opt/nodewatch-probe
-EnvironmentFile=/etc/nodewatch/api.env
-ExecStart=/opt/nodewatch-api/venv/bin/python /opt/nodewatch-probe/prober.py
+# Its own venv and env file, not the API's - phase 2 of multi-tenancy made
+# this an independent API client (NW_INGEST_URL, NW_PROBE_ENROLL_TOKEN)
+# with no database credential of its own, specifically so it can run on a
+# customer's own network, on a host that may never run nodewatch-api at
+# all. See probe/prober.py's module docstring for why.
+EnvironmentFile=/etc/nodewatch/probe.env
+ExecStart=/opt/nodewatch-probe/venv/bin/python /opt/nodewatch-probe/prober.py
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -17,6 +22,10 @@ StandardError=journal
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
+StateDirectory=nodewatch
+# NW_PROBE_STATE_PATH defaults under here - persists this runner's
+# client_id across restarts so it doesn't re-spend its enrolment token or
+# show up as a second master node.
 
 [Install]
 WantedBy=multi-user.target

@@ -2,10 +2,16 @@
 """
 nodewatch probe runner.
 
-Polls agentless checks and writes results straight to Postgres. It runs on
-the API host rather than in an Edge Function for two reasons: ICMP needs a
-raw socket, and the interesting targets - switches, iDRACs, internal
-databases - live on private networks that only the API host can reach.
+Polls agentless checks and reports results over the ingest API - the same
+way an agent does, not with a direct database connection. That used to be
+NW_DATABASE_URL, a service-role credential that bypasses row-level
+security and can read and write every tenant's data; unsafe to run on a
+customer's own infrastructure, which is the whole point of a "master
+node" a customer installs themselves. It still runs as a standalone
+process rather than in an Edge Function for the same two reasons as
+before: ICMP needs a raw socket, and the interesting targets - switches,
+iDRACs, internal databases - live on private networks that only this host
+can reach.
 
 Checks run concurrently in a thread pool, so one unreachable target with a
 5-second timeout does not delay the rest of the cycle.
@@ -24,15 +30,25 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 import jwt
 import psycopg
+import requests
 from psycopg.rows import dict_row
 
-DATABASE_URL = os.environ["NW_DATABASE_URL"]
+INGEST_URL = os.environ["NW_INGEST_URL"].rstrip("/")
+# Distinct from an agent's NW_ENROLL_TOKEN - the dashboard issues a
+# separate probe_runner-kind token (db/046_probe_runner_api.sql), and the
+# API rejects one used for the other, so accidentally pasting an agent
+# token here fails loudly instead of silently doing the wrong thing.
+ENROLL_TOKEN = os.environ.get("NW_PROBE_ENROLL_TOKEN", "")
+STATE_PATH = os.environ.get("NW_PROBE_STATE_PATH", "/var/lib/nodewatch/probe-runner.json")
+PROBE_VERSION = "0.1.0"
+HTTP_TIMEOUT = 15
 WORKERS = int(os.environ.get("NW_PROBE_WORKERS", "16"))
 TICK_S = 5                    # how often to look for checks that are due
 USER_AGENT = "nodewatch-probe/1.0"
@@ -49,6 +65,94 @@ log = logging.getLogger("nodewatch-probe")
 # Last run time per probe, in memory. Persisting it would mean a write per
 # probe per tick; losing it on restart just means one extra early check.
 _last_run: dict[str, float] = {}
+
+
+# ---------------------------------------------------------------- session
+
+class Session:
+    """
+    Holds the short-lived JWT and re-enrols when it expires or was never
+    established - the same reactive pattern agent/agent.py's Session
+    already uses for the same reason (a 401 is cheap and rare; proactively
+    tracking expiry is not worth the extra state).
+
+    client_id is generated once and persisted to STATE_PATH so a restart
+    does not spend a fresh enrolment token or create a second master_nodes
+    row for what is physically the same runner - the same role instance_id
+    plays for an agent, except there is no cloud attestation to derive it
+    from, since this is a service process rather than identified hardware.
+    """
+
+    def __init__(self):
+        self.token = None
+        self.client_id = self._load_or_create_client_id()
+
+    def _load_or_create_client_id(self) -> str:
+        try:
+            with open(STATE_PATH) as f:
+                return json.load(f)["client_id"]
+        except (FileNotFoundError, KeyError, json.JSONDecodeError):
+            pass
+        client_id = str(uuid.uuid4())
+        try:
+            os.makedirs(os.path.dirname(STATE_PATH) or ".", exist_ok=True)
+            with open(STATE_PATH, "w") as f:
+                json.dump({"client_id": client_id}, f)
+        except OSError as e:
+            log.warning(
+                "could not persist probe runner state to %s: %s - "
+                "a restart will enrol as a new master node", STATE_PATH, e)
+        return client_id
+
+    def enroll(self) -> bool:
+        body = {
+            "client_id": self.client_id,
+            "enroll_token": ENROLL_TOKEN or None,
+            "label": socket.gethostname(),
+            "hostname": socket.gethostname(),
+            "version": PROBE_VERSION,
+        }
+        try:
+            r = requests.post(f"{INGEST_URL}/v1/probe-enroll", json=body,
+                               headers={"User-Agent": USER_AGENT}, timeout=HTTP_TIMEOUT)
+        except Exception as e:
+            log.warning("enroll request failed: %s", e)
+            return False
+        if r.status_code != 200:
+            log.error("enrolment rejected (%s): %s", r.status_code, r.text[:200])
+            return False
+        self.token = r.json()["token"]
+        log.info("enrolled as master node %s", r.json()["master_node_id"])
+        return True
+
+    def headers(self) -> dict:
+        return {"Authorization": f"Bearer {self.token}", "User-Agent": USER_AGENT}
+
+    def request(self, method: str, path: str, **kwargs):
+        """
+        One call site for the enrol-if-needed / retry-next-cycle-on-401
+        pattern every endpoint below needs. Returns the Response on
+        success, None on any failure - a network error, a non-2xx status,
+        or a 401 that cleared the token for retry next cycle. Callers
+        already tolerate a cycle doing nothing, the same tolerance a
+        database round trip failing would have needed anyway.
+        """
+        if not self.token and not self.enroll():
+            return None
+        try:
+            r = requests.request(method, f"{INGEST_URL}{path}",
+                                  headers=self.headers(), timeout=HTTP_TIMEOUT, **kwargs)
+        except Exception as e:
+            log.warning("%s %s failed: %s", method, path, e)
+            return None
+        if r.status_code == 401:
+            log.info("token expired or invalid, re-enrolling next cycle")
+            self.token = None
+            return None
+        if r.status_code >= 400:
+            log.error("%s %s rejected (%s): %s", method, path, r.status_code, r.text[:200])
+            return None
+        return r
 
 
 # ---------------------------------------------------------------- checks
@@ -1505,23 +1609,30 @@ CHECKS = {"ping": check_ping, "port": check_port, "url": check_url,
           "proxmox": check_proxmox, "supply_chain": check_supply_chain}
 
 
-def run_one(p: dict) -> tuple[str, bool, int | None, str, dict | None, dict | None,
-                              dict | None, dict | None, dict | None]:
+def run_one(p: dict) -> dict:
+    """
+    One JSON-serializable result, shaped to match POST /v1/probe-results'
+    body exactly - database checks attach a measurement set, Proxmox
+    attaches guests/storage/backups too, supply-chain attaches a scan and
+    its findings, an https url check attaches its certificate's expiry
+    and chain validity, and the rest attach nothing.
+    """
     fn = CHECKS.get(p["kind"])
     if not fn:
-        return p["id"], False, None, f"unknown probe kind {p['kind']}", None, None, None, None, None
+        return {"probe_id": p["id"], "ok": False, "latency_ms": None,
+                "detail": f"unknown probe kind {p['kind']}"}
     try:
         ok, ms, detail = fn(p)
     except Exception as e:
         # A bug in one check must not take the runner down.
         log.exception("probe %s raised", p["name"])
         ok, ms, detail = False, None, f"probe error: {e}"[:200]
-    # Database checks attach a measurement set; Proxmox attaches guests,
-    # storage and backups too; supply-chain attaches a scan and its
-    # findings; an https url check attaches its certificate's expiry and
-    # chain validity; the others attach nothing.
-    return (p["id"], ok, ms, detail, p.get("_metrics"), p.get("_app_metrics"),
-            p.get("_proxmox"), p.get("_supply_chain"), p.get("_tls_cert"))
+    return {
+        "probe_id": p["id"], "ok": ok, "latency_ms": ms, "detail": detail,
+        "metrics": p.get("_metrics"), "app_metrics": p.get("_app_metrics"),
+        "proxmox": p.get("_proxmox"), "supply_chain": p.get("_supply_chain"),
+        "tls_cert": p.get("_tls_cert"),
+    }
 
 
 # ---------------------------------------------------------------- net tools
@@ -1653,24 +1764,19 @@ def run_nettool(job: dict) -> tuple[bool, str, int]:
            int((time.monotonic() - t0) * 1000)
 
 
-def drain_nettools(conn):
+def drain_nettools(sess: Session):
     """Claim queued jobs before running them, so two cycles cannot overlap."""
-    jobs = conn.execute(
-        """update nettool_jobs set status = 'running', started_at = now()
-            where id in (select id from nettool_jobs where status = 'queued'
-                          order by created_at limit 3)
-        returning id::text, tool, target, options"""
-    ).fetchall()
+    r = sess.request("POST", "/v1/nettool-jobs/claim", json={"limit": 3})
+    if r is None:
+        return 0
+    jobs = r.json()["jobs"]
     if not jobs:
         return 0
     for j in jobs:
         ok, output, ms = run_nettool(j)
-        conn.execute(
-            """update nettool_jobs
-                  set status = %s, output = %s, duration_ms = %s, finished_at = now()
-                where id = %s""",
-            ("done" if ok else "failed", output, ms, j["id"]),
-        )
+        sess.request("POST", f"/v1/nettool-jobs/{j['id']}/complete", json={
+            "status": "done" if ok else "failed", "output": output, "duration_ms": ms,
+        })
         log.info("nettool %s %s -> %s", j["tool"], j["target"], "ok" if ok else "failed")
     return len(jobs)
 
@@ -1683,24 +1789,21 @@ def drain_nettools(conn):
 AUTOMATION_TIMEOUT = 30
 
 
-def run_automation(conn):
-    rows = conn.execute(
-        """update automation_runs set status = 'running'
-            where id in (select id from automation_runs
-                          where status = 'approved'
-                          order by created_at limit 3)
-        returning id::text, request"""
-    ).fetchall()
-    if not rows:
+def run_automation(sess: Session):
+    r = sess.request("POST", "/v1/automation-runs/claim", json={"limit": 3})
+    if r is None:
+        return 0
+    runs = r.json()["runs"]
+    if not runs:
         return 0
 
-    for r in rows:
-        req = r["request"] or {}
+    for run in runs:
+        req = run["request"] or {}
         url = req.get("url")
         if not url or not str(url).lower().startswith(("http://", "https://")):
-            conn.execute(
-                """update automation_runs set status='failed', finished_at=now(),
-                       response='no valid url on the rule' where id = %s""", (r["id"],))
+            sess.request("POST", f"/v1/automation-runs/{run['id']}/complete", json={
+                "status": "failed", "response": "no valid url on the rule", "http_status": None,
+            })
             continue
 
         body = json.dumps(req.get("body") or {}).encode()
@@ -1720,14 +1823,12 @@ def run_automation(conn):
         except Exception as e:
             out, code, status = str(e)[:500], None, "failed"
 
-        conn.execute(
-            """update automation_runs
-                  set status = %s, response = %s, http_status = %s, finished_at = now()
-                where id = %s""",
-            (status, out[:4000], code, r["id"]))
-        log.info("automation run %s -> %s", r["id"][:8], status)
+        sess.request("POST", f"/v1/automation-runs/{run['id']}/complete", json={
+            "status": status, "response": out[:4000], "http_status": code,
+        })
+        log.info("automation run %s -> %s", run["id"][:8], status)
 
-    return len(rows)
+    return len(runs)
 
 
 # ---------------------------------------------------------------- topology
@@ -1764,15 +1865,19 @@ def parse_traceroute(text: str) -> list:
     return out
 
 
-def trace_targets(conn):
-    """Trace each enabled check whose target is a literal address."""
+TARGET_IP_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
+
+
+def trace_targets(sess: Session, probes: list[dict]):
+    """
+    Trace each enabled check whose target is a literal address. Reuses
+    this cycle's already-fetched probe list rather than a separate
+    request - it carries everything needed (id, target).
+    """
     if not shutil.which("traceroute") and not shutil.which("tracepath"):
         return 0
 
-    targets = conn.execute(
-        r"""select id::text, target from probes
-             where enabled and target ~ '^\d{1,3}(\.\d{1,3}){3}$'"""
-    ).fetchall()
+    targets = [p for p in probes if TARGET_IP_RE.match(p["target"])]
 
     now = time.monotonic()
     due = [t for t in targets
@@ -1796,12 +1901,11 @@ def trace_targets(conn):
         if not hops:
             continue
 
-        ts = datetime.now(timezone.utc)
-        conn.cursor().executemany(
-            """insert into route_hops (probe_id, traced_at, hop, ip, rtt_ms)
-               values (%s, %s, %s, %s, %s)
-               on conflict (probe_id, traced_at, hop) do nothing""",
-            [(t["id"], ts, h, ip, rtt) for h, ip, rtt in hops])
+        sess.request("POST", "/v1/route-hops", json={
+            "probe_id": t["id"],
+            "traced_at": time.time(),
+            "hops": [{"hop": h, "ip": ip, "rtt_ms": rtt} for h, ip, rtt in hops],
+        })
         traced += 1
 
     if traced:
@@ -1824,232 +1928,51 @@ def due(probes: list[dict]) -> list[dict]:
 def main():
     log.info("probe runner starting, %d workers", WORKERS)
     pool = ThreadPoolExecutor(max_workers=WORKERS)
+    sess = Session()
 
     while True:
         cycle_started = time.monotonic()
         try:
-            with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
-                probes = conn.execute(
-                    """select p.id::text, p.kind, p.name, p.target, p.port,
-                              p.interval_s, p.timeout_ms, p.expect_status,
-                              p.expect_text, s.config
-                         from probes p
-                         left join probe_secrets s on s.probe_id = p.id
-                        where p.enabled"""
-                ).fetchall()
+            r = sess.request("GET", "/v1/probes")
+            if r is None:
+                # Enrolment, network, or auth failure this cycle - there is
+                # nothing to check against, and _last_run must not be
+                # touched: an empty list here means "could not ask", not
+                # "there are no probes", which would otherwise wipe every
+                # entry below and force a re-check burst once the API is
+                # reachable again.
+                time.sleep(max(0.0, TICK_S - (time.monotonic() - cycle_started)))
+                continue
+            probes = r.json()["probes"]
 
-                batch = due(probes)
-                if batch:
-                    ts = datetime.now(timezone.utc)
-                    results = list(pool.map(run_one, batch))
+            batch = due(probes)
+            if batch:
+                results = list(pool.map(run_one, batch))
 
-                    # One round trip for the whole cycle. The database is
-                    # cross-region, so per-probe writes would cost more than
-                    # the checks themselves.
-                    conn.cursor().executemany(
-                        """insert into probe_results (probe_id, ts, ok, latency_ms, detail)
-                           values (%s, %s, %s, %s, %s)
-                           on conflict (probe_id, ts) do nothing""",
-                        [(pid, ts, ok, ms, detail) for pid, ok, ms, detail, _, _, _, _, _ in results],
-                    )
+                # One round trip for the whole cycle - the ingest API may be
+                # cross-region, so per-probe requests would cost more than
+                # the checks themselves.
+                sess.request("POST", "/v1/probe-results", json={
+                    "ts": time.time(),
+                    "results": results,
+                })
 
-                    # Database measurements go to their own table. One
-                    # round trip for the cycle, same as probe_results.
-                    dbrows = [
-                        (pid, ts, m.get("connections"), m.get("max_connections"),
-                         m.get("conn_pct"), m.get("cache_hit_pct"),
-                         m.get("slow_queries"), m.get("longest_query_s"),
-                         m.get("replication_lag_s"), m.get("size_bytes"),
-                         m.get("uptime_s"), m.get("qps"), json.dumps(m.get("extra") or {}))
-                        for pid, ok, _, _, m, _, _, _, _ in results if ok and m
-                    ]
-                    approws = [
-                        (pid, ts, a.get("requests_total"), a.get("errors_total"),
-                         a.get("active_conns"), a.get("p95_latency_s"),
-                         a.get("avg_latency_s"), a.get("memory_bytes"),
-                         a.get("cpu_seconds"), a.get("uptime_s"),
-                         json.dumps(a.get("extra") or {}))
-                        for pid, ok, _, _, _, a, _, _, _ in results if ok and a
-                    ]
-                    if approws:
-                        # app_metrics_key (024_iis.sql) is a coalesce()-based
-                        # expression index, not a plain (probe_id, ts) unique
-                        # constraint - it has to allow either probe_id or
-                        # agent_id to be null, since IIS metrics come from
-                        # the agent while everything else here comes from a
-                        # probe. ON CONFLICT inference requires an exact
-                        # expression match, not just matching column names.
-                        conn.cursor().executemany(
-                            """insert into app_metrics (probe_id, ts, requests_total,
-                                   errors_total, active_conns, p95_latency_s,
-                                   avg_latency_s, memory_bytes, cpu_seconds,
-                                   uptime_s, extra)
-                               values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                               on conflict (
-                                   (coalesce(probe_id, '00000000-0000-0000-0000-000000000000'::uuid)),
-                                   (coalesce(agent_id, '00000000-0000-0000-0000-000000000000'::uuid)),
-                                   (coalesce(app_name, '')),
-                                   ts
-                               ) do nothing""",
-                            approws)
+                now = time.monotonic()
+                for p in batch:
+                    _last_run[p["id"]] = now
 
-                    if dbrows:
-                        conn.cursor().executemany(
-                            """insert into db_metrics (probe_id, ts, connections,
-                                   max_connections, conn_pct, cache_hit_pct,
-                                   slow_queries, longest_query_s, replication_lag_s,
-                                   size_bytes, uptime_s, qps, extra)
-                               values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                               on conflict (probe_id, ts) do nothing""",
-                            dbrows)
+                failed = sum(1 for res in results if not res["ok"])
+                log.info("checked %d, %d failing", len(results), failed)
 
-                    # Proxmox attaches guests, storage and backups alongside
-                    # the cluster-level metrics row - four writes instead of
-                    # one, but still one round trip each for the whole cycle.
-                    pxrows = [(pid, px) for pid, ok, _, _, _, _, px, _, _ in results if ok and px]
-                    if pxrows:
-                        conn.cursor().executemany(
-                            """insert into proxmox_metrics (probe_id, ts, nodes_total,
-                                   nodes_online, guests_total, guests_running, cpu_pct,
-                                   mem_pct, storage_pct_worst, backups_failed_24h, extra)
-                               values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                               on conflict (probe_id, ts) do nothing""",
-                            [(pid, ts, m["nodes_total"], m["nodes_online"],
-                              m["guests_total"], m["guests_running"], m["cpu_pct"],
-                              m["mem_pct"], m["storage_pct_worst"], m["backups_failed_24h"],
-                              json.dumps(m.get("extra") or {}))
-                             for pid, px in pxrows for m in [px["metrics"]]])
+            drain_nettools(sess)
+            trace_targets(sess, probes)
+            run_automation(sess)
 
-                        guest_rows = [(pid, g["vmid"], g["node"], g["name"], g["kind"],
-                                       g["status"], g["cpu_pct"], g["mem_bytes"],
-                                       g["mem_max_bytes"], g["disk_bytes"],
-                                       g["disk_max_bytes"], g["uptime_s"], ts)
-                                      for pid, px in pxrows for g in px["guests"]]
-                        if guest_rows:
-                            conn.cursor().executemany(
-                                """insert into proxmox_guests (probe_id, vmid, node, name,
-                                       kind, status, cpu_pct, mem_bytes, mem_max_bytes,
-                                       disk_bytes, disk_max_bytes, uptime_s, last_seen)
-                                   values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                                   on conflict (probe_id, vmid) do update set
-                                       node = excluded.node, name = excluded.name,
-                                       status = excluded.status, cpu_pct = excluded.cpu_pct,
-                                       mem_bytes = excluded.mem_bytes,
-                                       mem_max_bytes = excluded.mem_max_bytes,
-                                       disk_bytes = excluded.disk_bytes,
-                                       disk_max_bytes = excluded.disk_max_bytes,
-                                       uptime_s = excluded.uptime_s,
-                                       last_seen = excluded.last_seen""",
-                                guest_rows)
-                            # A guest that disappeared was deleted or migrated off this
-                            # cluster; leaving it would show a phantom VM forever.
-                            for pid, px in pxrows:
-                                seen = [g["vmid"] for g in px["guests"]]
-                                conn.execute(
-                                    "delete from proxmox_guests where probe_id = %s and vmid <> all(%s)",
-                                    (pid, seen or [-1]))
-
-                        storage_rows = [(pid, s["node"], s["storage"], s["kind"],
-                                         s["used_bytes"], s["total_bytes"], ts)
-                                        for pid, px in pxrows for s in px["storage"]]
-                        if storage_rows:
-                            conn.cursor().executemany(
-                                """insert into proxmox_storage (probe_id, node, storage,
-                                       kind, used_bytes, total_bytes, last_seen)
-                                   values (%s,%s,%s,%s,%s,%s,%s)
-                                   on conflict (probe_id, node, storage) do update set
-                                       kind = excluded.kind, used_bytes = excluded.used_bytes,
-                                       total_bytes = excluded.total_bytes,
-                                       last_seen = excluded.last_seen""",
-                                storage_rows)
-
-                        backup_rows = [
-                            (pid, b["upid"], b["vmid"], b["node"],
-                             datetime.fromtimestamp(b["ts"], tz=timezone.utc), b["ok"],
-                             b["duration_s"], b["detail"])
-                            for pid, px in pxrows for b in px["backups"] if b.get("ts")
-                        ]
-                        if backup_rows:
-                            conn.cursor().executemany(
-                                """insert into proxmox_backups (probe_id, upid, vmid, node,
-                                       ts, ok, duration_s, detail)
-                                   values (%s,%s,%s,%s,%s,%s,%s,%s)
-                                   on conflict (probe_id, upid) do nothing""",
-                                backup_rows)
-
-                    # Supply-chain attaches a scan rollup plus its current
-                    # findings, upserted like host_checks - what's wrong
-                    # right now, not a growing log of the same CVE
-                    # reappearing on every scan.
-                    scrows = [(pid, sc) for pid, ok, _, _, _, _, _, sc, _ in results if ok and sc]
-                    if scrows:
-                        conn.cursor().executemany(
-                            """insert into supply_chain_scans (probe_id, ts, risk_score,
-                                   severity, recommendation, finding_count, scan_mode,
-                                   target_kind, extra)
-                               values (%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                               on conflict (probe_id, ts) do nothing""",
-                            [(pid, ts, s["scan"]["risk_score"], s["scan"]["severity"],
-                              s["scan"]["recommendation"], s["scan"]["finding_count"],
-                              s["scan"]["scan_mode"], s["scan"].get("target_kind", "repo"),
-                              json.dumps(s["scan"].get("extra") or {}))
-                             for pid, s in scrows])
-
-                        finding_rows = [(pid, f["rule_id"], f["category"], f["severity"],
-                                         f["message"], f["location"], ts, ts)
-                                        for pid, s in scrows for f in s["findings"]]
-                        if finding_rows:
-                            conn.cursor().executemany(
-                                """insert into supply_chain_findings (probe_id, rule_id,
-                                       category, severity, message, location,
-                                       first_seen, last_seen)
-                                   values (%s,%s,%s,%s,%s,%s,%s,%s)
-                                   on conflict (probe_id, rule_id) do update set
-                                       category = excluded.category, severity = excluded.severity,
-                                       message = excluded.message, location = excluded.location,
-                                       last_seen = excluded.last_seen""",
-                                finding_rows)
-                        # A finding that's gone was fixed or the dependency was
-                        # removed; leaving it would freeze a stale CVE in place.
-                        for pid, s in scrows:
-                            seen = [f["rule_id"] for f in s["findings"]]
-                            conn.execute(
-                                "delete from supply_chain_findings where probe_id = %s and rule_id <> all(%s)",
-                                (pid, seen or ["-"]))
-
-                    # TLS certificate detail attaches to https url checks
-                    # independent of whether the check itself passed - a
-                    # broken chain is exactly the case worth still
-                    # recording, not just "unreachable".
-                    tlsrows = [(pid, tc) for pid, ok, _, _, _, _, _, _, tc in results if tc]
-                    if tlsrows:
-                        conn.cursor().executemany(
-                            """insert into tls_cert_scans (probe_id, ts, subject, issuer,
-                                   not_before, not_after, days_remaining, chain_valid,
-                                   chain_error)
-                               values (%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                               on conflict (probe_id, ts) do nothing""",
-                            [(pid, ts, tc["subject"], tc["issuer"], tc["not_before"],
-                              tc["not_after"], tc["days_remaining"], tc["chain_valid"],
-                              tc["chain_error"])
-                             for pid, tc in tlsrows])
-
-                    now = time.monotonic()
-                    for p in batch:
-                        _last_run[p["id"]] = now
-
-                    failed = sum(1 for _, ok, _, _, _, _, _, _, _ in results if not ok)
-                    log.info("checked %d, %d failing", len(results), failed)
-
-                drain_nettools(conn)
-                trace_targets(conn)
-                run_automation(conn)
-
-                # Forget probes that have been deleted, so the dict cannot
-                # grow without bound over a long uptime.
-                live = {p["id"] for p in probes}
-                for gone in set(_last_run) - live:
-                    _last_run.pop(gone, None)
+            # Forget probes that have been deleted, so the dict cannot
+            # grow without bound over a long uptime.
+            live = {p["id"] for p in probes}
+            for gone in set(_last_run) - live:
+                _last_run.pop(gone, None)
 
         except Exception as e:
             log.warning("probe cycle failed: %s", e)

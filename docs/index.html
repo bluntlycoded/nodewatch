@@ -94,7 +94,12 @@ tailwind.config = { theme: { extend: {
       <h1 class="text-2xl font-semibold tracking-tight mt-1">nodewatch</h1>
     </div>
     <div class="px-6 py-6 space-y-4">
-      <p class="text-sm text-muted leading-relaxed">Telemetry is protected by row-level security. Sign in to read it.</p>
+      <p id="gate-intro" class="text-sm text-muted leading-relaxed">Telemetry is protected by row-level security. Sign in to read it.</p>
+      <div id="gate-org-field" class="hidden">
+        <label for="org" class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Organization</label>
+        <input id="org" type="text" autocomplete="organization"
+               class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+      </div>
       <div>
         <label for="email" class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Email</label>
         <input id="email" type="email" autocomplete="username"
@@ -106,7 +111,37 @@ tailwind.config = { theme: { extend: {
                class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
       </div>
       <button id="signin" class="w-full bg-ink text-paper py-2.5 text-sm font-medium hover:bg-signal transition-colors">Sign in</button>
+      <button id="signup" class="hidden w-full bg-ink text-paper py-2.5 text-sm font-medium hover:bg-signal transition-colors">Create account</button>
       <p id="gate-msg" class="text-sm text-down min-h-[1.25rem]"></p>
+      <button id="gate-toggle" type="button"
+              class="w-full font-mono text-[11px] uppercase tracking-[.1em] text-muted hover:text-ink">
+        Need an account? Create one
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════ finish signup: pick an organization name ════════════════════ -->
+<div id="provision-gate" class="hidden min-h-screen flex items-center justify-center px-5">
+  <div class="w-full max-w-sm bg-paper border border-rule">
+    <div class="border-b border-rule px-6 py-5">
+      <p class="font-mono text-[10px] tracking-[.22em] text-muted uppercase">One more step</p>
+      <h1 class="text-2xl font-semibold tracking-tight mt-1">Name your organization</h1>
+    </div>
+    <div class="px-6 py-6 space-y-4">
+      <p class="text-sm text-muted leading-relaxed">Your account is confirmed. Every server, check and
+        alert you add lives under this organization, and nobody outside it can see it.</p>
+      <div>
+        <label for="provision-org" class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Organization</label>
+        <input id="provision-org" type="text" autocomplete="organization"
+               class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
+      </div>
+      <button id="provision-submit" class="w-full bg-ink text-paper py-2.5 text-sm font-medium hover:bg-signal transition-colors">Continue</button>
+      <p id="provision-msg" class="text-sm text-down min-h-[1.25rem]"></p>
+      <button id="provision-signout" type="button"
+              class="w-full font-mono text-[11px] uppercase tracking-[.1em] text-muted hover:text-ink">
+        Sign out
+      </button>
     </div>
   </div>
 </div>
@@ -542,6 +577,7 @@ let state = {
   checks:[], recipients:[], rules:[], fim:[], tokens:[], history:[], vulns:[],
   role:'viewer', channels:[], userEvents:[], dashUsers:[], audit:[], me:null,
   navOpen:null, checkKind:null, dbKind:null, databases:[], settingsTab:null,
+  tenant:[], masterNodes:[],
   netView:null, interfaces:[], appKind:null, applications:[],
   topoNodes:[], topoEdges:[],
   escalations:[], awaiting:[], services:[], serviceComponents:[],
@@ -646,14 +682,71 @@ function trustBar(r) {
 }
 
 // ═══════════════════════════ auth
+
 $('signin').onclick = async () => {
+  $('gate-msg').className = 'text-sm text-down min-h-[1.25rem]';
   $('gate-msg').textContent='';
   const { error } = await sb.auth.signInWithPassword({ email:$('email').value.trim(), password:$('pw').value });
   if (error) { $('gate-msg').textContent = error.message; return; }
   enter();
 };
-$('pw').addEventListener('keydown', e => { if(e.key==='Enter') $('signin').click(); });
+$('pw').addEventListener('keydown', e => { if(e.key==='Enter') (gateMode==='signup'?$('signup'):$('signin')).click(); });
 $('signout').onclick = async () => { await sb.auth.signOut(); location.reload(); };
+
+let gateMode = 'signin';
+$('gate-toggle').onclick = () => {
+  gateMode = gateMode==='signin' ? 'signup' : 'signin';
+  $('gate-org-field').classList.toggle('hidden', gateMode!=='signup');
+  $('signin').classList.toggle('hidden', gateMode!=='signin');
+  $('signup').classList.toggle('hidden', gateMode!=='signup');
+  $('gate-intro').textContent = gateMode==='signup'
+    ? 'Create an account and an organization for your own fleet - nobody outside it can see it.'
+    : 'Telemetry is protected by row-level security. Sign in to read it.';
+  $('gate-toggle').textContent = gateMode==='signup' ? 'Already have an account? Sign in' : 'Need an account? Create one';
+  $('gate-msg').className = 'text-sm text-down min-h-[1.25rem]';
+  $('gate-msg').textContent = '';
+};
+
+$('signup').onclick = async () => {
+  const msg = $('gate-msg');
+  msg.className = 'text-sm text-down min-h-[1.25rem]'; msg.textContent = '';
+  const orgName = $('org').value.trim();
+  const email = $('email').value.trim();
+  const password = $('pw').value;
+  if (!orgName) { msg.textContent = 'Enter an organization name.'; return; }
+  if (!email || !password) { msg.textContent = 'Enter an email and password.'; return; }
+
+  const { data, error } = await sb.auth.signUp({ email, password });
+  if (error) { msg.textContent = error.message; return; }
+
+  if (!data.session) {
+    // This project requires confirming the email address before a session
+    // exists, so provision_tenant() (which needs auth.uid() to resolve)
+    // cannot run yet - it runs from enter()'s tenant check once they come
+    // back with a real session. The org name has to survive that round
+    // trip somehow, and localStorage is the only thing that will.
+    localStorage_set('nw-pending-org', orgName);
+    msg.className = 'text-sm text-healthy min-h-[1.25rem]';
+    msg.textContent = 'Check your email to confirm your account, then sign in.';
+    return;
+  }
+
+  const { error: provErr } = await sb.rpc('provision_tenant', { p_name: orgName });
+  if (provErr) { msg.textContent = provErr.message; return; }
+  enter();
+};
+
+$('provision-submit').onclick = async () => {
+  const msg = $('provision-msg');
+  const name = $('provision-org').value.trim();
+  if (!name) { msg.textContent = 'Enter an organization name.'; return; }
+  const { error } = await sb.rpc('provision_tenant', { p_name: name });
+  if (error) { msg.textContent = error.message; return; }
+  localStorage_remove('nw-pending-org');
+  $('provision-gate').classList.add('hidden');
+  enter();
+};
+$('provision-signout').onclick = async () => { await sb.auth.signOut(); location.reload(); };
 
 async function loadMe(){
   const { data:{ user } } = await sb.auth.getUser();
@@ -665,8 +758,21 @@ async function loadMe(){
 
 async function enter(){
   $('gate').classList.add('hidden');
-  $('app').classList.remove('hidden');
   await loadMe();
+
+  // A profile with no tenant yet is either mid-signup (email confirmation
+  // pending) or has just confirmed and never finished provisioning - the
+  // dashboard has nothing to show them until this resolves, so ask rather
+  // than rendering pages full of RLS-empty data.
+  const { data: tid } = await sb.rpc('current_tenant');
+  if (!tid) {
+    const pending = localStorage_get('nw-pending-org');
+    if (pending) $('provision-org').value = pending;
+    $('provision-gate').classList.remove('hidden');
+    return;
+  }
+  $('provision-gate').classList.add('hidden');
+  $('app').classList.remove('hidden');
   if (state.page==='users' && !isAdmin()) state.page='servers';
   const h=(location.hash||'').replace('#/','');
   if (h.startsWith('host/')) { state.page='host'; state.host=h.slice(5); }
@@ -3252,7 +3358,8 @@ const CHANNEL_KINDS = {
 // pattern pageActivity() already uses for its 4 sections, just applied
 // here too, so Settings doesn't need a scrollbar to find anything.
 const SETTINGS_TABS=[['channels','Channels'],['recipients','Recipients & Rules'],
-                      ['enrolment','Enrolment & Access'],['activity','Activity']];
+                      ['enrolment','Enrolment & Access'],['activity','Activity'],
+                      ['org','Organization']];
 
 function pageSettings(){
   // Read-once: shown in this render, then cleared so it doesn't linger
@@ -3349,19 +3456,36 @@ function pageSettings(){
 
   const enrolmentTab = `
     ${admin?card(sectionHead('Enrolment tokens',
-      `<button id="s-newtoken" class="font-mono text-[10px] uppercase tracking-[.12em] text-signal hover:underline">Issue token</button>`)
+      `<span class="flex gap-3">
+         <button id="s-newtoken" class="font-mono text-[10px] uppercase tracking-[.12em] text-signal hover:underline">Issue token</button>
+         <button id="s-newprobetoken" class="font-mono text-[10px] uppercase tracking-[.12em] text-signal hover:underline">Issue master node token</button>
+       </span>`)
       + `<div class="px-4 sm:px-5 py-4 space-y-3">
-        <p class="text-sm text-muted">Single use, expires in 24 hours. Required for on-premise
-          servers, which have no cloud identity to verify.</p>
+        <p class="text-sm text-muted">Single use, expires in 24 hours. An agent token is required for
+          on-premise servers, which have no cloud identity to verify; a master node token is required
+          the first time a probe runner (<span class="font-mono">NW_PROBE_ENROLL_TOKEN</span>) enrols
+          on your own network to run agentless checks.</p>
         ${state.tokens.length?`<div class="border border-rule divide-y divide-hairline">${state.tokens.map(t=>`
           <div class="flex items-center gap-3 px-3 py-2">
             <span class="font-mono text-xs truncate flex-1">${esc(t.status==='open'?t.token:t.token.slice(0,12)+'…')}</span>
+            <span class="font-mono text-[10px] uppercase tracking-[.1em] text-muted w-24 shrink-0">${t.kind==='probe_runner'?'master node':'agent'}</span>
             <span class="font-mono text-[11px] text-muted truncate w-28 hidden sm:inline">${esc(t.label||'')}</span>
             <span class="font-mono text-[10px] uppercase tracking-[.12em] w-16 text-right
               ${t.status==='open'?'text-healthy':t.status==='used'?'text-muted':'text-degraded'}">${esc(t.status)}</span>
             ${t.status==='open'?`<button data-revoke="${esc(t.token)}" class="font-mono text-[10px] text-down hover:underline">Revoke</button>`:''}
           </div>`).join('')}</div>`:'<p class="text-sm text-muted">No tokens issued.</p>'}
+        <p id="s-probetoken-msg" class="text-sm min-h-[1.25rem]"></p>
       </div>`):''}
+
+    ${admin?card(sectionHead('Master nodes')
+      + (state.masterNodes.length?`<div class="divide-y divide-hairline">${state.masterNodes.map(m=>`
+        <div class="flex flex-wrap items-center gap-3 px-4 sm:px-5 py-2.5">
+          <span class="text-sm truncate flex-1 min-w-0">${esc(m.label||m.hostname||'unnamed')}
+            <span class="font-mono text-[10px] text-muted">${esc(m.hostname||'')}</span></span>
+          <span class="font-mono text-[10px] text-muted">v${esc(m.version||'?')}</span>
+          <span class="font-mono text-[10px] text-muted">${m.enroll_count} enrolment${m.enroll_count===1?'':'s'}</span>
+          <span class="font-mono text-[10px] text-muted tabular-nums">${m.last_seen?ago(m.last_seen)+' ago':'never seen'}</span>
+        </div>`).join('')}</div>`:'<p class="px-4 py-4 text-sm text-muted">No probe runner has enrolled yet.</p>')):''}
 
     ${admin?card(sectionHead('Git access',
       `<button id="s-github-connect" class="font-mono text-[10px] uppercase tracking-[.12em] text-signal hover:underline">Connect GitHub</button>`)
@@ -3396,6 +3520,54 @@ function pageSettings(){
           <span class="font-mono text-[10px] text-muted tabular-nums w-10 text-right shrink-0">${ago(a.created_at)}</span>
         </div>`).join('')}</div>`:empty('No changes recorded.')))}`;
 
+  const tenant = state.tenant[0] || null;
+
+  const orgTab = !tenant ? card(empty('Loading organization…')) : `
+    ${card(sectionHead('Organization')
+      + `<div class="px-4 sm:px-5 py-4 space-y-4">
+        <div class="grid sm:grid-cols-2 gap-4">
+          <div><p class="font-mono text-[10px] uppercase tracking-[.14em] text-muted">Name</p>
+               <p class="text-sm mt-1">${esc(tenant.name)}</p></div>
+          <div><p class="font-mono text-[10px] uppercase tracking-[.14em] text-muted">Plan</p>
+               <p class="text-sm mt-1 font-mono uppercase">${esc(tenant.plan)}</p></div>
+        </div>
+        <div>
+          <p class="font-mono text-[10px] uppercase tracking-[.14em] text-muted">Data retention</p>
+          <p class="text-sm text-muted mt-1">Applies as a multiplier against each table's own default window
+            (30 days for most metrics, up to 365 for the audit log, which never drops below 365
+            regardless of this setting).</p>
+          ${admin ? `
+          <div class="flex items-center gap-2 mt-2">
+            <input id="org-retention" type="number" min="7" max="3650" value="${tenant.retention_days}"
+              class="border border-rule px-3 py-2 font-mono text-sm w-28 focus:border-signal outline-none">
+            <span class="font-mono text-[11px] text-muted">days</span>
+            <button id="org-retention-save" class="font-mono text-[10px] uppercase tracking-[.12em] text-signal hover:underline">Save</button>
+          </div>` : `<p class="font-mono text-sm mt-1">${tenant.retention_days} days</p>`}
+          <p id="org-retention-msg" class="text-sm min-h-[1.25rem] mt-1"></p>
+        </div>
+      </div>`)}
+
+    ${card(sectionHead('Export data')
+      + `<div class="px-4 sm:px-5 py-4 space-y-2">
+        <p class="text-sm text-muted">Downloads your inventory, configuration, events, alerts and audit
+          trail as a single JSON file. Raw metrics time series are not included - query those live instead.</p>
+        <button id="org-export" class="font-mono text-[10px] uppercase tracking-[.12em] text-signal hover:underline">Export as JSON</button>
+        <p id="org-export-msg" class="text-sm min-h-[1.25rem]"></p>
+      </div>`)}
+
+    ${admin ? card(sectionHead('Danger zone')
+      + `<div class="px-4 sm:px-5 py-4 space-y-2 border-t-2 border-down/40">
+        <p class="text-sm text-muted">Permanently deletes this organization and every server, check, alert
+          and setting under it. This cannot be undone. Type the organization name
+          (<span class="font-mono">${esc(tenant.name)}</span>) to confirm.</p>
+        <div class="flex items-center gap-2">
+          <input id="org-delete-confirm" type="text" placeholder="${esc(tenant.name)}"
+            class="border border-rule px-3 py-2 font-mono text-sm flex-1 max-w-xs focus:border-down outline-none">
+          <button id="org-delete" class="font-mono text-[10px] uppercase tracking-[.12em] text-down hover:underline">Delete organization</button>
+        </div>
+        <p id="org-delete-msg" class="text-sm text-down min-h-[1.25rem]"></p>
+      </div>`) : ''}`;
+
   return `
   <div class="space-y-5 max-w-4xl">
     ${!admin?`<div class="bg-paper border border-rule px-5 py-3">
@@ -3405,7 +3577,7 @@ function pageSettings(){
     <div class="flex items-center gap-1 border-b border-rule">${tabs}</div>
     <div class="space-y-6">
       ${tab==='channels'?channelsTab:tab==='recipients'?recipientsTab:
-        tab==='enrolment'?enrolmentTab:activityTab}
+        tab==='enrolment'?enrolmentTab:tab==='org'?orgTab:activityTab}
     </div>
   </div>`;
 }
@@ -3559,6 +3731,47 @@ function bind(){
 
   document.querySelectorAll('[data-settingstab]').forEach(el =>
     el.onclick=()=>{ state.settingsTab=el.dataset.settingstab; render(); });
+
+  if ($('org-retention-save')) {
+    $('org-retention-save').onclick = async () => {
+      const msg = $('org-retention-msg');
+      const days = parseInt($('org-retention').value, 10);
+      msg.className = 'text-sm min-h-[1.25rem] mt-1 text-muted'; msg.textContent = 'Saving…';
+      const { error } = await sb.rpc('update_tenant_retention', { p_retention_days: days });
+      if (error) { msg.className = 'text-sm min-h-[1.25rem] mt-1 text-down'; msg.textContent = error.message; return; }
+      msg.className = 'text-sm min-h-[1.25rem] mt-1 text-healthy'; msg.textContent = 'Saved.';
+      refresh();
+    };
+  }
+
+  if ($('org-export')) {
+    $('org-export').onclick = async () => {
+      const msg = $('org-export-msg');
+      msg.className = 'text-sm min-h-[1.25rem] text-muted'; msg.textContent = 'Preparing export…';
+      const { data, error } = await sb.rpc('export_tenant_data');
+      if (error) { msg.className = 'text-sm min-h-[1.25rem] text-down'; msg.textContent = error.message; return; }
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const stamp = new Date().toISOString().slice(0, 10);
+      a.href = url; a.download = `nodewatch-export-${stamp}.json`;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+      msg.className = 'text-sm min-h-[1.25rem] text-healthy'; msg.textContent = 'Downloaded.';
+    };
+  }
+
+  if ($('org-delete')) {
+    $('org-delete').onclick = async () => {
+      const msg = $('org-delete-msg');
+      const typed = $('org-delete-confirm').value.trim();
+      const { error } = await sb.rpc('delete_tenant', { p_confirm_name: typed });
+      if (error) { msg.textContent = error.message; return; }
+      msg.className = 'text-sm min-h-[1.25rem] text-healthy';
+      msg.textContent = 'Organization deleted. Signing out…';
+      setTimeout(async () => { await sb.auth.signOut(); location.reload(); }, 1500);
+    };
+  }
 
   document.querySelectorAll('[data-alertchip]').forEach(el =>
     el.onclick=()=>{ state.alertFilter=el.dataset.alertchip; render(); });
@@ -3726,6 +3939,15 @@ function bind(){
     refresh();
   };
 
+  if ($('s-newprobetoken')) $('s-newprobetoken').onclick=async()=>{
+    const msg = $('s-probetoken-msg');
+    const { error } = await sb.rpc('new_enroll_token',
+      { p_label:'master node', p_hours:24, p_kind:'probe_runner' });
+    if (msg) msg.textContent = error ? error.message :
+      'Issued - set NW_PROBE_ENROLL_TOKEN to the new token shown below on the probe runner host.';
+    refresh();
+  };
+
   if ($('s-github-connect')) $('s-github-connect').onclick=async()=>{
     if ($('s-github-msg')) $('s-github-msg').textContent='';
     const { data: { session } } = await sb.auth.getSession();
@@ -3859,6 +4081,7 @@ function closeAdd(){ $('addmodal').classList.add('hidden'); $('addmodal').classL
 
 function localStorage_get(k){ try { return localStorage.getItem(k); } catch(e){ return null; } }
 function localStorage_set(k,v){ try { localStorage.setItem(k,v); } catch(e){} }
+function localStorage_remove(k){ try { localStorage.removeItem(k); } catch(e){} }
 
 function renderPlatforms(){
   $('a-platforms').innerHTML = PLATFORMS.map(([k,label])=>`
@@ -4452,6 +4675,8 @@ const PAGE_QUERIES = {
     audit:  sb.from('audit_log').select('actor_email,action,target,created_at')
               .order('id',{ascending:false}).limit(40),
     ghinstall: sb.from('github_installations').select('*').order('installed_at',{ascending:false}),
+    tenant: sb.from('tenants').select('*'),
+    masternodes: sb.from('master_nodes').select('*').order('enrolled_at',{ascending:false}),
   }),
   databases:    () => ({ databases: sb.from('database_overview').select('*').order('name') }),
   network:      () => ({ ifaces: sb.from('network_overview').select('*').order('host') }),
@@ -4524,6 +4749,8 @@ const ASSIGN = {
   eucChecks:'eucChecks', skillChecks:'skillChecks',
   tlscerts:'tlsCerts',
   ghinstall:'githubInstallations',
+  tenant:'tenant',
+  masternodes:'masterNodes',
 };
 
 let polling = false;
