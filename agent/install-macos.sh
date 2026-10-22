@@ -59,8 +59,8 @@ $( [[ -n "$NW_SITE" ]] && printf '    <key>NW_SITE</key><string>%s</string>\n' "
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>$ROOT/state/agent.log</string>
-  <key>StandardErrorPath</key><string>$ROOT/state/agent.log</string>
+  <key>StandardOutPath</key><string>$ROOT/state/launchd.log</string>
+  <key>StandardErrorPath</key><string>$ROOT/state/launchd.log</string>
 </dict>
 </plist>
 PLIST

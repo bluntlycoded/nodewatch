@@ -278,6 +278,7 @@ read-only and new nodes are refused, but monitoring continues.
 | `nodewatch-server-setup-<v>-windows-x64.exe` | Installs the master as a Windows service, shows the setup code, opens the setup page. Uninstalling keeps the data. |
 | `nodewatch-agent-setup-<v>-windows-x64.exe` | Installs the agent and a Start menu entry for its window; optionally joins straight away. `/VERYSILENT /CODE=NWJ1-… /SITE="…"` for GPO/Intune rollout. |
 | `nodewatch-agent-<v>-macos-<arch>.dmg` | `nodewatch Agent.app`: drag to Applications, open, paste the join code. |
+| `nodewatch-server-<v>-macos-<arch>.dmg` | `nodewatch Master.app`: drag to Applications, open, **Install and start** (runs the master as a launchd service at boot), then **Open setup page** with the setup code it shows. |
 
 Neither is code-signed yet, so Windows SmartScreen and macOS Gatekeeper
 warn on first run (macOS: System Settings → Privacy & Security → Open

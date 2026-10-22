@@ -160,6 +160,11 @@ class AlertSender:
             return "failed", f"channel config is missing {e}"
         except requests.RequestException as e:
             return "failed", str(e)[:300]
+        except Exception as e:
+            # One broken channel must not fail the alert for the others,
+            # nor discard the deliveries already recorded.
+            log.exception("channel %s failed", kind)
+            return "failed", f"{type(e).__name__}: {e}"[:300]
         if r.status_code >= 300:
             return "failed", f"HTTP {r.status_code}: {r.text[:200]}"
         return "sent", f"HTTP {r.status_code}"

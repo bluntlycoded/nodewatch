@@ -23,6 +23,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import time
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -210,12 +211,8 @@ def main() -> None:
     datas += [(p, "agents") for p in agents]
     print(f"bundling agent {agent_v} for: {', '.join(p.name.split(agent_v + '-')[1] for p in agents) or 'none'}")
 
-    cmd = [
-        sys.executable, "-m", "PyInstaller",
-        "--onefile", "--console", "--clean", "--noconfirm",
-        "--name", name,
+    common = [
         "--paths", str(SERVER), "--paths", str(ROOT / "api"), "--paths", str(ROOT / "probe"),
-        "--distpath", str(DIST), "--workpath", str(WORK), "--specpath", str(WORK),
         "--collect-submodules", "uvicorn",
         # oracledb's thin driver is compiled Cython that imports cryptography
         # at runtime, invisible to PyInstaller's analysis.
@@ -223,12 +220,21 @@ def main() -> None:
         "--collect-submodules", "oracledb",
     ]
     for src, dest in datas:
-        cmd += ["--add-data", f"{src}{sep}{dest}"]
+        common += ["--add-data", f"{src}{sep}{dest}"]
     for mod in HIDDEN + (HIDDEN_WINDOWS if os_name == "windows" else []):
-        cmd += ["--hidden-import", mod]
-    for mod in EXCLUDES + ["tkinter"]:
-        cmd += ["--exclude-module", mod]
-    cmd.append(str(SERVER / "nodewatch-server.py"))
+        common += ["--hidden-import", mod]
+    for mod in EXCLUDES:
+        common += ["--exclude-module", mod]
+
+    if os_name == "macos" and "--dmg-only" in sys.argv:
+        build_macos_dmg(version, arch, common)
+        return
+
+    # The single-file program: what Linux and Windows run, and what the
+    # Windows installer wraps. No window, so no tkinter.
+    cmd = [sys.executable, "-m", "PyInstaller", "--onefile", "--console", "--clean", "--noconfirm",
+           "--name", name, "--distpath", str(DIST), "--workpath", str(WORK), "--specpath", str(WORK),
+           "--exclude-module", "tkinter"] + common + [str(SERVER / "nodewatch-server.py")]
 
     print("+", " ".join(cmd), flush=True)
     subprocess.run(cmd, check=True)
@@ -245,6 +251,84 @@ def main() -> None:
     if version not in out.stdout:
         sys.exit(f"--version printed {out.stdout!r}, expected {version}")
     print(out.stdout.strip())
+
+    if os_name == "macos" and "--no-dmg" not in sys.argv:
+        build_macos_dmg(version, arch, common)
+
+
+def build_macos_dmg(version: str, arch: str, common: list[str]) -> Path:
+    """
+    nodewatch Master.app in a drag-to-Applications DMG. Opening the app
+    shows the Master window (gui.py), whose Install button registers the
+    master as a launchd service (macservice.py).
+    """
+    import plistlib
+
+    work = ROOT / "build" / "pyinstaller-server-app"
+    shutil.rmtree(work, ignore_errors=True)
+    cmd = [sys.executable, "-m", "PyInstaller", "--windowed", "--onedir", "--clean", "--noconfirm",
+           "--name", "nodewatch-server", "--osx-bundle-identifier", "com.nodewatch.server",
+           "--distpath", str(work / "dist"), "--workpath", str(work / "build"), "--specpath", str(work),
+           "--hidden-import", "nodewatch_server.gui", "--hidden-import", "nodewatch_server.macservice",
+           ] + common + [str(SERVER / "nodewatch-server.py")]
+    print("+", " ".join(cmd), flush=True)
+    subprocess.run(cmd, check=True)
+
+    stage = work / "stage"
+    stage.mkdir()
+    app = stage / "nodewatch Master.app"
+    shutil.move(str(work / "dist" / "nodewatch-server.app"), app)
+    # PyInstaller's intermediates are no longer needed; free the space
+    # before the disk image doubles what is staged.
+    shutil.rmtree(work / "build", ignore_errors=True)
+    shutil.rmtree(work / "dist", ignore_errors=True)
+    info_path = app / "Contents" / "Info.plist"
+    info = plistlib.loads(info_path.read_bytes())
+    info.update({"CFBundleName": "nodewatch Master", "CFBundleDisplayName": "nodewatch Master",
+                 "CFBundleShortVersionString": version, "CFBundleVersion": version,
+                 "LSMinimumSystemVersion": "11.0", "NSHighResolutionCapable": True})
+    info_path.write_bytes(plistlib.dumps(info))
+    subprocess.run(["codesign", "--force", "--deep", "-s", "-", str(app)], check=True)
+
+    os.symlink("/Applications", stage / "Applications")
+    (stage / "Read me.txt").write_text(f"""nodewatch Master {version}
+
+1. Drag "nodewatch Master" onto Applications.
+2. Open it and click "Install and start". macOS asks for an administrator
+   password: the master runs as a background service that starts at boot
+   and keeps running when nobody is signed in.
+3. Click "Open setup page" and enter the setup code the window shows, your
+   licence key, and an administrator account for the dashboard.
+
+This build is not notarised by Apple. The first time, macOS may say it
+cannot check the app: open System Settings > Privacy & Security and choose
+"Open Anyway", or right-click the app and choose Open.
+
+For a permanent master, a Windows or Linux server is recommended; a Mac
+master suits trials and small offices.
+""")
+
+    dmg = DIST / f"nodewatch-server-{version}-macos-{arch}.dmg"
+    dmg.unlink(missing_ok=True)
+    for attempt in range(1, 6):
+        res = subprocess.run(["hdiutil", "create", "-volname", f"nodewatch Master {version}", "-srcfolder",
+                              str(stage), "-ov", "-format", "UDZO", str(dmg)], capture_output=True, text=True)
+        if res.returncode == 0:
+            break
+        print(f"hdiutil create attempt {attempt} failed: {(res.stderr or res.stdout).strip()}", flush=True)
+        time.sleep(10 * attempt)
+    else:
+        sys.exit("could not create the DMG")
+    digest = hashlib.sha256(dmg.read_bytes()).hexdigest()
+    (DIST / f"{dmg.name}.sha256").write_text(f"{digest}  {dmg.name}\n", newline="\n")
+
+    out = subprocess.run([str(app / "Contents" / "MacOS" / "nodewatch-server"), "--version"],
+                         capture_output=True, text=True)
+    if out.returncode != 0 or version not in out.stdout:
+        sys.exit(f"the app's executable did not run: {out.stdout}{out.stderr}")
+    print(f"built {dmg}  ({dmg.stat().st_size / 1e6:.1f} MB)  - app reports {out.stdout.strip()}")
+    shutil.rmtree(work, ignore_errors=True)
+    return dmg
 
 
 if __name__ == "__main__":

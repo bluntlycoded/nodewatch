@@ -798,6 +798,14 @@ def main():
     fh = RotatingFileHandler(STATE_DIR / "agent.log", maxBytes=5_000_000, backupCount=2)
     fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     logging.getLogger().addHandler(fh)
+    if sys.platform == "darwin" and not sys.stderr.isatty():
+        # Under launchd, stderr is launchd.log, which nothing rotates: one
+        # copy of every line, forever. agent.log (rotated above) has them;
+        # launchd.log keeps only what bypasses logging, such as a crash.
+        root = logging.getLogger()
+        for h in list(root.handlers):
+            if type(h) is logging.StreamHandler:
+                root.removeHandler(h)
 
     log.info("nodewatch-agent %s reporting to %s", AGENT_VERSION, INGEST_URL)
 

@@ -19,6 +19,8 @@ from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 from .config import restrict
 
+SERVER_CERT_DAYS = 825
+
 
 def _now():
     return dt.datetime.now(dt.timezone.utc)
@@ -75,6 +77,10 @@ class PKI:
         cert = x509.load_pem_x509_certificate(self.ca_cert.read_bytes())
         return cert.fingerprint(hashes.SHA256()).hex()
 
+    def server_cert_days_left(self) -> float:
+        cert = x509.load_pem_x509_certificate(self.server_cert.read_bytes())
+        return (cert.not_valid_after_utc - _now()).total_seconds() / 86400
+
     def issue_server_cert(self, addresses: list[str]) -> None:
         """
         HTTPS certificate covering every name and IP agents might use.
@@ -105,7 +111,7 @@ class PKI:
             .public_key(key.public_key())
             .serial_number(x509.random_serial_number())
             .not_valid_before(_now() - dt.timedelta(minutes=5))
-            .not_valid_after(_now() + dt.timedelta(days=825))
+            .not_valid_after(_now() + dt.timedelta(days=SERVER_CERT_DAYS))
             .add_extension(x509.SubjectAlternativeName(sans), critical=False)
             .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
             .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
