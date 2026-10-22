@@ -89,14 +89,17 @@ declare
   moved int;
   moved_from text;
 begin
-  select * into l from licensing.licences where id = p_lid for update;
-  if not found then
-    insert into licensing.licences (id, customer, nodes, features, issued, expires, key, source)
-    values (p_lid, p_customer, p_nodes, coalesce(p_features, '{}'), p_issued, p_expires, p_key, 'external')
-    returning * into l;
+  -- First sight of a key issued offline: register it. "on conflict do
+  -- nothing" so two masters activating the same new key at once cannot
+  -- both try to insert it.
+  insert into licensing.licences (id, customer, nodes, features, issued, expires, key, source)
+  values (p_lid, p_customer, p_nodes, coalesce(p_features, '{}'), p_issued, p_expires, p_key, 'external')
+  on conflict (id) do nothing;
+  if found then
     insert into licensing.events (lid, actor, kind, detail)
     values (p_lid, p_actor, 'registered', jsonb_build_object('customer', p_customer));
   end if;
+  select * into l from licensing.licences where id = p_lid for update;
 
   if l.revoked_at is not null then
     return jsonb_build_object('ok', false, 'code', 'revoked',

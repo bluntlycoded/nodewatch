@@ -101,9 +101,11 @@ def dispatch(make_master) -> None:
             super().__init__(args)
             self.stop_event = win32event.CreateEvent(None, 0, 0, None)
             self.master = None
+            self.stopping = False
 
         def SvcStop(self):
             self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING, waitHint=60_000)
+            self.stopping = True
             if self.master:
                 self.master.request_stop()
             win32event.SetEvent(self.stop_event)
@@ -111,8 +113,17 @@ def dispatch(make_master) -> None:
         def SvcDoRun(self):
             servicemanager.LogInfoMsg(f"{DISPLAY} starting")
             try:
-                self.master = make_master()
-                self.master.run(open_browser=False)
+                while True:
+                    self.master = make_master()
+                    self.master.in_service = True
+                    self.master.run(open_browser=False)
+                    # After setup (and certificate renewal) the master asks
+                    # to restart: start it again here, in the process the
+                    # SCM is watching.
+                    if self.stopping or not self.master.restart_requested:
+                        break
+                    self.master.stop_database()
+                    servicemanager.LogInfoMsg(f"{DISPLAY} restarting")
             except BaseException as e:
                 # BaseException: uvicorn exits with SystemExit when it cannot
                 # bind its port, which Exception would let through unlogged.

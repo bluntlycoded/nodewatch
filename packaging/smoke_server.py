@@ -121,6 +121,20 @@ def print_logs(data: Path) -> None:
     sys.stdout.flush()
 
 
+def status_as_root(cmd: list[str]) -> int:
+    """`sudo nodewatch-server status` is how an admin manages a Linux master;
+    it has to work while the service owns the data directory."""
+    if sys.platform == "win32":
+        return 0
+    res = subprocess.run(cmd + ["status"], capture_output=True, text=True, timeout=60)
+    print(res.stdout[-1500:], res.stderr[-1500:])
+    if res.returncode != 0 or "set up" not in res.stdout:
+        print(f"FAIL: `sudo nodewatch-server status` exited {res.returncode}")
+        return 1
+    print("ok: management commands work as root while the service runs")
+    return 0
+
+
 def service(binary: str) -> int:
     if sys.platform == "win32":
         import os
@@ -148,7 +162,8 @@ def service(binary: str) -> int:
                     with urllib.request.urlopen("https://localhost:8443/setup", context=ctx, timeout=10) as r:
                         if r.status == 200 and "Set up this nodewatch master" in r.read().decode():
                             print("ok: the service started and serves the setup page over verified TLS")
-                            return 0
+                            return status_as_root(install[1:2] if sys.platform == "win32" else
+                                                  ["sudo", "/opt/nodewatch-server/nodewatch-server"])
             except (OSError, ssl.SSLError):
                 pass
             time.sleep(3)
