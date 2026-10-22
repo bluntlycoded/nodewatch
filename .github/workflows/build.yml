@@ -79,6 +79,48 @@ jobs:
           & $bin.FullName --selftest
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Build installer (Windows)
+        if: matrix.target.os == 'windows'
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path agent\agent.py -Pattern '^AGENT_VERSION = "(.+)"').Matches[0].Groups[1].Value
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          & $iscc /Qp "/DVersion=$v" "/DSource=$PWD\dist\nodewatch-agent-$v-windows-x64.exe" "/DOutputDir=$PWD\dist" packaging\windows\agent.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $f = Get-Item "dist\nodewatch-agent-setup-$v-windows-x64.exe"
+          "$((Get-FileHash $f).Hash.ToLower())  $($f.Name)" | Set-Content -NoNewline -Encoding ascii "$($f.FullName).sha256"
+
+      # Silent install puts the agent where it expects to live and adds the
+      # Start menu entry; silent uninstall takes them away again.
+      - name: Test installer (Windows)
+        if: matrix.target.os == 'windows'
+        shell: pwsh
+        run: |
+          $setup = Get-Item dist\nodewatch-agent-setup-*-windows-x64.exe
+          Start-Process $setup.FullName -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait
+          $exe = "$env:ProgramFiles\nodewatch\nodewatch-agent.exe"
+          if (-not (Test-Path $exe)) { throw "agent not installed at $exe" }
+          & $exe --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $lnk = "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\nodewatch Agent.lnk"
+          if (-not (Test-Path $lnk)) { throw "Start menu entry missing" }
+          Start-Process "$env:ProgramFiles\nodewatch\unins000.exe" -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait
+          Start-Sleep 3
+          if (Test-Path $exe) { throw "uninstaller left $exe behind" }
+          'installer ok: installed, ran, uninstalled'
+
+      # The DMG mounts, and the app inside is signed and starts.
+      - name: Test DMG (macOS)
+        if: matrix.target.os == 'macos'
+        run: |
+          dmg=$(ls dist/nodewatch-agent-*-macos-${{ matrix.target.arch }}.dmg)
+          mnt=$(hdiutil attach -nobrowse -readonly "$dmg" | tail -1 | awk -F'\t' '{print $NF}')
+          codesign --verify --deep --strict "$mnt/nodewatch Agent.app"
+          "$mnt/nodewatch Agent.app/Contents/MacOS/nodewatch-agent" --version
+          test -L "$mnt/Applications"
+          hdiutil detach "$mnt"
+
       - uses: actions/upload-artifact@v4
         with:
           name: nodewatch-agent-${{ matrix.target.os }}-${{ matrix.target.arch }}
@@ -136,21 +178,39 @@ jobs:
           if [ "${{ matrix.target.os }}" = windows ]; then python -m pip install pywin32; fi
           python packaging/build_server.py
 
+      - name: Build installer (Windows)
+        if: matrix.target.os == 'windows'
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path server\nodewatch_server\main.py -Pattern '^VERSION = "(.+)"').Matches[0].Groups[1].Value
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          & $iscc /Qp "/DVersion=$v" "/DSource=$PWD\dist\nodewatch-server-$v-windows-x64.exe" "/DOutputDir=$PWD\dist" packaging\windows\server.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $f = Get-Item "dist\nodewatch-server-setup-$v-windows-x64.exe"
+          "$((Get-FileHash $f).Hash.ToLower())  $($f.Name)" | Set-Content -NoNewline -Encoding ascii "$($f.FullName).sha256"
+
       - name: Self-check and smoke test
         shell: bash
         run: |
-          bin=$(ls dist/nodewatch-server-*-${{ matrix.target.os }}-${{ matrix.target.arch }}* | grep -v sha256)
+          bin=$(ls dist/nodewatch-server-*-${{ matrix.target.os }}-${{ matrix.target.arch }}* | grep -v -e sha256 -e setup)
           "$bin" --data "$RUNNER_TEMP/selfcheck" selfcheck
           PY=$(command -v python3 || command -v python)
           "$PY" packaging/smoke_server.py "$bin"
 
-      # Install as a real service and check it serves. Not on macOS:
-      # macOS masters have no service install yet.
-      - name: Service install test
-        if: matrix.target.os != 'macos'
+      # Install as a real service and check it serves: on Windows through
+      # the Setup.exe installer, which installs the service itself. Not on
+      # macOS: macOS masters have no service install yet.
+      - name: Installer and service test (Windows)
+        if: matrix.target.os == 'windows'
+        shell: bash
+        run: python packaging/smoke_server.py --windows-setup "$(ls dist/nodewatch-server-setup-*-windows-x64.exe)"
+
+      - name: Service install test (Linux)
+        if: matrix.target.os == 'linux'
         shell: bash
         run: |
-          bin=$(ls dist/nodewatch-server-*-${{ matrix.target.os }}-${{ matrix.target.arch }}* | grep -v sha256)
+          bin=$(ls dist/nodewatch-server-*-${{ matrix.target.os }}-${{ matrix.target.arch }}* | grep -v -e sha256 -e setup)
           PY=$(command -v python3 || command -v python)
           "$PY" packaging/smoke_server.py --service "$PWD/$bin"
 

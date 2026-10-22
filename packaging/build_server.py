@@ -203,7 +203,10 @@ def main() -> None:
     # all of them first). Older versions are never bundled.
     agent_v = re.search(r'^AGENT_VERSION = "([^"]+)"',
                         (ROOT / "agent" / "agent.py").read_text(encoding="utf-8"), re.M).group(1)
-    agents = sorted(p for p in DIST.glob(f"nodewatch-agent-{agent_v}-*") if not p.name.endswith(".sha256"))
+    # Only the plain per-OS binaries the master serves - never a .dmg,
+    # installer or checksum file that happens to sit in dist/.
+    served = re.compile(rf"^nodewatch-agent-{re.escape(agent_v)}-(linux|macos|windows)-(x64|arm64)(\.exe)?$")
+    agents = sorted(p for p in DIST.glob(f"nodewatch-agent-{agent_v}-*") if served.match(p.name))
     datas += [(p, "agents") for p in agents]
     print(f"bundling agent {agent_v} for: {', '.join(p.name.split(agent_v + '-')[1] for p in agents) or 'none'}")
 

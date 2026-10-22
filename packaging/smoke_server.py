@@ -9,6 +9,7 @@ initialises and migrates, and that TLS and the setup wizard are served.
 
     python packaging/smoke_server.py dist/nodewatch-server-<ver>-<os>-<arch>[.exe]
     python packaging/smoke_server.py --service <binary>    # as root / Administrator
+    python packaging/smoke_server.py --windows-setup <nodewatch-server-setup-*.exe>
 
 --service installs it as a real service instead (systemd on Linux, a
 Windows service on Windows), waits for the service to serve the setup
@@ -158,7 +159,54 @@ def service(binary: str) -> int:
         subprocess.run(uninstall, capture_output=True, text=True, timeout=120)
 
 
+def windows_setup(setup_exe: str) -> int:
+    """
+    The Windows installer end to end: install silently, which registers and
+    starts the service; the service serves the setup page over TLS signed
+    by the CA it just made; uninstall silently, which removes the service.
+    """
+    import os
+    pf = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+    data = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "nodewatch-server"
+    res = subprocess.run([setup_exe, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/LOG=setup-server.log"],
+                         capture_output=True, text=True, timeout=600)
+    if res.returncode != 0:
+        print(Path("setup-server.log").read_text(errors="replace")[-3000:])
+        print(f"FAIL: installer exited {res.returncode}")
+        return 1
+    try:
+        deadline = time.time() + TIMEOUT_S
+        while time.time() < deadline:
+            try:
+                ctx = ssl.create_default_context(cafile=str(data / "pki" / "ca.crt"))
+                with urllib.request.urlopen("https://localhost:8443/setup", context=ctx, timeout=10) as r:
+                    if r.status == 200 and "Set up this nodewatch master" in r.read().decode():
+                        print("ok: the installer set up the service and it serves the setup page over verified TLS")
+                        break
+            except (OSError, ssl.SSLError):
+                pass
+            time.sleep(3)
+        else:
+            log = data / "server.log"
+            print(log.read_text(errors="replace")[-4000:] if log.exists() else "(no server.log)")
+            print(f"FAIL: the installed service did not serve the setup page within {TIMEOUT_S}s")
+            return 1
+    finally:
+        unins = pf / "nodewatch-server" / "unins000.exe"
+        if unins.exists():
+            subprocess.run([str(unins), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"], timeout=300)
+            time.sleep(5)
+    q = subprocess.run(["sc.exe", "query", "nodewatch-server"], capture_output=True, text=True)
+    if q.returncode == 0:
+        print("FAIL: the uninstaller left the service registered")
+        return 1
+    print("ok: the uninstaller removed the service")
+    return 0
+
+
 if __name__ == "__main__":
     if sys.argv[1] == "--service":
         sys.exit(service(sys.argv[2]))
+    if sys.argv[1] == "--windows-setup":
+        sys.exit(windows_setup(sys.argv[2]))
     sys.exit(main(sys.argv[1]))
