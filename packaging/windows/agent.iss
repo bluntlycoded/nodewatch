@@ -104,7 +104,8 @@ begin
   Result := '';
 end;
 
-{ The agent writes {"ok": true|false, "message": "..."}; pull out the message. }
+// The agent writes a JSON object with "ok" and "message"; pull out the message.
+// (A brace comment cannot hold JSON: Pascal's { } comments do not nest.)
 function ResultMessage(Json: String): String;
 var
   P: Integer;
@@ -140,7 +141,7 @@ begin
 
   CodeFile := ExpandConstant('{tmp}\join-code.txt');
   ResultFile := ExpandConstant('{tmp}\join-result.json');
-  SaveStringToFile(CodeFile, Code, False);
+  SaveStringToFile(CodeFile, AnsiString(Code), False);
   Params := 'join --code-file "' + CodeFile + '" --result-file "' + ResultFile + '"';
   if Site <> '' then
     Params := Params + ' --site "' + Site + '"';
