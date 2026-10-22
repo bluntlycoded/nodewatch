@@ -197,8 +197,8 @@ def main() -> None:
         (pkg / "license_pubkey.txt", "nodewatch_server"),
     ]
     datas += [(p, "db") for p in sorted((ROOT / "db").glob("[0-9][0-9][0-9]_*.sql"))]
-    datas.append((ROOT / "docs" / "index.html", "dashboard"))
-    datas += [(p, "dashboard/vendor") for p in sorted((ROOT / "docs" / "vendor").glob("*.js"))]
+    datas.append((ROOT / "dashboard" / "index.html", "dashboard"))
+    datas += [(p, "dashboard/vendor") for p in sorted((ROOT / "dashboard" / "vendor").glob("*.js"))]
     # Agent binaries the master hands to joining nodes: whatever was built
     # into dist/ for the current agent version, for any OS (CI downloads
     # all of them first). Older versions are never bundled.

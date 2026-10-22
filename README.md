@@ -128,7 +128,8 @@ agent/     the agent, one module per OS behind a shared interface
 api/       FastAPI ingest service
 probe/     agentless probe runner
 db/        migrations, applied in order
-docs/      the dashboard (single HTML file, served by GitHub Pages)
+dashboard/ the dashboard (single HTML file, served by each master)
+docs/      GitHub Pages: only the licence admin and offline activation pages
 server/    self-hosted master: runs api/, probe/ and db/ with bundled Postgres
 licensing/ the vendor's licence server (Supabase): activation and the admin API
 packaging/ builds the agent and master into standalone executables
@@ -339,9 +340,11 @@ changes the master's address later (same master) or joins a different one
 
 The master applies `db/*.sql` itself, unchanged, on top of a small
 compatibility layer (`server/nodewatch_server/sql/compat.sql`) that
-provides the Supabase-only pieces they call. The same `docs/index.html`
-runs on GitHub Pages against Supabase and on a master against itself: the
-master serves `config.js`, which switches it.
+provides the Supabase-only pieces they call. The dashboard,
+`dashboard/index.html`, is built into the master and served by it; the
+master's `config.js` points it at the master's own data API and sign-in.
+It is no longer published on GitHub Pages, which now carries only the
+licence pages.
 
 ---
 

@@ -221,10 +221,10 @@ def add_common(app: FastAPI, store) -> None:
 
 
 def dashboard_dir() -> Path:
-    """docs/ - the same single-file dashboard GitHub Pages serves."""
+    """The single-file dashboard (dashboard/ in the repository)."""
     if hasattr(sys, "_MEIPASS"):
         return Path(sys._MEIPASS) / "dashboard"
-    return Path(__file__).resolve().parents[2] / "docs"
+    return Path(__file__).resolve().parents[2] / "dashboard"
 
 
 # Request and response headers that matter to PostgREST and supabase-js.
@@ -237,7 +237,7 @@ def build_main_app(api_app, cfg, store, ctx) -> FastAPI:
     """
     Everything the master serves on one origin:
 
-        /                  the dashboard (docs/index.html)
+        /                  the dashboard (dashboard/index.html)
         /config.js         tells the dashboard it is on a self-hosted master
         /rest/v1/*         PostgREST, proxied, row-level security applies
         /auth/v1/*         sign-in (auth.py)
