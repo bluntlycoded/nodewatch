@@ -34,8 +34,9 @@ def self_command() -> list[str]:
     return [sys.executable, str(Path(__file__).resolve().parent / "agent.py")]
 
 
-def run_elevated(args: list[str]) -> tuple[bool, str]:
-    """Run `nodewatch-agent <args>` as admin; returns (ok, message)."""
+def run_elevated(args: list[str], why: str = "make this change") -> tuple[bool, str]:
+    """Run `nodewatch-agent <args>` as admin; returns (ok, message). `why`
+    finishes the sentence on macOS's password dialog."""
     fd, result = tempfile.mkstemp(prefix="nw-result-", suffix=".json")
     os.close(fd)
     cmd = self_command() + args + ["--result-file", result]
@@ -43,15 +44,22 @@ def run_elevated(args: list[str]) -> tuple[bool, str]:
         if sys.platform == "win32":
             rc = _shell_execute_runas(cmd)
         elif sys.platform == "darwin":
+            def quoted(s: str) -> str:
+                return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
             line = " ".join(shlex.quote(c) for c in cmd)
-            script = 'do shell script "%s" with administrator privileges' % (
-                line.replace("\\", "\\\\").replace('"', '\\"'))
-            rc = subprocess.run(["osascript", "-e", script], capture_output=True, text=True).returncode
+            prompt = f"nodewatch agent needs an administrator password to {why}."
+            # osascript asks on behalf of a background helper, so without
+            # "activate" the password dialog can open behind other windows
+            # and look as if nothing happened. Output is kept as bytes: it
+            # is not needed, and decoding it must never be able to fail.
+            rc = subprocess.run(["osascript", "-e", "activate", "-e",
+                                 f"do shell script {quoted(line)} with prompt {quoted(prompt)} "
+                                 "with administrator privileges"], capture_output=True).returncode
         else:
             if not _which("pkexec"):
                 return False, ("Run this in a terminal instead:\n  sudo "
                                + " ".join(shlex.quote(c) for c in self_command() + args))
-            rc = subprocess.run(["pkexec"] + cmd, capture_output=True, text=True).returncode
+            rc = subprocess.run(["pkexec"] + cmd, capture_output=True).returncode
         try:
             out = json.loads(Path(result).read_text() or "{}")
         except (OSError, ValueError):
@@ -124,6 +132,7 @@ class App:
     def __init__(self, root: tk.Tk, version: str):
         self.root = root
         self.busy = False
+        self.op = 0
         root.title("nodewatch agent")
         root.minsize(560, 420)
 
@@ -208,30 +217,43 @@ class App:
 
     # ------------------------------------------------------------ actions
 
-    def _do(self, label: str, args: list[str], code: str | None = None):
+    def _do(self, label: str, args: list[str], why: str, code: str | None = None):
         if self.busy:
             return
         self.busy = True
+        self.op += 1
+        op = self.op
         for b in (self.join_btn, self.url_btn, self.restart_btn):
             b.state(["disabled"])
-        self.msg.set(f"{label}… (approve the administrator prompt)")
+        self.msg.set(f"{label}… enter your administrator password when asked.")
+
+        def still_waiting():
+            if self.busy and self.op == op:
+                self.msg.set(f"{label}… still working. If no password dialog appeared, it may be behind "
+                             "other windows or on another desktop.")
+        self.root.after(15000, still_waiting)
 
         def work():
             code_file = None
+            ok, message = False, ""
             try:
                 if code is not None:
                     fd, code_file = tempfile.mkstemp(prefix="nw-join-")
                     with os.fdopen(fd, "w") as f:
                         f.write(code)
                     args.extend(["--code-file", code_file])
-                ok, message = run_elevated(args)
+                ok, message = run_elevated(args, why)
+            except Exception as e:
+                # Report it: a silent failure here left the window saying
+                # "Joining…" forever with every button disabled.
+                ok, message = False, f"could not run the administrator step: {e}"
             finally:
                 if code_file:
                     try:
                         os.unlink(code_file)
                     except OSError:
                         pass
-            self.root.after(0, lambda: self._done(ok, message))
+                self.root.after(0, lambda: self._done(ok, message))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -251,15 +273,15 @@ class App:
         args = ["join"]
         if self.site.get().strip():
             args += ["--site", self.site.get().strip()]
-        self._do("Joining", args, code=code)
+        self._do("Joining", args, "join this computer to your nodewatch master", code=code)
 
     def change_url(self):
         url = self.url.get().strip()
         if url:
-            self._do("Changing address", ["set-url", url])
+            self._do("Changing address", ["set-url", url], "change the nodewatch master's address")
 
     def restart(self):
-        self._do("Restarting", ["restart"])
+        self._do("Restarting", ["restart"], "restart the nodewatch agent")
 
 
 def main(version: str) -> int:
