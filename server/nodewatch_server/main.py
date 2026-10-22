@@ -598,6 +598,12 @@ def main() -> None:
     def on_term(*_):
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, on_term)
+    if hasattr(signal, "SIGBREAK"):
+        # Windows: Ctrl+Break (and CTRL_BREAK_EVENT from a supervisor) is the
+        # one stop request a console process can receive. Without a handler
+        # Windows ends the process outright and PostgreSQL is left running,
+        # holding its port.
+        signal.signal(signal.SIGBREAK, on_term)
     try:
         m.run(open_browser=not args.no_browser and sys.stdin is not None and sys.stdin.isatty())
     except KeyboardInterrupt:
