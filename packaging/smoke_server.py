@@ -187,8 +187,7 @@ def windows_setup(setup_exe: str) -> int:
                 pass
             time.sleep(3)
         else:
-            log = data / "server.log"
-            print(log.read_text(errors="replace")[-4000:] if log.exists() else "(no server.log)")
+            print_logs(data)
             print(f"FAIL: the installed service did not serve the setup page within {TIMEOUT_S}s")
             return 1
     finally:
