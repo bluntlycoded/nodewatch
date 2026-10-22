@@ -128,7 +128,7 @@ def main() -> None:
 
     binary = DIST / f"{name}{exe}"
     digest = hashlib.sha256(binary.read_bytes()).hexdigest()
-    (DIST / f"{binary.name}.sha256").write_text(f"{digest}  {binary.name}\n")
+    (DIST / f"{binary.name}.sha256").write_text(f"{digest}  {binary.name}\n", newline="\n")
 
     print(f"\nbuilt {binary}  ({binary.stat().st_size / 1e6:.1f} MB)")
     print(f"sha256 {digest}")
