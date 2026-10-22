@@ -543,10 +543,12 @@ def main() -> None:
     sub.add_parser("uninstall", help="remove the service; keeps the data directory")
     sub.add_parser("restart", help="macOS: restart the service")
     sub.add_parser("gui", help="macOS: the nodewatch Master window")
+    sub.add_parser("serve", help="run the master in the foreground (what the services run)")
     sub.add_parser("service-run", help=argparse.SUPPRESS)
     sub.add_parser("selfcheck", help="check this build's bundled components run on this OS")
     # Finder on older macOS passes a process serial number to apps it opens.
-    args = ap.parse_args([a for a in sys.argv[1:] if not a.startswith("-psn_")])
+    argv = [a for a in sys.argv[1:] if not a.startswith("-psn_")]
+    args = ap.parse_args(argv)
 
     if args.version:
         print(f"nodewatch-server {VERSION}")
@@ -558,8 +560,11 @@ def main() -> None:
 
     if sys.platform == "darwin":
         from . import macservice
-        if args.cmd is None and macservice.app_bundle() is not None:
-            args.cmd = "gui"                    # double-clicked nodewatch Master.app
+        if not argv and macservice.app_bundle() is not None:
+            # Double-clicked nodewatch Master.app: no arguments at all. The
+            # launchd service starts the same executable with arguments
+            # (`serve`), and must get the master, not the window.
+            args.cmd = "gui"
         from .config import mac_system_data_dir
         if args.cmd == "gui":
             from . import gui

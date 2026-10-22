@@ -145,8 +145,9 @@ class MasterWindow:
         elif inst:
             self.status.set("○ Starting or stopped")
             self.detail.set("The service is installed but not answering yet. The first start takes up to a minute "
-                            "while the database is created. If it stays like this, use Restart.")
-            self.primary.config(text="Open dashboard")
+                            "while the database is created. If it stays like this, use Reinstall and start - "
+                            "also the way to upgrade to this version of the app.")
+            self.primary.config(text="Reinstall and start")
         else:
             self.status.set("○ Not installed")
             self.detail.set("Install the master as a background service. It starts at boot, keeps running when "
@@ -166,7 +167,7 @@ class MasterWindow:
         st = self.state
         if st.get("net") == "setup":
             webbrowser.open(f"https://localhost:{st['port']}/setup")
-        elif st.get("net") == "ready" or st.get("installed"):
+        elif st.get("net") == "ready" or (st.get("cfg") or {}).get("_unreadable"):
             webbrowser.open(f"https://localhost:{st.get('port', 8443)}/")
         else:
             user = pwd.getpwuid(os.getuid()).pw_name

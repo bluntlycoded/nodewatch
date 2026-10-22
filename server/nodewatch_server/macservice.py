@@ -98,7 +98,7 @@ def install(data_dir: Path, user: str) -> None:
 
     PLIST.write_bytes(plistlib.dumps({
         "Label": LABEL,
-        "ProgramArguments": [str(exe), "--data", str(data_dir), "--no-browser"],
+        "ProgramArguments": [str(exe), "--data", str(data_dir), "--no-browser", "serve"],
         "UserName": user,
         "RunAtLoad": True,
         # Restart after a crash, not after a clean stop.

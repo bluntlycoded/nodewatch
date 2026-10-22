@@ -226,6 +226,10 @@ def main() -> None:
     for mod in EXCLUDES:
         common += ["--exclude-module", mod]
 
+    if os_name == "macos" and "--dmg-only" in sys.argv:
+        build_macos_dmg(version, arch, common)
+        return
+
     # The single-file program: what Linux and Windows run, and what the
     # Windows installer wraps. No window, so no tkinter.
     cmd = [sys.executable, "-m", "PyInstaller", "--onefile", "--console", "--clean", "--noconfirm",
@@ -274,6 +278,10 @@ def build_macos_dmg(version: str, arch: str, common: list[str]) -> Path:
     stage.mkdir()
     app = stage / "nodewatch Master.app"
     shutil.move(str(work / "dist" / "nodewatch-server.app"), app)
+    # PyInstaller's intermediates are no longer needed; free the space
+    # before the disk image doubles what is staged.
+    shutil.rmtree(work / "build", ignore_errors=True)
+    shutil.rmtree(work / "dist", ignore_errors=True)
     info_path = app / "Contents" / "Info.plist"
     info = plistlib.loads(info_path.read_bytes())
     info.update({"CFBundleName": "nodewatch Master", "CFBundleDisplayName": "nodewatch Master",
