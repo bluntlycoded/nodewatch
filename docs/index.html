@@ -181,6 +181,8 @@ tailwind.config = { theme: { extend: {
 
   <!-- page -->
   <main class="flex-1 min-w-0">
+    <div id="lic-banner" role="status" hidden
+         style="padding:8px 16px;font-size:13px;border-bottom:1px solid var(--c-down);color:var(--c-down)"></div>
     <header class="sticky top-0 z-20 bg-ground/95 backdrop-blur border-b border-rule">
       <div id="loadbar" role="progressbar" aria-label="Loading"><span></span></div>
       <div class="px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-3">
@@ -615,6 +617,21 @@ let state = {
 };
 
 // ═══════════════════════════ helpers
+// Self-hosted: say plainly when the licence needs attention.
+function licenceBanner(){
+  const lic = NWC && NWC.licence, el = $('lic-banner');
+  if (!lic || !el) return;
+  let msg = '';
+  if (lic.state === 'inactive') msg = `Read-only: ${lic.inactive_reason}. Monitoring and alerts continue.`;
+  else if (lic.state === 'expired') msg = `Read-only: the licence expired on ${lic.expires}. Monitoring and alerts continue; install a renewed licence with: nodewatch-server licence <key>`;
+  else if (lic.state === 'invalid') msg = `The licence on this master is not valid: ${lic.error || ''}`;
+  else if (lic.state === 'grace') msg = `The licence expired on ${lic.expires}. In ${14 + lic.days_left} day(s) the dashboard becomes read-only unless it is renewed.`;
+  else if (lic.activation === 'pending') msg = `This master's licence is not activated yet. Activate it within ${lic.activate_within_days} day(s) with: nodewatch-server activate`;
+  el.textContent = msg;
+  el.hidden = !msg;
+}
+if (SELF_HOSTED) document.addEventListener('DOMContentLoaded', licenceBanner);
+
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c =>
   ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 

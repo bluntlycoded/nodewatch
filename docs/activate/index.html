@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Activate a nodewatch master offline</title>
+<script src="../licensing/config.js"></script>
+<style>
+ :root{color-scheme:light dark;--ink:#16181d;--muted:#6b7280;--rule:#d9dce1;--bg:#f6f7f9;--paper:#fff;--accent:#0f766e;--bad:#b42318}
+ @media(prefers-color-scheme:dark){:root{--ink:#e6e8eb;--muted:#9aa1ab;--rule:#30343b;--bg:#111317;--paper:#181b20;--accent:#2dd4bf;--bad:#f97066}}
+ *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
+ main{max-width:640px;margin:48px auto;padding:0 20px}
+ .card{background:var(--paper);border:1px solid var(--rule);padding:28px}
+ h1{font-size:20px;margin:0 0 4px}p.sub{color:var(--muted);margin:0 0 8px}
+ label{display:block;font-size:13px;margin:16px 0 4px}
+ textarea{width:100%;padding:9px 10px;border:1px solid var(--rule);background:var(--bg);color:var(--ink);font:12px ui-monospace,Menlo,monospace;height:84px}
+ button{margin-top:20px;width:100%;padding:11px;border:0;background:var(--accent);color:#fff;font:600 15px system-ui;cursor:pointer}
+ button:disabled{opacity:.6}
+ .err{border:1px solid var(--bad);color:var(--bad);padding:10px 12px;margin:16px 0}
+ .key{font:12px ui-monospace,Menlo,monospace;word-break:break-all;background:var(--bg);border:1px solid var(--rule);padding:10px;margin-top:8px}
+ [hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main>
+ <div class="card">
+  <h1>Activate a nodewatch master offline</h1>
+  <p class="sub">For a master with no internet access. It showed you a request code during setup,
+   or when you ran <code>nodewatch-server activate</code>.</p>
+  <form id="f">
+   <label>Licence key</label>
+   <textarea name="key" required placeholder="NW1-..."></textarea>
+   <label>Request code from the master</label>
+   <textarea name="request" required placeholder="NWR1-..." style="height:60px"></textarea>
+   <button id="go">Get activation code</button>
+  </form>
+  <div id="err" class="err" hidden></div>
+  <div id="out" hidden>
+   <label>Activation code</label>
+   <div id="code" class="key"></div>
+   <button id="copy" type="button">Copy activation code</button>
+   <p class="sub" style="margin-top:16px">Paste it into the master's setup page, or run
+    <code>nodewatch-server activate &lt;activation code&gt;</code> on the master.</p>
+   <p class="sub" id="moved" hidden></p>
+   <div id="renewed" hidden>
+    <label>Your licence was renewed - install this key on the master too</label>
+    <div id="newkey" class="key"></div>
+    <p class="sub">Run <code>nodewatch-server licence &lt;key&gt;</code> on the master.</p>
+   </div>
+  </div>
+ </div>
+</main>
+<script>
+const CFG = window.NW_LICENSING;
+const $ = id => document.getElementById(id);
+$('f').onsubmit = async e => {
+  e.preventDefault();
+  const f = Object.fromEntries(new FormData(e.target));
+  $('err').hidden = true; $('out').hidden = true; $('go').disabled = true;
+  try {
+    const r = await fetch(CFG.supabaseUrl.replace(/\/$/, '') + '/functions/v1/licensing/offline', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: f.key.trim(), request: f.request.trim() }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.ok) throw new Error(d.message || `The licence server answered ${r.status}.`);
+    $('code').textContent = d.activation;
+    $('moved').textContent = d.moved_from ? `This moved the licence from "${d.moved_from}"; that master becomes read-only.` : '';
+    $('moved').hidden = !d.moved_from;
+    $('newkey').textContent = d.key || '';
+    $('renewed').hidden = !d.key || d.key === f.key.replace(/\s+/g, '');
+    $('out').hidden = false;
+  } catch (err) {
+    $('err').textContent = err.message === 'Failed to fetch' ? 'Could not reach the licence server - check this device\'s internet connection.' : err.message;
+    $('err').hidden = false;
+  } finally { $('go').disabled = false; }
+};
+$('copy').onclick = () => navigator.clipboard.writeText($('code').textContent).then(() => { $('copy').textContent = 'Copied'; });
+</script>
+</body>
+</html>

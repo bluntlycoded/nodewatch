@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<title>nodewatch licences</title>
+<script src="../vendor/supabase-js-2.117.3.js"></script>
+<script src="config.js"></script>
+<style>
+ :root{color-scheme:light dark;--ink:#16181d;--muted:#6b7280;--rule:#d9dce1;--bg:#f6f7f9;--paper:#fff;--accent:#0f766e;--bad:#b42318;--warn:#b54708}
+ @media(prefers-color-scheme:dark){:root{--ink:#e6e8eb;--muted:#9aa1ab;--rule:#30343b;--bg:#111317;--paper:#181b20;--accent:#2dd4bf;--bad:#f97066;--warn:#fdb022}}
+ *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
+ main{max-width:1100px;margin:32px auto;padding:0 20px}
+ header{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:20px}
+ h1{font-size:20px;margin:0}h2{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:24px 0 8px}
+ .card{background:var(--paper);border:1px solid var(--rule);padding:20px;margin-bottom:16px}
+ label{display:block;font-size:12px;color:var(--muted);margin:10px 0 3px}
+ input,textarea,select{width:100%;padding:7px 9px;border:1px solid var(--rule);background:var(--bg);color:var(--ink);font:inherit}
+ textarea{font-family:ui-monospace,Menlo,monospace;font-size:12px}
+ button{padding:7px 14px;border:1px solid var(--accent);background:var(--accent);color:#fff;font:600 13px system-ui;cursor:pointer}
+ button.quiet{background:transparent;color:var(--accent)}button.danger{background:transparent;color:var(--bad);border-color:var(--bad)}
+ button:disabled{opacity:.5;cursor:default}
+ .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:0 14px}
+ table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--rule);vertical-align:top}
+ th{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:600}
+ tbody tr.click{cursor:pointer}tbody tr.click:hover{background:var(--bg)}
+ .muted{color:var(--muted)}.bad{color:var(--bad)}.warn{color:var(--warn)}.ok{color:var(--accent)}
+ .key{font-family:ui-monospace,Menlo,monospace;font-size:11px;word-break:break-all;background:var(--bg);border:1px solid var(--rule);padding:8px}
+ .msg{padding:9px 12px;margin:12px 0;border:1px solid var(--accent)}.msg.err{border-color:var(--bad);color:var(--bad)}
+ .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px}
+ [hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main>
+ <header>
+  <h1>nodewatch licences</h1>
+  <div class="row" style="margin:0"><span id="who" class="muted"></span><button id="signout" class="quiet" hidden>Sign out</button></div>
+ </header>
+ <div id="msg" class="msg" hidden></div>
+
+ <section id="signin" class="card" hidden style="max-width:380px">
+  <form id="signin-form">
+   <label>Email</label><input name="email" type="email" required autocomplete="username">
+   <label>Password</label><input name="password" type="password" required autocomplete="current-password">
+   <div class="row"><button>Sign in</button></div>
+  </form>
+ </section>
+
+ <section id="app" hidden>
+  <div class="row" style="margin:0 0 12px"><button id="new-open">New licence</button><button id="refresh" class="quiet">Refresh</button></div>
+
+  <div id="new" class="card" hidden>
+   <form id="new-form">
+    <div class="grid">
+     <div><label>Customer</label><input name="customer" required></div>
+     <div><label>Contact email</label><input name="email" type="email"></div>
+     <div><label>Nodes</label><input name="nodes" type="number" min="1" value="25" required></div>
+     <div><label>Valid for (days)</label><input name="days" type="number" min="1" value="365" required></div>
+     <div><label>Moves allowed per year</label><input name="moves_per_year" type="number" min="0" value="3" required></div>
+     <div><label>Features (comma separated)</label><input name="features"></div>
+    </div>
+    <label>Notes (only you see these)</label><textarea name="notes" rows="2"></textarea>
+    <div class="row"><button>Issue licence</button><button type="button" class="quiet" id="new-cancel">Cancel</button></div>
+   </form>
+  </div>
+
+  <div class="card" style="padding:0">
+   <table>
+    <thead><tr><th>Customer</th><th>Nodes</th><th>Expires</th><th>Status</th><th>Machine</th><th>Last seen</th><th>Moves</th></tr></thead>
+    <tbody id="list"></tbody>
+   </table>
+  </div>
+
+  <div id="detail" class="card" hidden></div>
+ </section>
+</main>
+
+<script>
+const CFG = window.NW_LICENSING;
+const API = CFG.supabaseUrl.replace(/\/$/, '') + '/functions/v1/licensing/';
+const sb = supabase.createClient(CFG.supabaseUrl, CFG.anonKey);
+const $ = id => document.getElementById(id);
+
+// Build DOM with text nodes only: customer names and notes are never HTML.
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+    else if (v !== false && v != null) el.setAttribute(k, v === true ? '' : v);
+  }
+  for (const c of kids.flat()) if (c != null && c !== false) el.append(c instanceof Node ? c : String(c));
+  return el;
+}
+
+function say(text, bad) {
+  const m = $('msg');
+  m.textContent = text; m.className = 'msg' + (bad ? ' err' : ''); m.hidden = !text;
+  if (text && !bad) setTimeout(() => { if (m.textContent === text) m.hidden = true; }, 6000);
+}
+
+async function call(path, body) {
+  const { data: { session } } = await sb.auth.getSession();
+  const r = await fetch(API + 'admin/' + path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + (session?.access_token || '') },
+    body: JSON.stringify(body || {}),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (r.status === 401) { await sb.auth.signOut(); show(null); }
+  if (!r.ok) throw new Error(data.message || `the licence server answered ${r.status}`);
+  return data;
+}
+
+const day = v => v ? String(v).slice(0, 10) : '';
+const ago = v => {
+  if (!v) return '';
+  const s = (Date.now() - new Date(v)) / 1000;
+  return s < 3600 ? `${Math.max(1, Math.round(s / 60))} min ago` : s < 172800 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} days ago`;
+};
+function status(l) {
+  if (l.revoked_at) return h('span', { class: 'bad' }, 'revoked');
+  const left = Math.floor((new Date(day(l.expires)) - new Date(new Date().toISOString().slice(0, 10))) / 864e5);
+  if (left < -14) return h('span', { class: 'bad' }, 'expired');
+  if (left < 0) return h('span', { class: 'warn' }, `expired, grace ${14 + left}d`);
+  if (!l.machine_name && !l.activated_at) return h('span', { class: 'muted' }, 'not activated');
+  return h('span', { class: left < 30 ? 'warn' : 'ok' }, left < 30 ? `active, ${left}d left` : 'active');
+}
+
+async function load() {
+  try {
+    const rows = await call('list');
+    $('list').replaceChildren(...(rows.length ? rows.map(l => h('tr', { class: 'click', onclick: () => open(l.id) },
+      h('td', null, l.customer, l.source === 'external' ? h('span', { class: 'muted' }, ' (offline-issued)') : null),
+      h('td', null, l.nodes), h('td', null, day(l.expires)), h('td', null, status(l)),
+      h('td', null, l.machine_name ? `${l.machine_name} (${l.method})` : ''),
+      h('td', { class: 'muted' }, ago(l.last_seen_at)),
+      h('td', null, `${l.moves_used} / ${l.moves_per_year}`)))
+      : [h('tr', null, h('td', { colspan: 7, class: 'muted' }, 'No licences yet.'))]));
+  } catch (e) { say(e.message, true); }
+}
+
+function copyable(text) {
+  return h('div', null, h('div', { class: 'key' }, text),
+    h('div', { class: 'row' }, h('button', { class: 'quiet', type: 'button',
+      onclick: e => navigator.clipboard.writeText(text).then(() => { e.target.textContent = 'Copied'; }) }, 'Copy key')));
+}
+
+async function act(fn, ok) {
+  try { const r = await fn(); say(ok); await load(); return r; } catch (e) { say(e.message, true); }
+}
+
+async function open(id) {
+  let d;
+  try { d = await call('get', { id }); } catch (e) { return say(e.message, true); }
+  const l = d.licence, active = d.activations.find(a => !a.released_at);
+  const renew = h('form', { onsubmit: async e => {
+      e.preventDefault();
+      const f = Object.fromEntries(new FormData(e.target));
+      const body = { id, nodes: Number(f.nodes) };
+      if (f.expires) body.expires = f.expires; else if (f.days) body.days = Number(f.days);
+      if (await act(() => call('renew', body), 'Renewed. Online masters install the new key at their next check-in (within 6 hours); send it to air-gapped customers.')) open(id);
+    } },
+    h('div', { class: 'grid' },
+      h('div', null, h('label', null, 'Nodes'), h('input', { name: 'nodes', type: 'number', min: 1, value: l.nodes })),
+      h('div', null, h('label', null, 'Extend by (days)'), h('input', { name: 'days', type: 'number', min: 1, placeholder: '365' })),
+      h('div', null, h('label', null, 'or new expiry date'), h('input', { name: 'expires', type: 'date' }))),
+    h('div', { class: 'row' }, h('button', null, 'Save and issue new key')));
+  const edit = h('form', { onsubmit: async e => {
+      e.preventDefault();
+      const f = Object.fromEntries(new FormData(e.target));
+      if (await act(() => call('update', { id, email: f.email, notes: f.notes, moves_per_year: Number(f.moves_per_year) }), 'Saved.')) open(id);
+    } },
+    h('div', { class: 'grid' },
+      h('div', null, h('label', null, 'Contact email'), h('input', { name: 'email', value: l.email })),
+      h('div', null, h('label', null, 'Moves allowed per year'), h('input', { name: 'moves_per_year', type: 'number', min: 0, value: l.moves_per_year }))),
+    h('label', null, 'Notes'), h('textarea', { name: 'notes', rows: 2 }, l.notes),
+    h('div', { class: 'row' }, h('button', { class: 'quiet' }, 'Save details')));
+
+  $('detail').replaceChildren(
+    h('div', { class: 'row', style: 'justify-content:space-between;margin:0' },
+      h('h1', null, l.customer), h('button', { class: 'quiet', onclick: () => { $('detail').hidden = true; } }, 'Close')),
+    h('p', { class: 'muted' }, `Licence ${l.id} · ${l.nodes} nodes · issued ${day(l.issued)} · expires ${day(l.expires)}`,
+      l.features.length ? ` · features: ${l.features.join(', ')}` : '',
+      l.revoked_at ? h('span', { class: 'bad' }, ` · revoked ${day(l.revoked_at)}${l.revoked_reason ? ': ' + l.revoked_reason : ''}`) : ''),
+    h('h2', null, 'Current key'), copyable(l.key),
+    h('h2', null, 'Machine'),
+    active ? h('p', null, `Active on ${active.machine_name || active.machine_id} (${active.method}) since ${day(active.activated_at)}, last seen ${ago(active.last_seen_at) || 'never'}.`)
+           : h('p', { class: 'muted' }, 'Not active on any machine.'),
+    h('div', { class: 'row' },
+      active ? h('button', { class: 'quiet', onclick: async () => {
+        if (confirm(`Release the licence from ${active.machine_name}? That master becomes read-only at its next check-in; this does not use one of the customer's moves.`)
+            && await act(() => call('release', { id }), 'Released.')) open(id);
+      } }, 'Release machine') : null,
+      l.revoked_at
+        ? h('button', { class: 'quiet', onclick: async () => { if (await act(() => call('unrevoke', { id }), 'Revocation lifted.')) open(id); } }, 'Lift revocation')
+        : h('button', { class: 'danger', onclick: async () => {
+            const reason = prompt('Revoke this licence? Its master becomes read-only at the next check-in. Reason (shown to the customer):');
+            if (reason !== null && await act(() => call('revoke', { id, reason }), 'Revoked.')) open(id);
+          } }, 'Revoke')),
+    h('h2', null, 'Renew or change'), renew,
+    h('h2', null, 'Details'), edit,
+    h('h2', null, 'Activations'),
+    h('table', null, h('thead', null, h('tr', null, ['Machine', 'Method', 'Activated', 'Last seen', 'Version', 'Released'].map(t => h('th', null, t)))),
+      h('tbody', null, d.activations.map(a => h('tr', null,
+        h('td', null, a.machine_name || a.machine_id), h('td', null, a.method), h('td', null, day(a.activated_at)),
+        h('td', null, ago(a.last_seen_at)), h('td', null, a.version),
+        h('td', null, a.released_at ? `${day(a.released_at)} (${a.released_reason})` : '—'))))),
+    h('h2', null, 'History'),
+    h('table', null, h('tbody', null, d.events.map(e => h('tr', null,
+      h('td', { class: 'muted', style: 'white-space:nowrap' }, new Date(e.at).toLocaleString()),
+      h('td', null, e.kind), h('td', null, e.actor),
+      h('td', { class: 'muted' }, Object.entries(e.detail || {}).map(([k, v]) => `${k}: ${v}`).join(' · ')))))));
+  $('detail').hidden = false;
+  $('detail').scrollIntoView({ behavior: 'smooth' });
+}
+
+async function show(session) {
+  $('signin').hidden = !!session; $('app').hidden = true; $('signout').hidden = !session;
+  $('who').textContent = session ? session.user.email : '';
+  if (!session) return;
+  try { await call('me'); } catch (e) { return say(e.message, true); }
+  $('app').hidden = false;
+  load();
+}
+
+$('signin-form').onsubmit = async e => {
+  e.preventDefault();
+  const f = Object.fromEntries(new FormData(e.target));
+  const { data, error } = await sb.auth.signInWithPassword({ email: f.email, password: f.password });
+  if (error) return say(error.message, true);
+  say(''); show(data.session);
+};
+$('signout').onclick = async () => { await sb.auth.signOut(); show(null); };
+$('refresh').onclick = load;
+$('new-open').onclick = () => { $('new').hidden = false; };
+$('new-cancel').onclick = () => { $('new').hidden = true; };
+$('new-form').onsubmit = async e => {
+  e.preventDefault();
+  const f = Object.fromEntries(new FormData(e.target));
+  const r = await act(() => call('issue', { ...f, nodes: Number(f.nodes), days: Number(f.days),
+    moves_per_year: Number(f.moves_per_year), features: f.features }), 'Licence issued - copy the key below and send it to the customer.');
+  if (r) { e.target.reset(); $('new').hidden = true; open(r.id); }
+};
+
+sb.auth.getSession().then(({ data }) => show(data.session));
+</script>
+</body>
+</html>

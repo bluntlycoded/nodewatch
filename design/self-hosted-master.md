@@ -1,16 +1,16 @@
 # Self-hosted master node
 
-Status: phases 1-3 built, plus licence enforcement (phase 4 without the
-online licence server). Tested end to end on macOS (arm64): setup, sign-in,
+Status: phases 1-4 built. The licence server (`licensing/`) is tested
+locally and not yet deployed. Tested end to end on macOS (arm64): setup, sign-in,
 dashboard, join codes, signed enrolment, licence limit, alerts, crash
 recovery. Linux and Windows masters - including the Windows service - build
 and are tested only in CI.
 
 Still open:
 
-- Online licence activation and the vendor licence server (phase 4).
+- Deploy the licence server to its Supabase project and put its address
+  into the master (`licensing/README.md`).
 - MSI / pkg / deb installers and code signing (phase 5).
-- macOS masters have no service install.
 - The agent window's administrator prompt (UAC, macOS password dialog,
   pkexec) has not been exercised outside CI.
 

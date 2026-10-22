@@ -1,0 +1,7 @@
+# Supabase CLI project config for the licence server (see licensing/README.md).
+project_id = "nodewatch-licensing"
+
+[functions.licensing]
+# Masters and the offline activation page call it without a Supabase
+# session; admin routes check the caller's session themselves.
+verify_jwt = false

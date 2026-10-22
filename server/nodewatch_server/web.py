@@ -22,6 +22,7 @@ import anyio
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 
+from . import activation
 from . import license as lic
 
 log = logging.getLogger("nodewatch.web")
@@ -54,10 +55,23 @@ def page(title: str, body: str) -> HTMLResponse:
                         f"<body><main>{body}</main></body></html>")
 
 
-def setup_form(cfg, suggestions: list[str], error: str = "", values: dict | None = None) -> HTMLResponse:
+def setup_form(cfg, suggestions: list[str], error: str = "", values: dict | None = None,
+               request_code: str = "") -> HTMLResponse:
     v = {k: html.escape(str(x)) for k, x in (values or {}).items()}
     opts = "".join(f"<option value='{html.escape(a)}'>" for a in suggestions)
     err = f"<div class=err>{html.escape(error)}</div>" if error else ""
+    offline = ""
+    if request_code or v.get("activation"):
+        page_url = html.escape(activation.OFFLINE_PAGE)
+        offline = f"""
+  <h2>Offline activation</h2>
+  <p class=sub>This master cannot reach the licence server. On any device with internet, open
+   <a href="{page_url}" target=_blank rel=noopener>{page_url}</a>, enter your licence key and the
+   request code below, then paste the activation code it gives you here.</p>
+  <label>Request code</label>
+  <code>{html.escape(request_code)}</code>
+  <label>Activation code</label>
+  <textarea name=activation>{v.get('activation', '')}</textarea>"""
     return page("Set up nodewatch", f"""
 <div class=card>
  <h1>Set up this nodewatch master</h1>
@@ -73,6 +87,9 @@ def setup_form(cfg, suggestions: list[str], error: str = "", values: dict | None
   <textarea name=license required>{v.get('license', '')}</textarea>
   <label>Organisation name</label>
   <input name=org value="{v.get('org', '')}" placeholder="Defaults to the name on the licence">
+  <div class=hint>The licence is activated on this machine when you finish, over the internet;
+   a master without internet access is offered offline activation instead.</div>
+{offline}
 
   <h2>Address</h2>
   <label>Address your nodes will use to reach this master</label>
@@ -106,10 +123,12 @@ def setup_form(cfg, suggestions: list[str], error: str = "", values: dict | None
 </div>""")
 
 
-def build_setup_app(cfg, store, on_complete, suggestions: list[str]) -> FastAPI:
+def build_setup_app(cfg, store, on_complete, suggestions: list[str], activator) -> FastAPI:
     """
     The only app served before setup. on_complete(form, licence) does the
     database work and raises ValueError with a message for the user.
+    activator (activation.Activator) binds the licence to this machine
+    before that.
     """
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     state = {"attempts": 0, "done": False}
@@ -149,6 +168,20 @@ def build_setup_app(cfg, store, on_complete, suggestions: list[str]) -> FastAPI:
                 return setup_form(cfg, suggestions, "The passwords do not match.", keep)
             if not form.get("address"):
                 return setup_form(cfg, suggestions, "Enter the address nodes will use to reach this master.", keep)
+
+            try:
+                if form.get("activation"):
+                    activator.install(licence, form["activation"])
+                elif activation.enforced() and not activator.valid_for(licence):
+                    # The server's current key: newer than the one typed in
+                    # if the licence was renewed since it was sent out.
+                    licence = activator.activate_online(licence, allow_move=True)
+            except activation.ActivationError as e:
+                if e.unreachable:
+                    return setup_form(cfg, suggestions, f"The licence could not be activated online: {e}.",
+                                      keep, request_code=activator.request_code(licence))
+                return setup_form(cfg, suggestions, f"The licence could not be activated: {e}", keep,
+                                  request_code=activator.request_code(licence) if keep.get("activation") else "")
 
             try:
                 on_complete(form, licence)

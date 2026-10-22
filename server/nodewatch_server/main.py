@@ -4,6 +4,7 @@ nodewatch-server: the master node.
     nodewatch-server                 run (first run serves the setup wizard)
     nodewatch-server add-node        join code + install commands for a new node
     nodewatch-server licence <key>   install a new or renewed licence
+    nodewatch-server activate [code] activate the licence on this machine
     nodewatch-server status          licence, address, node count
     nodewatch-server install         install as a service (Linux systemd / Windows)
     nodewatch-server uninstall       remove the service, keep the data
@@ -27,6 +28,7 @@ from pathlib import Path
 
 import psycopg
 
+from . import activation
 from . import license as lic
 from . import migrate, ops, pki
 from .config import Store, default_data_dir
@@ -69,6 +71,7 @@ class Master:
         self.store = Store(data_dir)
         self.cfg = self.store.load()
         self.pki = pki.PKI(data_dir)
+        self.activator = activation.Activator(data_dir, VERSION)
         self.pg: EmbeddedPostgres | None = None
         self.servers = []
         self.stopping = False
@@ -224,7 +227,8 @@ class Master:
     def _serve_setup(self, open_browser: bool) -> None:
         from . import web
         suggestions = [a for a in pki.local_addresses() if a not in ("localhost", "127.0.0.1")]
-        app = web.build_setup_app(self.cfg, self.store, self.complete_setup, suggestions or ["localhost"])
+        app = web.build_setup_app(self.cfg, self.store, self.complete_setup, suggestions or ["localhost"],
+                                  self.activator)
         host = suggestions[0] if suggestions else "localhost"
         url = f"https://{host}:{self.cfg.https_port}/setup"
         banner = (f"\n  nodewatch master is not set up yet.\n"
@@ -250,6 +254,9 @@ class Master:
         if licence.state == "expired":
             return licence.nodes, (f"the licence for this master expired on {licence.expires}; "
                                    "install a new licence to add nodes")
+        s = self.licence_summary() or {}
+        if s.get("state") == "inactive":
+            return licence.nodes, s["inactive_reason"]
         return licence.nodes, ""
 
     def licence_summary(self) -> dict | None:
@@ -257,11 +264,40 @@ class Master:
             licence = self.licence()
         except lic.LicenseError as e:
             return {"state": "invalid", "error": str(e)}
-        return licence.summary() if licence else None
+        if not licence:
+            return None
+        s = licence.summary()
+        s.update(self.activator.state(licence))
+        # Not activated here (after the grace period), moved to another
+        # machine, or revoked: like an expired licence, monitoring goes on
+        # but the dashboard is read-only and no new nodes join.
+        reason = {
+            "required": "the licence is not activated on this machine; run: nodewatch-server activate",
+            "released": s.get("activation_message") or "the licence was moved to another machine",
+            "revoked": s.get("activation_message") or "the licence was revoked",
+        }.get(s["activation"])
+        if reason and s["state"] != "expired":
+            s["state"], s["inactive_reason"] = "inactive", reason
+        return s
 
     def read_only(self) -> bool:
         s = self.licence_summary()
-        return not s or s.get("state") in ("expired", "invalid")
+        return not s or s.get("state") in ("expired", "invalid", "inactive")
+
+    def sync_licence(self, api_module=None) -> None:
+        """Licence server check-in; installs a renewed key if it sends one."""
+        try:
+            licence = self.licence()
+        except lic.LicenseError:
+            return
+        if not licence:
+            return
+        new = self.activator.sync(licence)
+        if new:
+            (self.store.dir / "licence.key").write_text(new.raw + "\n", encoding="utf-8")
+            log.info("installed the renewed licence: %s nodes until %s", new.nodes, new.expires)
+        if api_module is not None:
+            self._apply_licence(api_module)
 
     def _apply_licence(self, api_module) -> None:
         """Re-read the licence (it may have expired, or been replaced) and
@@ -270,7 +306,7 @@ class Master:
         api_module.MAX_NODES = nodes
         api_module.ENROLL_CLOSED = closed
         s = self.licence_summary() or {}
-        if s.get("state") in ("grace", "expired", "invalid"):
+        if s.get("state") in ("grace", "expired", "invalid", "inactive"):
             log.warning("licence is %s: %s", s.get("state"), closed or f"{s.get('days_left')} days")
 
     # ------------------------------------------------------------ serve
@@ -321,8 +357,10 @@ class Master:
         sender = AlertSender(db_url, self.cfg.smtp, USER_AGENT)
         sched.add_python_job("nodewatch-send-alerts", "* * * * *", sender.drain)
         sched.add_python_job("nodewatch-licence", "7 * * * *", lambda: self._apply_licence(api_module))
+        sched.add_python_job("nodewatch-licence-checkin", "23 */6 * * *", lambda: self.sync_licence(api_module))
         sched.add_python_job("nodewatch-certificate", "41 3 * * *", self._renew_certificate)
         sched.start()
+        threading.Timer(20, lambda: self.sync_licence(api_module)).start()
 
         threading.Thread(target=self._probe_runner, name="probe-runner", daemon=True).start()
 
@@ -418,6 +456,40 @@ def cmd_licence(m: Master, key: str) -> None:
     path.write_text(licence.raw + "\n", encoding="utf-8")
     print(f"installed: {licence.customer}, {licence.nodes} nodes, until {licence.expires}. "
           "A running master picks it up within the hour, or at its next restart.")
+    if activation.enforced() and not m.activator.valid_for(licence):
+        cmd_activate(m, None)
+
+
+def cmd_activate(m: Master, code: str | None) -> None:
+    """Online, or with an activation code from the offline activation page."""
+    try:
+        licence = m.licence()
+    except lic.LicenseError as e:
+        sys.exit(str(e))
+    if not licence:
+        sys.exit("install a licence first: nodewatch-server licence <key>")
+    if not activation.enforced():
+        print("this build does not require licence activation.")
+        return
+    try:
+        if code:
+            m.activator.install(licence, code)
+            print(f"activated {licence.customer}'s licence on this machine (offline activation).")
+            return
+        new = m.activator.activate_online(licence, allow_move=True)
+    except activation.ActivationError as e:
+        if not e.unreachable:
+            sys.exit(f"not activated: {e}")
+        print(f"The licence server cannot be reached from this machine ({e}).\n\n"
+              f"Activate offline: open {activation.OFFLINE_PAGE} on any device with internet,\n"
+              f"enter the licence key and this request code:\n\n  {m.activator.request_code(licence)}\n\n"
+              "then run:  nodewatch-server activate <the activation code it gives you>")
+        sys.exit(2)
+    if new.raw != licence.raw:
+        (m.store.dir / "licence.key").write_text(new.raw + "\n", encoding="utf-8")
+        print(f"installed the renewed licence: {new.nodes} nodes until {new.expires}")
+    print(f"activated {licence.customer}'s licence on this machine. "
+          "A running master picks it up within the hour, or at its next restart.")
 
 
 def cmd_status(m: Master) -> None:
@@ -430,8 +502,15 @@ def cmd_status(m: Master) -> None:
         licence = None
         print(f"licence        : INVALID - {e}")
     if licence:
-        s = licence.summary()
+        s = m.licence_summary()
         print(f"licence        : {s['customer']}, {s['nodes']} nodes, {s['state']} until {s['expires']}")
+        act = s["activation"]
+        detail = {"active": f"since {s.get('activated')} ({s.get('activation_method')}), "
+                            f"last check-in {s.get('last_checkin') or 'never'}",
+                  "pending": f"not yet - activate within {s.get('activate_within_days')} day(s): "
+                             "nodewatch-server activate",
+                  "not_required": "not required by this build"}.get(act, s.get("inactive_reason", ""))
+        print(f"activation     : {act} - {detail}")
     if m.pki.ca_cert.exists():
         print(f"CA fingerprint : {m.pki.ca_fingerprint()}")
 
@@ -575,6 +654,8 @@ def main() -> None:
     a.add_argument("--site")
     lp = sub.add_parser("licence", help="install a new or renewed licence key")
     lp.add_argument("key")
+    ap_ = sub.add_parser("activate", help="activate the licence on this machine (online, or with an offline activation code)")
+    ap_.add_argument("code", nargs="?")
     sub.add_parser("status")
     ip = sub.add_parser("install", help="install as a service (Linux systemd, Windows service, macOS launchd)")
     ip.add_argument("--user", help="macOS: the account the master runs as (default: the one using sudo)")
@@ -647,7 +728,7 @@ def main() -> None:
         return
 
     if sys.platform != "win32" and os.geteuid() == 0:
-        if args.cmd in ("add-node", "licence", "status"):
+        if args.cmd in ("add-node", "licence", "activate", "status"):
             # `sudo nodewatch-server licence <key>`: act as the account that
             # owns the data directory (the service user), so the files
             # written stay readable by the master.
@@ -664,6 +745,9 @@ def main() -> None:
         return
     if args.cmd == "licence":
         cmd_licence(m, args.key)
+        return
+    if args.cmd == "activate":
+        cmd_activate(m, args.code)
         return
     if args.cmd == "status":
         cmd_status(m)
