@@ -54,6 +54,14 @@ def server_url() -> str:
     return os.environ.get("NW_LICENSING_URL") or LICENSING_URL
 
 
+def enforced() -> bool:
+    """Activation applies only to builds that know their licence server.
+    Until it is deployed and its address is in LICENSING_URL, a master
+    could never activate - so it is not asked to, rather than going
+    read-only when the grace period runs out."""
+    return "REPLACE-WITH" not in server_url()
+
+
 class ActivationError(Exception):
     """A refusal to show the user. unreachable: the server could not be
     asked at all, so offline activation is the way forward."""
@@ -263,6 +271,8 @@ class Activator:
         """Check in (or, unactivated, try to activate without taking the
         licence from another machine). Returns a renewed licence to install,
         or None. Never raises for network trouble."""
+        if not enforced():
+            return None
         if not self.valid_for(licence):
             try:
                 new = self.activate_online(licence, allow_move=False)
@@ -296,6 +306,8 @@ class Activator:
         """Activation part of the licence summary. activation is one of
         active, pending (not yet, within the grace period), required
         (grace over), released (moved elsewhere) or revoked."""
+        if not enforced():
+            return {"activation": "not_required"}
         st = self._state()
         server = st.get("server") or {}
         if server.get("lid") == licence.lid and server.get("status") in ("released", "revoked"):

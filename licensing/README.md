@@ -61,6 +61,11 @@ Then:
    the function URL in `LICENSING_URL` in
    `server/nodewatch_server/activation.py`. Rebuild the master.
 
+Until step 3, masters do not ask for activation at all: a build whose
+`LICENSING_URL` is still the placeholder treats every valid licence key
+as enough, so nothing goes read-only waiting for a server that does not
+exist yet.
+
 The signing key in Supabase can issue licences. Anyone with access to
 the Supabase project's secrets can therefore create licences, so protect
 the account with two-factor authentication.

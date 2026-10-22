@@ -172,7 +172,7 @@ def build_setup_app(cfg, store, on_complete, suggestions: list[str], activator) 
             try:
                 if form.get("activation"):
                     activator.install(licence, form["activation"])
-                elif not activator.valid_for(licence):
+                elif activation.enforced() and not activator.valid_for(licence):
                     # The server's current key: newer than the one typed in
                     # if the licence was renewed since it was sent out.
                     licence = activator.activate_online(licence, allow_move=True)

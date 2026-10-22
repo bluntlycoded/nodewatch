@@ -456,7 +456,7 @@ def cmd_licence(m: Master, key: str) -> None:
     path.write_text(licence.raw + "\n", encoding="utf-8")
     print(f"installed: {licence.customer}, {licence.nodes} nodes, until {licence.expires}. "
           "A running master picks it up within the hour, or at its next restart.")
-    if not m.activator.valid_for(licence):
+    if activation.enforced() and not m.activator.valid_for(licence):
         cmd_activate(m, None)
 
 
@@ -468,6 +468,9 @@ def cmd_activate(m: Master, code: str | None) -> None:
         sys.exit(str(e))
     if not licence:
         sys.exit("install a licence first: nodewatch-server licence <key>")
+    if not activation.enforced():
+        print("this build does not require licence activation.")
+        return
     try:
         if code:
             m.activator.install(licence, code)
@@ -505,7 +508,8 @@ def cmd_status(m: Master) -> None:
         detail = {"active": f"since {s.get('activated')} ({s.get('activation_method')}), "
                             f"last check-in {s.get('last_checkin') or 'never'}",
                   "pending": f"not yet - activate within {s.get('activate_within_days')} day(s): "
-                             "nodewatch-server activate"}.get(act, s.get("inactive_reason", ""))
+                             "nodewatch-server activate",
+                  "not_required": "not required by this build"}.get(act, s.get("inactive_reason", ""))
         print(f"activation     : {act} - {detail}")
     if m.pki.ca_cert.exists():
         print(f"CA fingerprint : {m.pki.ca_fingerprint()}")
