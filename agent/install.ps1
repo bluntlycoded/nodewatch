@@ -651,22 +651,6 @@ Write-Host 'Windows agent smoke test PASSED.' -ForegroundColor Green
 Write-Host ''
 
 
-Write-Host ''
-
-$probe |
-    ForEach-Object {
-
-        Write-Host `
-            "   $_"
-    }
-
-
-Write-Host ''
-Write-Host 'Windows agent smoke test PASSED.' `
-    -ForegroundColor Green
-Write-Host ''
-
-
 # ============================================================
 # REMOVE OLD SCHEDULED TASK
 # ============================================================

@@ -49,7 +49,9 @@ class PKI:
         key = ec.generate_private_key(ec.SECP256R1())
         name = x509.Name([
             x509.NameAttribute(NameOID.ORGANIZATION_NAME, "nodewatch"),
-            x509.NameAttribute(NameOID.COMMON_NAME, f"nodewatch master CA ({socket.gethostname()})"),
+            # X.509 caps a common name at 64 characters; long hostnames
+            # (cloud and CI machines) would otherwise make this fail.
+            x509.NameAttribute(NameOID.COMMON_NAME, f"nodewatch master CA ({socket.gethostname()})"[:64]),
         ])
         cert = (
             x509.CertificateBuilder()

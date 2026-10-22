@@ -6,4 +6,9 @@ psutil>=5.9
 requests>=2.33.0
 
 # Node signing key (nodekey.py) and join-code certificate pinning.
-cryptography>=44
+# cryptography 49+ publishes no Intel-Mac wheel, so pip there builds it
+# from Rust source, and the result does not run once frozen. Intel Macs
+# stay on 48.0.x, the last line with a universal2 wheel; everything else
+# takes the current release.
+cryptography>=44,<49; sys_platform == "darwin" and platform_machine == "x86_64"
+cryptography>=44; sys_platform != "darwin" or platform_machine != "x86_64"
