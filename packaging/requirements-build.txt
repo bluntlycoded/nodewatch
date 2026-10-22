@@ -1,0 +1,2 @@
+# Build-time only - never installed on a monitored host.
+pyinstaller>=6.10,<7

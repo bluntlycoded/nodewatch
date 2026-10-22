@@ -2,7 +2,7 @@
 import os, time
 os.environ["NW_DATABASE_URL"] = "postgresql://postgres:pw@localhost:5432/nwdemo"
 os.environ["NW_VERIFY_MODE"] = "off"
-os.environ["NW_JWT_SECRET"] = "test"
+os.environ["NW_JWT_SECRET"] = "test-secret-" + "0" * 32
 
 from fastapi.testclient import TestClient
 import app as api

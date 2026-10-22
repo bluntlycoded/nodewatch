@@ -5,3 +5,5 @@ venv/
 api.env
 *.db
 .DS_Store
+build/
+dist/

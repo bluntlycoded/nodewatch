@@ -129,6 +129,10 @@ api/       FastAPI ingest service
 probe/     agentless probe runner
 db/        migrations, applied in order
 docs/      the dashboard (single HTML file, served by GitHub Pages)
+server/    self-hosted master: runs api/, probe/ and db/ with bundled Postgres
+packaging/ builds the agent and master into standalone executables
+tools/     vendor-side tooling (licence issuing) - never shipped
+design/    design notes
 ```
 
 **The agent** is pure Python: `psutil` and `requests`, nothing compiled.
@@ -201,6 +205,87 @@ and pinned dependencies, then restart the service. `/etc/nodewatch/api.env`
 sudo bash update-probe.sh    # probe runner
 sudo bash update-api.sh      # ingest API
 ```
+
+### Standalone executables
+
+The agent also builds into a single executable per platform that needs no
+Python on the host: `nodewatch-agent-<version>-<os>-<arch>[.exe]` for
+Linux (x64, arm64), Windows (x64) and macOS (x64, arm64). It is the same
+agent, configured by the same `NW_*` environment variables, so it slots
+into the existing systemd unit, launchd plist or scheduled task in place of
+`venv/bin/python agent.py`.
+
+```bash
+nodewatch-agent --version     # prints the agent version
+nodewatch-agent --selftest    # runs every collector once, no enrolment, no network
+```
+
+Pushing an `agent-v<version>` tag runs `.github/workflows/build.yml`,
+which builds each target on its own OS, runs `--selftest` on it as
+root/Administrator, and publishes the binaries and `SHA256SUMS` as a GitHub
+Release. The tag must match `AGENT_VERSION` in `agent/agent.py`. PyInstaller
+cannot cross-compile, so building by hand means building on the target:
+
+```bash
+python -m pip install -r agent/requirements.txt -r packaging/requirements-build.txt
+python packaging/build_agent.py          # Windows or macOS -> dist/
+
+# Linux, in AlmaLinux 8 so the binary runs on glibc 2.28+
+docker build -t nodewatch-agent-build -f packaging/linux/Dockerfile .
+docker run --rm -v "$PWD:/src" nodewatch-agent-build
+```
+
+The binaries are unsigned. macOS ad-hoc signs them, which is enough for
+`curl`-installed binaries but not for one downloaded through a browser,
+and Full Disk Access has to be granted to the binary itself. On Windows,
+expect an unsigned PyInstaller executable that reads the Security event
+log to be flagged by some EDRs until it is code-signed;
+[SECURITY.md](SECURITY.md) is what to hand the vendor in the meantime.
+
+## Self-hosted master (nodewatch-server)
+
+The whole product as one executable, for running nodewatch on your own
+network instead of on Supabase: PostgreSQL and PostgREST bundled inside,
+the dashboard and its sign-in, the ingest API over HTTPS with the master's
+own certificate authority, the scheduler that replaces `pg_cron`, alert
+delivery (SMTP email, Slack, Telegram, Teams, Botim, webhooks), the probe
+runner, and an agent build for every OS to hand to new nodes. Design and
+phases: [design/self-hosted-master.md](design/self-hosted-master.md).
+
+```bash
+./nodewatch-server                # first run: prints a setup URL and setup code
+sudo ./nodewatch-server install   # Linux: run as a systemd service instead
+./nodewatch-server add-node       # join code + install commands for a new node
+./nodewatch-server licence <key>  # install a renewed licence
+./nodewatch-server status         # licence, address, CA fingerprint
+./nodewatch-server selfcheck      # check the build's bundled parts run here
+```
+
+On Windows, `nodewatch-server.exe install` from an elevated prompt
+registers a real Windows service. The setup page asks for the setup code,
+a licence key, the address nodes will use to reach the master, and the
+first admin account; the dashboard is then served by the master itself.
+Licence keys are Ed25519-signed and verified offline;
+`tools/license_tool.py` issues them with the vendor signing key, which
+never belongs in this repository. The licence's node count is enforced at
+enrolment; after expiry and a 14-day grace period the dashboard is
+read-only and new nodes are refused, but monitoring continues.
+
+**Adding a node.** Servers → Add server gives a join code and a one-line
+command that downloads the agent from the master, checks its SHA-256 and
+runs `nodewatch-agent join <code>`. Or double-click the agent binary and
+paste the code into its window. The code carries the master's address, a
+single-use token and the fingerprint of the master's CA; the agent pins
+that CA, installs itself as a service, generates its own signing key and
+registers it, and signs every later enrolment with it. The same window
+changes the master's address later (same master) or joins a different one
+(new code).
+
+The master applies `db/*.sql` itself, unchanged, on top of a small
+compatibility layer (`server/nodewatch_server/sql/compat.sql`) that
+provides the Supabase-only pieces they call. The same `docs/index.html`
+runs on GitHub Pages against Supabase and on a master against itself: the
+master serves `config.js`, which switches it.
 
 ---
 

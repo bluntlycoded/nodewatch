@@ -43,7 +43,7 @@ from pydantic import BaseModel
 
 router = APIRouter()
 
-JWT_SECRET = os.environ.get("NW_JWT_SECRET", "dev-secret-change-me")
+JWT_SECRET = os.environ.get("NW_JWT_SECRET", "")   # app.py refuses to start without one
 SUPABASE_JWT_SECRET = os.environ.get("NW_SUPABASE_JWT_SECRET", "")
 
 TEAMS_CLIENT_ID = os.environ.get("NW_TEAMS_CLIENT_ID", "")
@@ -72,6 +72,16 @@ def require_admin(conn, authorization: str | None) -> str:
     if not row or row[0] != "admin":
         raise HTTPException(403, "admin role required")
     return claims["sub"]
+
+
+def tenant_of(conn, user_id: str) -> str:
+    """The admin's tenant. Every tenant-scoped insert needs it explicitly:
+    this connection is not a signed-in session, so the column default
+    (current_tenant()) has no user to resolve."""
+    row = conn.execute("select tenant_id from profiles where id = %s", (user_id,)).fetchone()
+    if not row or not row[0]:
+        raise HTTPException(403, "this account does not belong to a tenant")
+    return str(row[0])
 
 
 def _state_token() -> str:
@@ -220,14 +230,15 @@ def install(app, pool):
     @router.post("/teams/finalize")
     def finalize(body: FinalizeBody, authorization: str | None = Header(default=None)):
         with pool.connection() as conn:
-            require_admin(conn, authorization)
+            tid = tenant_of(conn, require_admin(conn, authorization))
             p = _pending(conn, body.pending)
             conn.execute(
-                """insert into alert_channels (kind, label, config, enabled)
-                   values ('teams', %s, %s, true)""",
+                """insert into alert_channels (kind, label, config, enabled, tenant_id)
+                   values ('teams', %s, %s, true, %s)""",
                 (f"{body.team_name} → {body.channel_name}",
                  json.dumps({"refresh_token": p["refresh_token"], "tenant_id": p["tenant_id"],
-                             "team_id": body.team_id, "channel_id": body.channel_id})),
+                             "team_id": body.team_id, "channel_id": body.channel_id}),
+                 tid),
             )
             conn.execute("delete from teams_oauth_pending where id = %s", (body.pending,))
         return {"ok": True}

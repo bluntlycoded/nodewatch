@@ -22,20 +22,27 @@ import requests
 
 import checks
 import identity as ident_mod
+import nwconfig
 import osdetect
 import inventory
 
 # ---------------------------------------------------------------- config
+
+# agent.json (written by `join` / the GUI) fills in whatever NW_* the
+# environment does not set; see nwconfig.py.
+nwconfig.apply()
 
 INGEST_URL = os.environ.get(
     "NW_INGEST_URL",
     "http://100.64.0.1:8000"
 ).rstrip("/")
 
+# Where the buffer lives when NW_STATE_DIR is not set: the same place each
+# installer has always used, so a binary started by hand lands there too.
 STATE_DIR = Path(
     os.environ.get(
         "NW_STATE_DIR",
-        "/var/lib/nodewatch"
+        str(nwconfig.default_state_dir())
     )
 )
 
@@ -46,7 +53,7 @@ ENROLL_TOKEN = os.environ.get(
     ""
 )
 
-AGENT_VERSION = "0.4.0"
+AGENT_VERSION = "0.5.0"
 
 # Identifies the agent to anything inspecting outbound traffic - a proxy,
 # an EDR's network module, or an admin reading a packet capture - rather
@@ -73,6 +80,16 @@ HTTP_TIMEOUT = 45
 
 IMDS = "http://169.254.169.254"
 
+# Every request to the master goes through this session. When the node
+# joined a self-hosted master, NW_CA_FILE is that master's own CA (pinned by
+# fingerprint at join time) and is the only CA trusted for these requests;
+# otherwise the system trust store applies as before.
+HTTP = requests.Session()
+HTTP.headers["User-Agent"] = USER_AGENT
+HTTP.verify = os.environ.get("NW_CA_FILE") or True
+
+STATUS_PATH = nwconfig.status_path()
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -80,6 +97,35 @@ logging.basicConfig(
 )
 
 log = logging.getLogger("nodewatch")
+
+
+def write_status(**changes) -> None:
+    """
+    status.json: what the GUI and `nodewatch-agent status` show. No secrets,
+    so it is world-readable while the rest of the state directory is not.
+    """
+    try:
+        cur = json.loads(STATUS_PATH.read_text())
+    except (OSError, ValueError):
+        cur = {}
+    cur.update(changes, ingest_url=INGEST_URL, version=AGENT_VERSION,
+               pid=os.getpid(), updated_at=time.time())
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = STATUS_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(cur, indent=2))
+        if sys.platform != "win32":
+            os.chmod(tmp, 0o644)
+        os.replace(tmp, STATUS_PATH)
+    except OSError as e:
+        log.debug("could not write status: %s", e)
+
+
+def read_status() -> dict:
+    try:
+        return json.loads(STATUS_PATH.read_text())
+    except (OSError, ValueError):
+        return {}
 
 
 # ---------------------------------------------------------------- buffer
@@ -309,9 +355,12 @@ class Session:
 
             return False
 
+        # Only a node that has never enrolled needs the token; afterwards
+        # its signing key is the credential and the spent token is gone.
         if (
             ident.get("provider") == "generic"
             and not ENROLL_TOKEN
+            and not read_status().get("agent_id")
         ):
 
             log.error(
@@ -320,7 +369,15 @@ class Session:
                 "Issue one from the dashboard."
             )
 
+            write_status(last_error="no enrolment token - join a master first",
+                         last_error_at=time.time())
+
             return False
+
+        import nodekey
+
+        key = nodekey.load_or_create(STATE_DIR)
+        claimed = ident.get("machine_id") or ident.get("node_id") or ""
 
         body = {
             "identity": ident,
@@ -332,14 +389,15 @@ class Session:
             "hostname": socket.gethostname(),
             "agent_version": AGENT_VERSION,
             "os": platform_string(),
+            "node_key": nodekey.public_hex(key),
+            "key_proof": nodekey.proof(key, claimed),
         }
 
         try:
 
-            r = requests.post(
+            r = HTTP.post(
                 f"{INGEST_URL}/v1/enroll",
                 json=body,
-                headers={"User-Agent": USER_AGENT},
                 timeout=HTTP_TIMEOUT,
             )
 
@@ -350,6 +408,9 @@ class Session:
                 e
             )
 
+            write_status(last_error=f"cannot reach the master: {e}"[:300],
+                         last_error_at=time.time())
+
             return False
 
         if r.status_code != 200:
@@ -359,6 +420,9 @@ class Session:
                 r.status_code,
                 r.text[:200]
             )
+
+            write_status(last_error=f"enrolment refused ({r.status_code}): {r.text[:200]}",
+                         last_error_at=time.time())
 
             return False
 
@@ -376,6 +440,11 @@ class Session:
             data.get("provider"),
             data.get("identity_proof"),
         )
+
+        write_status(agent_id=self.instance_id, last_enroll_at=time.time(),
+                     last_error=None)
+
+        nwconfig.forget_token()
 
         return True
 
@@ -658,7 +727,7 @@ def flush(
 
     try:
 
-        r = requests.post(
+        r = HTTP.post(
             f"{INGEST_URL}/v1/ingest",
             json=body,
             headers=sess.headers(),
@@ -672,6 +741,9 @@ def flush(
             e,
             buf.depth()
         )
+
+        write_status(last_error=f"cannot reach the master: {e}"[:300],
+                     last_error_at=time.time(), queued=buf.depth())
 
         return
 
@@ -693,6 +765,9 @@ def flush(
             r.text[:200]
         )
 
+        write_status(last_error=f"master rejected data ({r.status_code})",
+                     last_error_at=time.time())
+
         return
 
     buf.drop(
@@ -708,10 +783,23 @@ def flush(
         buf.depth()
     )
 
+    write_status(last_ship_at=time.time(), last_error=None, queued=buf.depth())
+
 
 # ---------------------------------------------------------------- main
 
 def main():
+
+    # Under a service there is no console to read, and the GUI shows this
+    # file's tail; stdout still goes to journald / launchd's log as before.
+    from logging.handlers import RotatingFileHandler
+
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    fh = RotatingFileHandler(STATE_DIR / "agent.log", maxBytes=5_000_000, backupCount=2)
+    fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    logging.getLogger().addHandler(fh)
+
+    log.info("nodewatch-agent %s reporting to %s", AGENT_VERSION, INGEST_URL)
 
     buf = Buffer(
         DB_PATH
@@ -1065,13 +1153,204 @@ def main():
         time.sleep(1)
 
 
+# ---------------------------------------------------------------- self-test
+
+def selftest() -> int:
+    """
+    Runs every collector once against this host and prints what each
+    returned - no enrolment, no network to the ingest API, nothing written
+    outside a throwaway buffer. Exists so a packaged binary can prove on
+    its own OS that every platform module made it into the build, rather
+    than discovering a missing import the first time a cycle fires.
+    """
+    import tempfile
+
+    tmp = tempfile.mkdtemp(prefix="nodewatch-selftest-")
+    buf = Buffer(Path(tmp) / "buffer.db")
+
+    steps = [
+        ("platform", lambda: platform_string()),
+        ("machine_id", lambda: osdetect.machine_id()),
+        ("metrics", collect_metrics),
+        ("ports", collect_ports),
+        ("auth", lambda: osdetect.collect_auth_events(buf)),
+        ("checks", checks.collect_checks),
+        ("users", checks.collect_users),
+        ("interfaces", inventory.collect_interfaces),
+        ("virt", osdetect.collect_virtualization),
+        ("apps", osdetect.collect_apps),
+        ("packages", inventory.collect_packages),
+        ("fim", lambda: inventory.collect_fim(buf)),
+    ]
+
+    failed = 0
+
+    for name, fn in steps:
+
+        t0 = time.time()
+
+        try:
+
+            out = fn()
+
+            size = (
+                len(out)
+                if isinstance(out, (list, tuple, dict))
+                else out
+            )
+
+            print(
+                f"ok    {name:<11} {time.time() - t0:6.1f}s  {size}"
+            )
+
+        except Exception as e:
+
+            failed += 1
+
+            print(
+                f"FAIL  {name:<11} {time.time() - t0:6.1f}s  "
+                f"{type(e).__name__}: {e}"
+            )
+
+    buf.db.close()
+
+    print(
+        f"nodewatch-agent {AGENT_VERSION} selftest: "
+        f"{len(steps) - failed}/{len(steps)} collectors ran"
+    )
+
+    return 1 if failed else 0
+
+
+# ---------------------------------------------------------------- commands
+
+def _wait_for_enrolment(since: float, timeout: float = 75) -> tuple[bool, str]:
+    """After (re)starting the service: did it enrol with the master?"""
+    deadline = time.time() + timeout
+    st = {}
+    while time.time() < deadline:
+        st = read_status()
+        if (st.get("last_enroll_at") or 0) >= since:
+            return True, "enrolled with the master"
+        if (st.get("last_error_at") or 0) >= since and st.get("last_error"):
+            return False, st["last_error"]
+        time.sleep(2)
+    return False, st.get("last_error") or "the agent has not enrolled yet - check again in a minute"
+
+
+def cli(argv: list[str]) -> int:
+    import argparse
+
+    import joining
+    import service
+
+    ap = argparse.ArgumentParser(prog="nodewatch-agent", description="nodewatch agent")
+    ap.add_argument("--version", action="store_true")
+    ap.add_argument("--selftest", action="store_true", help="run every collector once and exit")
+    sub = ap.add_subparsers(dest="cmd")
+    sub.add_parser("run", help="run the agent (what the service does)")
+    j = sub.add_parser("join", help="join a master with a join code and install the service")
+    j.add_argument("code", nargs="?")
+    j.add_argument("--code-file", help="read the join code from a file instead")
+    j.add_argument("--site")
+    j.add_argument("--no-service", action="store_true", help="only write the configuration")
+    u = sub.add_parser("set-url", help="the same master at a new address")
+    u.add_argument("url")
+    sub.add_parser("restart")
+    sub.add_parser("status")
+    sub.add_parser("uninstall", help="remove the service (keeps configuration and state)")
+    sub.add_parser("gui")
+    for sp in sub.choices.values():
+        sp.add_argument("--result-file", help=argparse.SUPPRESS)
+    args = ap.parse_args(argv)
+
+    if args.version:
+        print(f"nodewatch-agent {AGENT_VERSION}")
+        return 0
+    if args.selftest:
+        return selftest()
+
+    cmd = args.cmd
+    if cmd is None:
+        # Double-clicked binary: the window, where there is a desktop for it.
+        # Run as a script with no arguments: the agent, as the script
+        # installers have always started it.
+        if not getattr(sys, "frozen", False):
+            cmd = "run"
+        elif sys.platform in ("win32", "darwin") or os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
+            cmd = "gui"
+        else:
+            ap.print_help()
+            return 2
+
+    if cmd == "run":
+        main()
+        return 0
+    if cmd == "gui":
+        import gui
+        return gui.main(AGENT_VERSION)
+    if cmd == "status":
+        cfg = nwconfig.load()
+        st = read_status()
+        print(json.dumps({"master": cfg.get("ingest_url") or INGEST_URL,
+                          "service_installed": service.installed(), **st}, indent=2, default=str))
+        return 0
+
+    def finish(ok: bool, message: str) -> int:
+        print(("ok: " if ok else "error: ") + message)
+        if args.result_file:
+            try:
+                Path(args.result_file).write_text(json.dumps({"ok": ok, "message": message}))
+            except OSError:
+                pass
+        return 0 if ok else 1
+
+    # Installing or controlling the service needs root/Administrator.
+    # Writing configuration alone (join --no-service, e.g. with NW_CONFIG
+    # pointing somewhere writable) does not.
+    if not (cmd == "join" and args.no_service) and not service.is_admin():
+        return finish(False, "run this as root / Administrator")
+
+    try:
+        if cmd == "join":
+            code = args.code
+            if args.code_file:
+                code = Path(args.code_file).read_text(encoding="utf-8").strip()
+            if not code:
+                return finish(False, "give a join code")
+            since = time.time()
+            cfg = joining.join(code, args.site)
+            if args.no_service:
+                return finish(True, f"configured for {cfg['ingest_url']}; start it with `nodewatch-agent run`")
+            service.install()
+            ok, detail = _wait_for_enrolment(since)
+            return finish(ok, f"joined {cfg['ingest_url']}: {detail}")
+        if cmd == "set-url":
+            cfg = joining.set_url(args.url)
+            since = time.time()
+            service.restart()
+            ok, detail = _wait_for_enrolment(since)
+            return finish(ok, f"now reporting to {cfg['ingest_url']}: {detail}")
+        if cmd == "restart":
+            since = time.time()
+            service.restart()
+            ok, detail = _wait_for_enrolment(since)
+            return finish(ok, f"restarted: {detail}")
+        if cmd == "uninstall":
+            service.uninstall()
+            return finish(True, "service removed; configuration and state kept")
+    except (joining.JoinError, service.ServiceError, OSError) as e:
+        return finish(False, str(e))
+    return finish(False, f"unknown command {cmd}")
+
+
 # ---------------------------------------------------------------- entrypoint
 
 if __name__ == "__main__":
 
     try:
 
-        main()
+        sys.exit(cli(sys.argv[1:]))
 
     except KeyboardInterrupt:
 
