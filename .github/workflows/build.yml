@@ -115,11 +115,18 @@ jobs:
         if: matrix.target.os == 'macos'
         run: |
           dmg=$(ls dist/nodewatch-agent-*-macos-${{ matrix.target.arch }}.dmg)
-          mnt=$(hdiutil attach -nobrowse -readonly "$dmg" | tail -1 | awk -F'\t' '{print $NF}')
+          # hdiutil is intermittently "Resource temporarily unavailable" on
+          # CI Macs; retry rather than fail the build.
+          for i in 1 2 3 4 5; do
+            out=$(hdiutil attach -nobrowse -readonly "$dmg") && break
+            echo "attach attempt $i failed; retrying"; sleep $((i * 10))
+          done
+          mnt=$(echo "$out" | tail -1 | awk -F'\t' '{print $NF}')
+          test -d "$mnt"
           codesign --verify --deep --strict "$mnt/nodewatch Agent.app"
           "$mnt/nodewatch Agent.app/Contents/MacOS/nodewatch-agent" --version
           test -L "$mnt/Applications"
-          hdiutil detach "$mnt"
+          hdiutil detach "$mnt" || hdiutil detach -force "$mnt"
 
       - uses: actions/upload-artifact@v4
         with:
