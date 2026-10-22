@@ -75,9 +75,16 @@ class EmbeddedPostgres:
         return str(self.bin / f"{name}{EXE}")
 
     def _run(self, *args: str) -> None:
-        res = subprocess.run(args, capture_output=True, text=True)
-        if res.returncode != 0:
-            raise RuntimeError(f"{Path(args[0]).name} failed: {(res.stderr or res.stdout).strip()[-800:]}")
+        # Output goes to a temporary file, not a pipe: on Windows the
+        # postgres server pg_ctl starts inherits pg_ctl's handles and keeps
+        # them open, so reading a pipe to EOF would wait forever.
+        import tempfile
+        with tempfile.TemporaryFile(mode="w+") as out:
+            rc = subprocess.run(args, stdout=out, stderr=out, stdin=subprocess.DEVNULL).returncode
+            out.seek(0)
+            text = out.read()
+        if rc != 0:
+            raise RuntimeError(f"{Path(args[0]).name} failed: {text.strip()[-800:]}")
 
     @property
     def initialised(self) -> bool:
