@@ -157,7 +157,9 @@ begin
     if RC = 0 then
       MsgBox('Joined: ' + ResultMessage(String(Output)), mbInformation, MB_OK)
     else
-      MsgBox('The agent is installed, but joining failed:' + #13#10#13#10 + ResultMessage(String(Output)) +
-             #13#10#13#10 + 'Get a new join code and use the nodewatch Agent window to try again.', mbError, MB_OK);
+      { No line may start with #: the preprocessor would read it as a directive. }
+      MsgBox('The agent is installed, but joining failed:' + #13#10#13#10 +
+             ResultMessage(String(Output)) + #13#10#13#10 +
+             'Get a new join code and use the nodewatch Agent window to try again.', mbError, MB_OK);
   end;
 end;
