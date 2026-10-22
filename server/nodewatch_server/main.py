@@ -560,11 +560,13 @@ def main() -> None:
         from . import macservice
         if args.cmd is None and macservice.app_bundle() is not None:
             args.cmd = "gui"                    # double-clicked nodewatch Master.app
+        from .config import mac_system_data_dir
         if args.cmd == "gui":
             from . import gui
-            sys.exit(gui.main(data_dir, VERSION, macservice.installed))
+            sys.exit(gui.main(args.data or mac_system_data_dir(), VERSION, macservice.installed))
         if args.cmd == "install":
-            macservice.install(data_dir, args.user or os.environ.get("SUDO_USER") or "")
+            macservice.install(args.data or mac_system_data_dir(),
+                               args.user or os.environ.get("SUDO_USER") or "")
             return
         if args.cmd == "uninstall":
             macservice.uninstall()

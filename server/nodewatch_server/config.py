@@ -21,8 +21,20 @@ def default_data_dir() -> Path:
     if sys.platform == "win32":
         return Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "nodewatch-server"
     if sys.platform == "darwin":
-        return Path("/Library/Application Support/nodewatch-server")
+        # The installed service (and the Master window) use the system
+        # folder. Run by hand by an ordinary user - e.g. the single-file
+        # program double-clicked in Finder - before anything created that
+        # folder, it cannot be created without admin rights, so use the
+        # user's own instead of failing.
+        system = mac_system_data_dir()
+        if system.exists() or os.geteuid() == 0:
+            return system
+        return Path.home() / "Library" / "Application Support" / "nodewatch-server"
     return Path("/var/lib/nodewatch-server")
+
+
+def mac_system_data_dir() -> Path:
+    return Path("/Library/Application Support/nodewatch-server")
 
 
 @dataclass
