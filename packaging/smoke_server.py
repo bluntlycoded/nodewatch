@@ -32,17 +32,19 @@ TIMEOUT_S = 180
 def main(binary: str) -> int:
     data = Path(tempfile.mkdtemp(prefix="nw-smoke-"))
     log = data / "console.log"
-    # Own process group on Windows, so it can be sent CTRL_BREAK_EVENT - a
-    # stop it can clean up after, unlike terminate().
-    flags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
+    # Not in a separate process group on Windows: started that way (to be
+    # able to send it CTRL_BREAK_EVENT), its PostgreSQL exits seconds after
+    # starting. Stopped with terminate() instead, and whatever PostgreSQL it
+    # leaves running is stopped by stop_leftover_postgres() below.
     with open(log, "w") as out:
         proc = subprocess.Popen([binary, "--data", str(data), "--no-browser"],
-                                stdout=out, stderr=subprocess.STDOUT, creationflags=flags)
+                                stdout=out, stderr=subprocess.STDOUT)
     try:
         deadline = time.time() + TIMEOUT_S
         while time.time() < deadline:
             if proc.poll() is not None:
                 print(log.read_text(errors="replace"))
+                print_logs(data)
                 print(f"FAIL: master exited with {proc.returncode} before setup was ready")
                 return 1
             if "Setup code" in log.read_text(errors="replace"):
@@ -75,7 +77,10 @@ def main(binary: str) -> int:
         return 0
     finally:
         if proc.poll() is None:
-            proc.send_signal(signal.CTRL_BREAK_EVENT if sys.platform == "win32" else signal.SIGTERM)
+            if sys.platform == "win32":
+                proc.terminate()
+            else:
+                proc.send_signal(signal.SIGTERM)
             try:
                 proc.wait(timeout=60)
             except subprocess.TimeoutExpired:
@@ -102,11 +107,12 @@ def print_logs(data: Path) -> None:
     """The master's own log and PostgreSQL's, which says why it would not start."""
     for name in ("server.log", "postgres.log", "postgrest.log"):
         log = data / name
-        if sys.platform == "win32":
+        if sys.platform == "win32" or str(data).startswith(tempfile.gettempdir()):
             text = log.read_text(errors="replace")[-4000:] if log.exists() else "(missing)"
         else:
             text = subprocess.run(["sudo", "tail", "-60", str(log)], capture_output=True, text=True).stdout
         print(f"----- {name}\n{text}")
+    sys.stdout.flush()
 
 
 def service(binary: str) -> int:
