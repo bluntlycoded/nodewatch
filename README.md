@@ -130,6 +130,7 @@ probe/     agentless probe runner
 db/        migrations, applied in order
 docs/      the dashboard (single HTML file, served by GitHub Pages)
 server/    self-hosted master: runs api/, probe/ and db/ with bundled Postgres
+licensing/ the vendor's licence server (Supabase): activation and the admin API
 packaging/ builds the agent and master into standalone executables
 tools/     vendor-side tooling (licence issuing) - never shipped
 design/    design notes
@@ -143,8 +144,8 @@ one exception with its own file rather than living in each OS module,
 since virtualisation-role detection shares logic (classification, hardware
 evidence) across all three.
 
-**Edge Functions** (`send-alerts`, `scan-vulns`, `manage-users`) run on
-Supabase but are not yet tracked in this repository — they are deployed
+**Edge Functions** of the hosted product (`send-alerts`, `scan-vulns`,
+`manage-users`) run on Supabase but are not yet tracked in this repository — they are deployed
 directly from the Supabase dashboard/CLI. Referenced in
 [Deploying the stack](#deploying-the-stack) below for what each does and
 how it must be configured.
@@ -253,23 +254,62 @@ runner, and an agent build for every OS to hand to new nodes. Design and
 phases: [design/self-hosted-master.md](design/self-hosted-master.md).
 
 ```bash
-./nodewatch-server                # first run: prints a setup URL and setup code
-sudo ./nodewatch-server install   # Linux: run as a systemd service instead
-./nodewatch-server add-node       # join code + install commands for a new node
-./nodewatch-server licence <key>  # install a renewed licence
-./nodewatch-server status         # licence, address, CA fingerprint
-./nodewatch-server selfcheck      # check the build's bundled parts run here
+./nodewatch-server                     # first run: prints a setup URL and setup code
+sudo ./nodewatch-server install        # Linux: run as a systemd service instead
+sudo nodewatch-server add-node         # join code + install commands for a new node
+sudo nodewatch-server licence <key>    # install a renewed licence
+sudo nodewatch-server activate [code]  # activate the licence on this machine
+sudo nodewatch-server status           # licence, activation, address, CA fingerprint
+./nodewatch-server selfcheck           # check the build's bundled parts run here
 ```
 
-On Windows, `nodewatch-server.exe install` from an elevated prompt
-registers a real Windows service. The setup page asks for the setup code,
-a licence key, the address nodes will use to reach the master, and the
-first admin account; the dashboard is then served by the master itself.
-Licence keys are Ed25519-signed and verified offline;
+On Linux the installed master runs as its own `nodewatch` user and owns
+its data directory. The management commands can be run with `sudo`: they
+switch to that user before touching anything, so the files they write
+stay readable by the service. On Windows, `nodewatch-server.exe install`
+from an elevated prompt registers a real Windows service. On macOS, the
+Master app installs a launchd service that runs at boot as the installing
+user.
+
+The setup page asks for the setup code, a licence key, the address nodes
+will use to reach the master, and the first admin account. The dashboard
+is then served by the master itself, at `https://<that address>:8443`.
+
+The master's HTTPS certificate is signed by its own CA and renewed
+automatically, at start-up or by a daily job, when it has under 60 days
+left. Nodes trust the CA rather than the certificate, so a renewal needs
+nothing done on them.
+
+### Licensing
+
+Licence keys are Ed25519-signed by the vendor and verified offline by the
+master: who the licence is for, how many nodes, until when.
 `tools/license_tool.py` issues them with the vendor signing key, which
-never belongs in this repository. The licence's node count is enforced at
-enrolment; after expiry and a 14-day grace period the dashboard is
-read-only and new nodes are refused, but monitoring continues.
+never belongs in this repository. The node count is enforced at
+enrolment. After expiry and a 14-day grace period the dashboard is
+read-only and new nodes are refused, but monitoring and alerts continue.
+
+**Activation** binds a licence to one machine through the vendor's
+licence server ([licensing/](licensing/README.md)):
+
+- **Online.** Setup activates the key over the internet. The master then
+  checks in every six hours, which is how a renewed key installs itself
+  and how a move or revocation reaches it. A check-in that cannot reach
+  the server changes nothing.
+- **Offline**, for air-gapped sites. The master shows a request code. On
+  any device with internet, the customer enters it with the licence key
+  at [the offline activation page](https://bluntlycoded.github.io/nodewatch/activate/)
+  and pastes the activation code it returns into the master.
+- **One machine per licence.** Activating on another machine moves the
+  licence there, up to a yearly limit (3 by default); the old master
+  becomes read-only at its next check-in. Masters set up before activation
+  existed get 14 days to activate.
+- **Admin page.** The vendor issues, renews, releases and revokes licences
+  at [bluntlycoded.github.io/nodewatch/licensing/](https://bluntlycoded.github.io/nodewatch/licensing/).
+
+Activation is enforced only by builds that have the licence server's
+address built in. Until the server is deployed (`licensing/README.md`), a
+valid key is enough, as before.
 
 **Installers.** Each release also carries:
 
@@ -287,8 +327,10 @@ Anyway). Built by `packaging/windows/*.iss` (Inno Setup) and
 
 **Adding a node.** Servers → Add server gives a join code and a one-line
 command that downloads the agent from the master, checks its SHA-256 and
-runs `nodewatch-agent join <code>`. Or double-click the agent binary and
-paste the code into its window. The code carries the master's address, a
+runs `nodewatch-agent join <code>`. Or open the agent app and paste the
+code into its window. Joining installs a service, so the window asks for
+an administrator password (UAC on Windows, the system password dialog on
+macOS, pkexec on Linux). The code carries the master's address, a
 single-use token and the fingerprint of the master's CA; the agent pins
 that CA, installs itself as a service, generates its own signing key and
 registers it, and signs every later enrolment with it. The same window

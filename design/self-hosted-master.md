@@ -11,7 +11,6 @@ Still open:
 - Deploy the licence server to its Supabase project and put its address
   into the master (`licensing/README.md`).
 - MSI / pkg / deb installers and code signing (phase 5).
-- macOS masters have no service install.
 - The agent window's administrator prompt (UAC, macOS password dialog,
   pkexec) has not been exercised outside CI.
 
