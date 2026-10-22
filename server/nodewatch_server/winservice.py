@@ -22,6 +22,8 @@ from pathlib import Path
 NAME = "nodewatch-server"
 DISPLAY = "nodewatch master"
 DESCRIPTION = "nodewatch master node: dashboard, ingest API, database, alerting and probes."
+ACCOUNT = r"NT AUTHORITY\NetworkService"
+NETWORK_SERVICE_SID = "S-1-5-20"
 
 log = logging.getLogger("nodewatch.service")
 
@@ -49,16 +51,25 @@ def install(data_dir: Path) -> None:
     if Path(sys.executable).resolve() != exe.resolve():
         shutil.copy2(sys.executable, exe)
 
-    # SYSTEM and Administrators only: config.json and the CA key live here.
+    # The service runs as NetworkService, not LocalSystem: PostgreSQL will
+    # not run with administrative rights (EDB's own installer uses this
+    # account for the same reason), and the master needs no more than its
+    # data directory and a port - the same least privilege the Linux
+    # master gets from its own `nodewatch` user. The data directory, which
+    # holds config.json and the CA key, is readable only by that account,
+    # SYSTEM and Administrators; /T re-applies it to anything an earlier
+    # LocalSystem install left there.
     data_dir.mkdir(parents=True, exist_ok=True)
     subprocess.run(["icacls", str(data_dir), "/inheritance:r", "/grant:r",
-                    "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F"], capture_output=True, check=True)
+                    f"*{NETWORK_SERVICE_SID}:(OI)(CI)F", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F",
+                    "/T", "/C", "/Q"], capture_output=True, check=True)
 
     bin_path = f'"{exe}" --data "{data_dir}" service-run'
     if _sc("query", NAME, check=False).returncode == 0:
-        _sc("config", NAME, "binPath=", bin_path, "start=", "auto")
+        _sc("config", NAME, "binPath=", bin_path, "start=", "auto", "obj=", ACCOUNT, "password=", "")
     else:
-        _sc("create", NAME, "binPath=", bin_path, "start=", "auto", "DisplayName=", DISPLAY)
+        _sc("create", NAME, "binPath=", bin_path, "start=", "auto", "DisplayName=", DISPLAY,
+            "obj=", ACCOUNT, "password=", "")
     _sc("description", NAME, DESCRIPTION)
     # Restart 5 s, 5 s, then 30 s after a crash; reset the count after a day.
     _sc("failure", NAME, "reset=", "86400", "actions=", "restart/5000/restart/5000/restart/30000")

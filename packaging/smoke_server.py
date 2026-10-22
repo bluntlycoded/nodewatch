@@ -74,6 +74,17 @@ def main(binary: str) -> int:
         shutil.rmtree(data, ignore_errors=True)
 
 
+def print_logs(data: Path) -> None:
+    """The master's own log and PostgreSQL's, which says why it would not start."""
+    for name in ("server.log", "postgres.log", "postgrest.log"):
+        log = data / name
+        if sys.platform == "win32":
+            text = log.read_text(errors="replace")[-4000:] if log.exists() else "(missing)"
+        else:
+            text = subprocess.run(["sudo", "tail", "-60", str(log)], capture_output=True, text=True).stdout
+        print(f"----- {name}\n{text}")
+
+
 def service(binary: str) -> int:
     if sys.platform == "win32":
         import os
@@ -106,10 +117,7 @@ def service(binary: str) -> int:
                 pass
             time.sleep(3)
         print(f"FAIL: the service did not serve the setup page within {TIMEOUT_S}s")
-        log = data / "server.log"
-        out = (subprocess.run(["sudo", "tail", "-50", str(log)], capture_output=True, text=True).stdout
-               if sys.platform != "win32" else (log.read_text(errors="replace")[-4000:] if log.exists() else ""))
-        print(out)
+        print_logs(data)
         return 1
     finally:
         subprocess.run(uninstall, capture_output=True, text=True, timeout=120)
