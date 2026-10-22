@@ -1262,6 +1262,8 @@ def cli(argv: list[str]) -> int:
     sub.add_parser("gui")
     for sp in sub.choices.values():
         sp.add_argument("--result-file", help=argparse.SUPPRESS)
+    # Finder on older macOS passes a process serial number to apps it opens.
+    argv = [a for a in argv if not a.startswith("-psn_")]
     args = ap.parse_args(argv)
 
     if args.version:

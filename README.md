@@ -271,6 +271,19 @@ never belongs in this repository. The licence's node count is enforced at
 enrolment; after expiry and a 14-day grace period the dashboard is
 read-only and new nodes are refused, but monitoring continues.
 
+**Installers.** Each release also carries:
+
+| File | What it does |
+|---|---|
+| `nodewatch-server-setup-<v>-windows-x64.exe` | Installs the master as a Windows service, shows the setup code, opens the setup page. Uninstalling keeps the data. |
+| `nodewatch-agent-setup-<v>-windows-x64.exe` | Installs the agent and a Start menu entry for its window; optionally joins straight away. `/VERYSILENT /CODE=NWJ1-… /SITE="…"` for GPO/Intune rollout. |
+| `nodewatch-agent-<v>-macos-<arch>.dmg` | `nodewatch Agent.app`: drag to Applications, open, paste the join code. |
+
+Neither is code-signed yet, so Windows SmartScreen and macOS Gatekeeper
+warn on first run (macOS: System Settings → Privacy & Security → Open
+Anyway). Built by `packaging/windows/*.iss` (Inno Setup) and
+`packaging/build_agent.py` on macOS.
+
 **Adding a node.** Servers → Add server gives a join code and a one-line
 command that downloads the agent from the master, checks its SHA-256 and
 runs `nodewatch-agent join <code>`. Or double-click the agent binary and

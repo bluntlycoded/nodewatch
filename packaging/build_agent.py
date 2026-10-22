@@ -21,11 +21,13 @@ same behaviour as `python agent.py`. It needs no Python on the host.
 """
 
 import hashlib
+import os
 import platform
 import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -94,6 +96,93 @@ def windows_version_file(version: str) -> Path:
     return path
 
 
+def pyinstaller_common() -> list[str]:
+    cmd = ["--paths", str(AGENT)]
+    for mod in PLATFORM_MODULES:
+        cmd += ["--hidden-import", mod]
+    for mod in EXCLUDES:
+        cmd += ["--exclude-module", mod]
+    return cmd
+
+
+def build_macos_dmg(version: str, arch: str) -> Path:
+    """
+    nodewatch Agent.app in a drag-to-Applications DMG. Double-clicking the
+    app opens the join window; joining installs the whole app into
+    /Applications and runs it under launchd (service.py). The single-file
+    binary stays the download the master hands out for scripted installs.
+    """
+    import plistlib
+
+    work = WORK / "app"
+    shutil.rmtree(work, ignore_errors=True)
+    cmd = [sys.executable, "-m", "PyInstaller", "--windowed", "--onedir", "--clean", "--noconfirm",
+           "--name", "nodewatch-agent", "--osx-bundle-identifier", "com.nodewatch.agent",
+           "--distpath", str(work / "dist"), "--workpath", str(work / "build"), "--specpath", str(work)]
+    cmd += pyinstaller_common() + [str(AGENT / "agent.py")]
+    print("+", " ".join(cmd), flush=True)
+    subprocess.run(cmd, check=True)
+
+    stage = work / "stage"
+    stage.mkdir()
+    app = stage / "nodewatch Agent.app"
+    shutil.move(str(work / "dist" / "nodewatch-agent.app"), app)
+
+    info_path = app / "Contents" / "Info.plist"
+    info = plistlib.loads(info_path.read_bytes())
+    info.update({
+        "CFBundleName": "nodewatch Agent",
+        "CFBundleDisplayName": "nodewatch Agent",
+        "CFBundleShortVersionString": version,
+        "CFBundleVersion": version,
+        "LSMinimumSystemVersion": "11.0",
+        "NSHighResolutionCapable": True,
+    })
+    info_path.write_bytes(plistlib.dumps(info))
+    # Editing Info.plist breaks the ad-hoc signature PyInstaller applied.
+    subprocess.run(["codesign", "--force", "--deep", "-s", "-", str(app)], check=True)
+
+    os.symlink("/Applications", stage / "Applications")
+    (stage / "Read me.txt").write_text(f"""nodewatch Agent {version}
+
+1. Drag "nodewatch Agent" onto Applications.
+2. Open it, paste the join code from your nodewatch master, press Join.
+   macOS asks for an administrator password: the agent runs as a system
+   service so it can read the security settings it reports on.
+
+This build is not notarised by Apple. The first time, macOS may say it
+cannot check the app: open System Settings > Privacy & Security and choose
+"Open Anyway", or right-click the app and choose Open.
+
+Scripted install instead: the master's Add node page gives a one-line
+command that downloads and joins without this app.
+""")
+
+    dmg = DIST / f"nodewatch-agent-{version}-macos-{arch}.dmg"
+    dmg.unlink(missing_ok=True)
+    # hdiutil create fails now and then on CI Macs with "Resource busy"
+    # while something (XProtect, Spotlight) still has the staged app open;
+    # retrying after a pause is the usual remedy. Its error is printed.
+    for attempt in range(1, 6):
+        res = subprocess.run(["hdiutil", "create", "-volname", f"nodewatch Agent {version}", "-srcfolder",
+                              str(stage), "-ov", "-format", "UDZO", str(dmg)], capture_output=True, text=True)
+        if res.returncode == 0:
+            break
+        print(f"hdiutil create attempt {attempt} failed: {(res.stderr or res.stdout).strip()}", flush=True)
+        time.sleep(10 * attempt)
+    else:
+        sys.exit("could not create the DMG")
+    digest = hashlib.sha256(dmg.read_bytes()).hexdigest()
+    (DIST / f"{dmg.name}.sha256").write_text(f"{digest}  {dmg.name}\n")
+
+    out = subprocess.run([str(app / "Contents" / "MacOS" / "nodewatch-agent"), "--version"],
+                         capture_output=True, text=True)
+    if out.returncode != 0 or version not in out.stdout:
+        sys.exit(f"the app's executable did not run: {out.stdout}{out.stderr}")
+    print(f"built {dmg}  ({dmg.stat().st_size / 1e6:.1f} MB)  - app reports {out.stdout.strip()}")
+    return dmg
+
+
 def main() -> None:
     version = agent_version()
     os_name, arch = target()
@@ -141,6 +230,9 @@ def main() -> None:
     if version not in out.stdout:
         sys.exit(f"--version printed {out.stdout!r}, expected {version}")
     print(out.stdout.strip())
+
+    if os_name == "macos" and "--no-dmg" not in sys.argv:
+        build_macos_dmg(version, arch)
 
 
 if __name__ == "__main__":

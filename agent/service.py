@@ -21,6 +21,7 @@ UNIT = Path("/etc/systemd/system/nodewatch-agent.service")
 PLIST = Path("/Library/LaunchDaemons/com.nodewatch.agent.plist")
 LABEL = "com.nodewatch.agent"
 TASK = "nodewatch-agent"
+APP_NAME = "nodewatch Agent.app"
 
 SYSTEMD_UNIT = """[Unit]
 Description=nodewatch agent
@@ -106,11 +107,43 @@ def lock_down(path: Path) -> None:
               "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F"])
 
 
+def _app_bundle() -> Path | None:
+    """The .app this binary runs from, when it is the macOS app (DMG) build."""
+    if sys.platform != "darwin":
+        return None
+    for parent in Path(sys.executable).resolve().parents:
+        if parent.suffix == ".app":
+            return parent
+    return None
+
+
+def _install_app(bundle: Path) -> Path:
+    """
+    The macOS app build is a folder, not one file: the whole bundle goes to
+    /Applications (if it was opened from the DMG or Downloads) and launchd
+    runs the executable inside it. Full Disk Access is then granted to
+    "nodewatch Agent" by name in System Settings.
+    """
+    target = Path("/Applications") / APP_NAME
+    exe_rel = Path(sys.executable).resolve().relative_to(bundle)
+    if not (target.exists() and target.resolve() == bundle):
+        stop()
+        tmp = target.with_name(APP_NAME + ".new")
+        shutil.rmtree(tmp, ignore_errors=True)
+        shutil.copytree(bundle, tmp, symlinks=True)
+        shutil.rmtree(target, ignore_errors=True)
+        tmp.rename(target)
+    return target / exe_rel
+
+
 def install_binary() -> Path:
     """Copy the running binary to its permanent place, if it is not there."""
     target = nwconfig.binary_path()
     if not getattr(sys, "frozen", False):
         raise ServiceError("installing a service needs the packaged nodewatch-agent binary")
+    bundle = _app_bundle()
+    if bundle:
+        return _install_app(bundle)
     me = Path(sys.executable).resolve()
     if target.exists() and me == target.resolve():
         return target
