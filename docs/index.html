@@ -205,7 +205,7 @@ tailwind.config = { theme: { extend: {
     <div class="flex items-start justify-between border-b border-rule px-6 py-4">
       <div>
         <p class="font-mono text-[10px] tracking-[.22em] uppercase text-muted">Add a server</p>
-        <h2 class="text-xl font-semibold tracking-tight mt-0.5">Any Linux host</h2>
+        <h2 id="a-heading" class="text-xl font-semibold tracking-tight mt-0.5">New Linux node</h2>
       </div>
       <button id="a-close" class="font-mono text-xs text-muted hover:text-ink px-2">Close</button>
     </div>
@@ -241,7 +241,7 @@ tailwind.config = { theme: { extend: {
       </button>
       <div id="a-out" class="hidden space-y-2">
         <div class="flex items-center justify-between">
-          <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Run this on the server as root</label>
+          <label id="a-cmdlabel" class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Run this on the server as root</label>
           <button id="a-copy" class="font-mono text-[10px] uppercase tracking-[.12em] text-signal hover:underline">Copy</button>
         </div>
         <pre id="a-cmd" class="border border-rule bg-ground px-3 py-3 font-mono text-[11px] whitespace-pre-wrap break-all"></pre>
@@ -4112,6 +4112,12 @@ function localStorage_set(k,v){ try { localStorage.setItem(k,v); } catch(e){} }
 function localStorage_remove(k){ try { localStorage.removeItem(k); } catch(e){} }
 
 function renderPlatforms(){
+  // Title and command heading follow the chosen OS; they used to say
+  // "Any Linux host" and "as root" whatever was selected.
+  const plabel = (PLATFORMS.find(([k])=>k===addPlatform)||[])[1] || 'Linux';
+  $('a-heading').textContent = `New ${plabel} node`;
+  $('a-cmdlabel').textContent = addPlatform === 'windows'
+    ? 'Run this in an elevated PowerShell' : 'Run this in a terminal on the new machine';
   $('a-platforms').innerHTML = PLATFORMS.map(([k,label])=>`
     <button data-plat="${k}" class="border px-2 py-2 font-mono text-[10px] uppercase tracking-[.1em] transition-colors
       ${addPlatform===k?'border-ink bg-ground':'border-rule hover:border-ink'}">${label}</button>`).join('');

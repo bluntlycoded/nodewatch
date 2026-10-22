@@ -27,6 +27,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -159,8 +160,18 @@ command that downloads and joins without this app.
 
     dmg = DIST / f"nodewatch-agent-{version}-macos-{arch}.dmg"
     dmg.unlink(missing_ok=True)
-    subprocess.run(["hdiutil", "create", "-volname", f"nodewatch Agent {version}", "-srcfolder", str(stage),
-                    "-ov", "-format", "UDZO", str(dmg)], check=True, capture_output=True)
+    # hdiutil create fails now and then on CI Macs with "Resource busy"
+    # while something (XProtect, Spotlight) still has the staged app open;
+    # retrying after a pause is the usual remedy. Its error is printed.
+    for attempt in range(1, 6):
+        res = subprocess.run(["hdiutil", "create", "-volname", f"nodewatch Agent {version}", "-srcfolder",
+                              str(stage), "-ov", "-format", "UDZO", str(dmg)], capture_output=True, text=True)
+        if res.returncode == 0:
+            break
+        print(f"hdiutil create attempt {attempt} failed: {(res.stderr or res.stdout).strip()}", flush=True)
+        time.sleep(10 * attempt)
+    else:
+        sys.exit("could not create the DMG")
     digest = hashlib.sha256(dmg.read_bytes()).hexdigest()
     (DIST / f"{dmg.name}.sha256").write_text(f"{digest}  {dmg.name}\n")
 
