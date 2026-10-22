@@ -1,0 +1,190 @@
+# Builds the agent and the master (nodewatch-server) as standalone
+# executables for every supported OS and CPU, tests each on its own
+# platform, and publishes releases:
+#
+#   tag agent-v<version>   -> agent binaries   (must match AGENT_VERSION)
+#   tag server-v<version>  -> master binaries  (must match server VERSION)
+#
+# PyInstaller does not cross-compile, so every target builds on a runner
+# of that OS and architecture. Linux builds inside packaging/linux's
+# AlmaLinux 8 image so the binaries run on glibc 2.28+ rather than on
+# whatever the runner happens to ship. Masters are built after the agents
+# because each master carries every agent build, to hand to joining nodes.
+name: build
+
+on:
+  push:
+    tags: ["agent-v*", "server-v*"]
+  pull_request:
+    paths: ["agent/**", "api/**", "probe/**", "db/**", "server/**", "docs/**", "packaging/**",
+            ".github/workflows/build.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  agent:
+    name: agent ${{ matrix.target.os }}-${{ matrix.target.arch }}
+    runs-on: ${{ matrix.target.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - { os: linux,   arch: x64,   runner: ubuntu-24.04 }
+          - { os: linux,   arch: arm64, runner: ubuntu-24.04-arm }
+          - { os: windows, arch: x64,   runner: windows-2022 }
+          - { os: macos,   arch: arm64, runner: macos-15 }
+          - { os: macos,   arch: x64,   runner: macos-15-intel }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag matches AGENT_VERSION
+        if: startsWith(github.ref, 'refs/tags/agent-v')
+        shell: bash
+        run: |
+          grep -q "^AGENT_VERSION = \"${GITHUB_REF_NAME#agent-v}\"" agent/agent.py \
+            || { echo "::error::$GITHUB_REF_NAME does not match AGENT_VERSION"; exit 1; }
+
+      - name: Build (Linux, in AlmaLinux 8)
+        if: matrix.target.os == 'linux'
+        run: |
+          docker build -t nodewatch-build -f packaging/linux/Dockerfile .
+          docker run --rm -v "$PWD:/src" nodewatch-build python3.12 packaging/build_agent.py
+          sudo chown -R "$(id -u):$(id -g)" dist build
+
+      - uses: actions/setup-python@v5
+        if: matrix.target.os != 'linux'
+        with:
+          python-version: "3.12"
+
+      - name: Build (Windows, macOS)
+        if: matrix.target.os != 'linux'
+        shell: bash
+        run: |
+          python -m pip install -r packaging/requirements-build.txt -r agent/requirements.txt
+          python packaging/build_agent.py
+
+      # Root/Administrator, as under systemd, launchd and Task Scheduler, so
+      # the privileged collectors are exercised the same way.
+      - name: Self-test (Linux, macOS)
+        if: matrix.target.os != 'windows'
+        run: sudo "$(ls dist/nodewatch-agent-*-${{ matrix.target.os }}-${{ matrix.target.arch }})" --selftest
+
+      - name: Self-test (Windows)
+        if: matrix.target.os == 'windows'
+        shell: pwsh
+        run: |
+          $bin = Get-ChildItem dist\nodewatch-agent-*-windows-${{ matrix.target.arch }}.exe
+          & $bin.FullName --selftest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nodewatch-agent-${{ matrix.target.os }}-${{ matrix.target.arch }}
+          path: dist/nodewatch-agent-*
+          if-no-files-found: error
+
+  server:
+    name: server ${{ matrix.target.os }}-${{ matrix.target.arch }}
+    needs: agent
+    runs-on: ${{ matrix.target.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - { os: linux,   arch: x64,   runner: ubuntu-24.04 }
+          - { os: linux,   arch: arm64, runner: ubuntu-24.04-arm }
+          - { os: windows, arch: x64,   runner: windows-2022 }
+          - { os: macos,   arch: arm64, runner: macos-15 }
+          - { os: macos,   arch: x64,   runner: macos-15-intel }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag matches server VERSION
+        if: startsWith(github.ref, 'refs/tags/server-v')
+        shell: bash
+        run: |
+          grep -q "^VERSION = \"${GITHUB_REF_NAME#server-v}\"" server/nodewatch_server/main.py \
+            || { echo "::error::$GITHUB_REF_NAME does not match the server VERSION"; exit 1; }
+
+      # Every agent build, so this master can hand any OS its agent.
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: nodewatch-agent-*
+          path: dist
+          merge-multiple: true
+
+      - name: Build (Linux, in AlmaLinux 8)
+        if: matrix.target.os == 'linux'
+        run: |
+          docker build -t nodewatch-build -f packaging/linux/Dockerfile .
+          docker run --rm -v "$PWD:/src" nodewatch-build python3.12 packaging/build_server.py
+          sudo chown -R "$(id -u):$(id -g)" dist build
+
+      - uses: actions/setup-python@v5
+        if: matrix.target.os != 'linux'
+        with:
+          python-version: "3.12"
+
+      - name: Build (Windows, macOS)
+        if: matrix.target.os != 'linux'
+        shell: bash
+        run: |
+          python -m pip install -r packaging/requirements-build.txt -r agent/requirements.txt \
+                                -r api/requirements.txt -r probe/requirements.txt
+          if [ "${{ matrix.target.os }}" = windows ]; then python -m pip install pywin32; fi
+          python packaging/build_server.py
+
+      - name: Self-check and smoke test
+        shell: bash
+        run: |
+          bin=$(ls dist/nodewatch-server-*-${{ matrix.target.os }}-${{ matrix.target.arch }}* | grep -v sha256)
+          "$bin" --data "$RUNNER_TEMP/selfcheck" selfcheck
+          PY=$(command -v python3 || command -v python)
+          "$PY" packaging/smoke_server.py "$bin"
+
+      # Install as a real service and check it serves. Not on macOS:
+      # macOS masters have no service install yet.
+      - name: Service install test
+        if: matrix.target.os != 'macos'
+        shell: bash
+        run: |
+          bin=$(ls dist/nodewatch-server-*-${{ matrix.target.os }}-${{ matrix.target.arch }}* | grep -v sha256)
+          PY=$(command -v python3 || command -v python)
+          "$PY" packaging/smoke_server.py --service "$PWD/$bin"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nodewatch-server-${{ matrix.target.os }}-${{ matrix.target.arch }}
+          path: dist/nodewatch-server-*
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/agent-v') || startsWith(github.ref, 'refs/tags/server-v')
+    needs: [agent, server]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Which component
+        id: c
+        run: echo "name=${GITHUB_REF_NAME%%-v*}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: nodewatch-${{ steps.c.outputs.name }}-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist
+          cat *.sha256 > SHA256SUMS
+          rm *.sha256
+          gh release create "$GITHUB_REF_NAME" * \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "nodewatch ${{ steps.c.outputs.name }} ${GITHUB_REF_NAME#*-v}" \
+            --generate-notes

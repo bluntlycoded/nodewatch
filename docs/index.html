@@ -7,8 +7,12 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-<script src="https://cdn.tailwindcss.com"></script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="vendor/tailwind-play-3.4.17.js"></script>
+<script src="vendor/supabase-js-2.117.3.js"></script>
+<!-- Present only when served by a self-hosted master (nodewatch-server):
+     sets window.NW_CONFIG. On GitHub Pages it 404s and the hosted
+     Supabase project below is used. -->
+<script src="config.js"></script>
 <script>
 tailwind.config = { theme: { extend: {
   colors: { ground:'var(--c-ground)', paper:'var(--c-paper)', rule:'var(--c-rule)',
@@ -210,7 +214,7 @@ tailwind.config = { theme: { extend: {
         <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Operating system</label>
         <div id="a-platforms" class="grid grid-cols-3 gap-2 mt-2"></div>
       </div>
-      <div>
+      <div id="a-provwrap">
         <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Where does it run</label>
         <div id="a-providers" class="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2"></div>
       </div>
@@ -226,7 +230,7 @@ tailwind.config = { theme: { extend: {
                  class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
         </div>
       </div>
-      <div>
+      <div id="a-ingestwrap">
         <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Ingest URL</label>
         <input id="a-ingest"
                class="mt-1 w-full border border-rule px-3 py-2 font-mono text-sm focus:border-signal outline-none">
@@ -241,6 +245,15 @@ tailwind.config = { theme: { extend: {
           <button id="a-copy" class="font-mono text-[10px] uppercase tracking-[.12em] text-signal hover:underline">Copy</button>
         </div>
         <pre id="a-cmd" class="border border-rule bg-ground px-3 py-3 font-mono text-[11px] whitespace-pre-wrap break-all"></pre>
+        <div id="a-join" class="hidden space-y-2 pt-2">
+          <div class="flex items-center justify-between">
+            <label class="font-mono text-[10px] tracking-[.18em] uppercase text-muted">Or paste this join code into the agent's window</label>
+            <button id="a-copycode" class="font-mono text-[10px] uppercase tracking-[.12em] text-signal hover:underline">Copy</button>
+          </div>
+          <pre id="a-code" class="border border-rule bg-ground px-3 py-3 font-mono text-[11px] whitespace-pre-wrap break-all"></pre>
+          <p class="text-xs text-muted"><a id="a-dl" class="text-signal hover:underline" href="#">Download the agent</a>
+            from this master, run it, paste the code, press Join.</p>
+        </div>
         <p id="a-note" class="text-xs text-muted"></p>
       </div>
       <p id="a-msg" class="text-sm text-down min-h-[1.25rem]"></p>
@@ -538,8 +551,13 @@ tailwind.config = { theme: { extend: {
 
 <script>
 // ═══════════════════════════ config
-const SUPABASE_URL = "https://jcprvuqhnjtgskjuoded.supabase.co";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpjcHJ2dXFobmp0Z3NranVvZGVkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY4MzEzNjMsImV4cCI6MjEwMjQwNzM2M30.7PH62L3s5SLTHXBhs-yvdcjXs_QiT2ILg1H6ZJpfefk";
+// A self-hosted master (nodewatch-server) serves config.js, which sets
+// NW_CONFIG: it serves the data API and sign-in itself at this origin.
+// Without it this is the hosted dashboard on GitHub Pages.
+const NWC = window.NW_CONFIG || null;
+const SELF_HOSTED = !!NWC;
+const SUPABASE_URL = SELF_HOSTED ? location.origin : "https://jcprvuqhnjtgskjuoded.supabase.co";
+const SUPABASE_ANON_KEY = SELF_HOSTED ? NWC.anonKey : "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpjcHJ2dXFobmp0Z3NranVvZGVkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY4MzEzNjMsImV4cCI6MjEwMjQwNzM2M30.7PH62L3s5SLTHXBhs-yvdcjXs_QiT2ILg1H6ZJpfefk";
 const POLL_MS = 15000, TRACE_POINTS = 44;
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
@@ -560,7 +578,10 @@ const PAGES = [
 // Where agents post. The private VPC address only works for hosts inside
 // that VPC; the tunnel is reachable from anywhere, which is what an
 // on-premise or campus machine needs.
-const INGEST_HINT = 'https://life-travelling-marketing-norfolk.trycloudflare.com';
+const INGEST_HINT = SELF_HOSTED ? NWC.publicUrl
+                                : 'https://life-travelling-marketing-norfolk.trycloudflare.com';
+// Where the OAuth start routes live: the master itself when self-hosted.
+const apiBase = () => SELF_HOSTED ? location.origin : (localStorage_get('nw-ingest-2') || INGEST_HINT);
 
 // Set once, from the #/settings?github=...|slack=...|teams=... redirect a
 // provider sends the browser back to after a Connect attempt; read and
@@ -694,6 +715,9 @@ $('pw').addEventListener('keydown', e => { if(e.key==='Enter') (gateMode==='sign
 $('signout').onclick = async () => { await sb.auth.signOut(); location.reload(); };
 
 let gateMode = 'signin';
+// One customer per master: accounts are created by its admin (Users page),
+// not by self-serve signup.
+if (SELF_HOSTED) $('gate-toggle').classList.add('hidden');
 $('gate-toggle').onclick = () => {
   gateMode = gateMode==='signin' ? 'signup' : 'signin';
   $('gate-org-field').classList.toggle('hidden', gateMode!=='signup');
@@ -3346,8 +3370,9 @@ const CHANNEL_KINDS = {
   botim:    { label:'Botim',    fields:[['url','Open API endpoint','https://openapi.botim.me/...'],
                                         ['token','Access token',''],
                                         ['app_id','App ID (optional)',''],
-                                        ['target','Target / group id','']],
-              help:'Botim requires a verified Official Account through their developer portal, so the endpoint and token come from your OA console rather than being fixed here.' },
+                                        ['target','Target / group id',''],
+                                        ['body','Request body (JSON from your OA console)','{"to":"{target}","text":"{text}"}']],
+              help:'Botim requires a verified Official Account through their developer portal, so the endpoint, token and request body come from your OA console rather than being fixed here. In the body, {text}, {subject}, {severity}, {target} and {app_id} are replaced with the alert; the token is sent as a Bearer token.' },
   webhook:  { label:'Webhook',  fields:[['url','POST URL','https://example.com/hook']],
               help:'Any endpoint accepting a JSON POST.' },
   slack:    { label:'Slack',    fields:[['url','Incoming webhook URL','https://hooks.slack.com/services/...']],
@@ -3951,7 +3976,7 @@ function bind(){
   if ($('s-github-connect')) $('s-github-connect').onclick=async()=>{
     if ($('s-github-msg')) $('s-github-msg').textContent='';
     const { data: { session } } = await sb.auth.getSession();
-    const base = localStorage_get('nw-ingest-2') || INGEST_HINT;
+    const base = apiBase();
     try {
       const res = await fetch(`${base}/oauth/github/start`, {
         headers: { 'Authorization': `Bearer ${session?.access_token}` },
@@ -3966,7 +3991,7 @@ function bind(){
 
   const startOAuth = async (provider) => {
     const { data: { session } } = await sb.auth.getSession();
-    const base = localStorage_get('nw-ingest-2') || INGEST_HINT;
+    const base = apiBase();
     try {
       const res = await fetch(`${base}/oauth/${provider}/start`,
         { headers: { 'Authorization': `Bearer ${session?.access_token}` } });
@@ -3986,7 +4011,7 @@ function bind(){
     teamsFetchedFor = state.teamsPending;
     (async () => {
       const { data: { session } } = await sb.auth.getSession();
-      const base = localStorage_get('nw-ingest-2') || INGEST_HINT;
+      const base = apiBase();
       try {
         const res = await fetch(`${base}/teams/list-teams?pending=${encodeURIComponent(state.teamsPending)}`,
           { headers: { 'Authorization': `Bearer ${session?.access_token}` } });
@@ -4007,7 +4032,7 @@ function bind(){
     $('tm-channel').innerHTML = '<option value="">'+(teamId?'Loading…':'Pick a team first')+'</option>';
     if (!teamId) return;
     const { data: { session } } = await sb.auth.getSession();
-    const base = localStorage_get('nw-ingest-2') || INGEST_HINT;
+    const base = apiBase();
     try {
       const res = await fetch(`${base}/teams/list-channels?pending=${encodeURIComponent(state.teamsPending)}&team_id=${encodeURIComponent(teamId)}`,
         { headers: { 'Authorization': `Bearer ${session?.access_token}` } });
@@ -4027,7 +4052,7 @@ function bind(){
     const teamName = $('tm-team').selectedOptions[0]?.textContent || '';
     const channelName = $('tm-channel').selectedOptions[0]?.textContent || '';
     const { data: { session } } = await sb.auth.getSession();
-    const base = localStorage_get('nw-ingest-2') || INGEST_HINT;
+    const base = apiBase();
     try {
       const res = await fetch(`${base}/teams/finalize`, {
         method: 'POST',
@@ -4070,7 +4095,10 @@ const PLATFORMS = [
 ];
 
 function openAdd(){
-  addProvider='aws';
+  addProvider = SELF_HOSTED ? 'generic' : 'aws';
+  $('a-provwrap').classList.toggle('hidden', SELF_HOSTED);
+  $('a-ingestwrap').classList.toggle('hidden', SELF_HOSTED);
+  $('a-join').classList.add('hidden');
   $('a-name').value=''; $('a-site').value='';
   $('a-ingest').value = localStorage_get('nw-ingest-2') || INGEST_HINT;
   $('a-out').classList.add('hidden'); $('a-msg').textContent='';
@@ -4109,8 +4137,74 @@ function renderProviders(){
   $('a-note').textContent = [pmeta && pmeta[2], meta && meta[2]].filter(Boolean).join(' · ');
 }
 
+// ── self-hosted: a join code plus a checksum-verified download of the
+// agent from this master. The code carries the master's address, a
+// single-use token and the master's CA fingerprint; the agent fetches the
+// CA and accepts it only if it matches. Same format as
+// agent/joining.py's encode().
+function b64url(str){
+  return btoa(String.fromCharCode(...new TextEncoder().encode(str)))
+           .replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+function joinCode(token, site){
+  const p = { u: NWC.publicUrl, t: token, f: NWC.caFingerprint };
+  if (site) p.s = site;
+  return 'NWJ1-' + b64url(JSON.stringify(p));
+}
+const shQuote = v => `'${String(v).replace(/'/g, `'\\''`)}'`;
+function joinCommand(plat, code){
+  const m = NWC.publicUrl, shas = a => Object.entries(NWC.agents||{})
+    .filter(([k])=>k.startsWith(a+'-')).map(([,v])=>v.sha256);
+  if (plat === 'windows') {
+    const s = shas('windows');
+    if (!s.length) return null;
+    return `# elevated PowerShell\n` +
+      `curl.exe -fsSk -o nodewatch-agent.exe ${m}/download/agent/windows-x64\n` +
+      `if ((Get-FileHash nodewatch-agent.exe).Hash -in @(${s.map(x=>`'${x}'`).join(',')})) ` +
+      `{ .\\nodewatch-agent.exe join ${code} } else { 'checksum mismatch - not running it' }`;
+  }
+  const s = shas(plat);
+  if (!s.length) return null;
+  const sum = plat === 'macos' ? 'shasum -a 256' : 'sha256sum';
+  return `curl -fsSk -o nodewatch-agent ${m}/download/agent/${plat}-$(uname -m) \\\n` +
+    `  && echo ${shQuote(s.join(' '))} | grep -qw "$(${sum} nodewatch-agent | cut -c1-64)" \\\n` +
+    `  && chmod +x nodewatch-agent && sudo ./nodewatch-agent join ${code} \\\n` +
+    `  || echo 'download failed or checksum mismatch'`;
+}
+
 $('a-gen').onclick = async () => {
   $('a-msg').textContent='';
+  if (SELF_HOSTED) {
+    // The master refuses a node over the licence limit at enrolment; say
+    // so here rather than hand out a code that cannot work.
+    const lic = NWC.licence;
+    if (!lic || lic.state === 'expired' || lic.state === 'invalid') {
+      $('a-msg').textContent = 'This master has no valid licence, so new nodes cannot join. Install one with: nodewatch-server licence <key>';
+      return;
+    }
+    if (lic.nodes && (state.hosts||[]).length >= lic.nodes) {
+      $('a-msg').textContent = `The licence allows ${lic.nodes} nodes and all are in use. Remove a node or extend the licence.`;
+      return;
+    }
+    const label = $('a-name').value.trim() || `${addPlatform} node`;
+    const { data: token, error } = await sb.rpc('new_enroll_token', { p_label: label, p_hours: 24 });
+    if (error) { $('a-msg').textContent = error.message; return; }
+    const code = joinCode(token, $('a-site').value.trim());
+    const cmd = joinCommand(addPlatform, code);
+    $('a-cmd').textContent = cmd || 'This master has no agent build for that platform yet - download it from the release page, then run: nodewatch-agent join <the code below>';
+    $('a-code').textContent = code;
+    const dl = Object.keys(NWC.agents||{}).find(k=>k.startsWith(addPlatform+'-'));
+    $('a-dl').href = dl ? `/download/agent/${dl}` : '#';
+    $('a-dl').parentElement.classList.toggle('hidden', !dl);
+    $('a-join').classList.remove('hidden');
+    $('a-note').textContent = (addPlatform === 'windows'
+        ? 'Run in an elevated PowerShell. ' : 'Run as a user with sudo. ')
+      + 'The checksum is checked before the agent runs, and the agent trusts only this master\'s certificate. '
+      + 'The code is single use and expires in 24 hours; the machine appears here within about two minutes.';
+    $('a-out').classList.remove('hidden');
+    refresh();
+    return;
+  }
   const ingest = $('a-ingest').value.trim();
   if(!ingest){ $('a-msg').textContent='Enter the ingest URL.'; return; }
   localStorage_set('nw-ingest-2', ingest);
@@ -4162,6 +4256,11 @@ $('a-copy').onclick = async () => {
   try { await navigator.clipboard.writeText($('a-cmd').textContent); $('a-copy').textContent='Copied'; }
   catch(e){ $('a-copy').textContent='Select and copy'; }
   setTimeout(()=>{ $('a-copy').textContent='Copy'; }, 1800);
+};
+$('a-copycode').onclick = async () => {
+  try { await navigator.clipboard.writeText($('a-code').textContent); $('a-copycode').textContent='Copied'; }
+  catch(e){ $('a-copycode').textContent='Select and copy'; }
+  setTimeout(()=>{ $('a-copycode').textContent='Copy'; }, 1800);
 };
 $('a-close').onclick = closeAdd;
 $('addmodal').addEventListener('click', e=>{ if(e.target===$('addmodal')) closeAdd(); });

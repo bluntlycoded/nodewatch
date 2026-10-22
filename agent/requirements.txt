@@ -4,3 +4,6 @@ psutil>=5.9
 # insecure temp file reuse in extract_zipped_paths) - 2.33.0 is the floor
 # that excludes all of them, not just the minimum that happens to work.
 requests>=2.33.0
+
+# Node signing key (nodekey.py) and join-code certificate pinning.
+cryptography>=44

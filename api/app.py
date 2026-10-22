@@ -30,7 +30,11 @@ from pydantic import BaseModel, Field
 # ---------------------------------------------------------------- config
 
 DATABASE_URL = os.environ["NW_DATABASE_URL"]
-JWT_SECRET = os.environ.get("NW_JWT_SECRET", "dev-secret-change-me")
+# No default: a fallback secret anyone can read in this file would let them
+# mint agent tokens for any node.
+JWT_SECRET = os.environ.get("NW_JWT_SECRET", "")
+if len(JWT_SECRET) < 32:
+    raise RuntimeError("NW_JWT_SECRET must be set to at least 32 random characters (openssl rand -hex 32)")
 JWT_TTL_MIN = int(os.environ.get("NW_JWT_TTL_MIN", "15"))
 
 # "aws"  - verify against EC2 DescribeInstances (production)
@@ -57,6 +61,19 @@ REQUIRE_TOKEN = os.environ.get("NW_REQUIRE_TOKEN", "false").lower() == "true"
 # multi-tenant deployment sets NW_REQUIRE_TOKEN=true so every tenant's hosts
 # can only ever enrol with that tenant's own token.
 TENANT_ZERO = "00000000-0000-0000-0000-000000000001"
+
+# Licence limits, set by the self-hosted master (server/nodewatch_server)
+# and refreshed by it while running. Hosted deployments leave both unset.
+# MAX_NODES caps how many distinct nodes may enrol; ENROLL_CLOSED, when
+# non-empty, is the reason new nodes are refused outright (an expired
+# licence). Neither affects a node that is already enrolled.
+MAX_NODES = int(os.environ.get("NW_MAX_NODES", "0"))
+ENROLL_CLOSED = os.environ.get("NW_ENROLL_CLOSED", "")
+
+# Refuse enrolment from agents that do not sign it (pre-0.5). The
+# self-hosted master sets this; hosted deployments still have older agents.
+REQUIRE_NODE_KEY = os.environ.get("NW_REQUIRE_NODE_KEY", "false").lower() == "true"
+NODE_KEY_SKEW_S = 300
 
 MAX_EVENTS_PER_BATCH = 500
 
@@ -160,6 +177,10 @@ class EnrollBody(BaseModel):
     os: str | None = None
     agent_version: str | None = None
     enroll_token: str | None = None
+    # Agent 0.5+: the node's Ed25519 public key (hex) and a signature over
+    # "nodewatch-enroll:<machine or node id>:<ts>" proving it holds the key.
+    node_key: str | None = Field(default=None, max_length=64)
+    key_proof: dict | None = None
 
 
 class Event(BaseModel):
@@ -231,10 +252,19 @@ class AutomationCompleteBody(BaseModel):
 
 # ---------------------------------------------------------------- identity
 
+# X-Forwarded-For is whatever the client chose to send unless a proxy in
+# front of the API overwrites it. Trusting it unconditionally let any caller
+# claim an EC2 instance's own address and pass verify_instance(), and dodge
+# the per-IP enrolment limit. Only honoured when the operator says a proxy
+# is really there.
+TRUST_PROXY = os.environ.get("NW_TRUST_PROXY", "false").lower() == "true"
+
+
 def client_ip(request: Request) -> str:
-    fwd = request.headers.get("x-forwarded-for")
-    if fwd:
-        return fwd.split(",")[0].strip()
+    if TRUST_PROXY:
+        fwd = request.headers.get("x-forwarded-for")
+        if fwd:
+            return fwd.split(",")[0].strip()
     return request.client.host if request.client else ""
 
 
@@ -372,6 +402,43 @@ def verify_instance(doc: dict, source_ip: str) -> None:
             instance_id, source_ip, known_ips,
         )
         raise HTTPException(403, "source address does not match instance")
+
+
+def check_node_key(conn, node_id: str, body: "EnrollBody", ident: dict) -> str | None:
+    """
+    Verify the node's signed enrolment against the key it registered, and
+    return the key to record for a node that has none yet.
+    """
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+    presented = (body.node_key or "").lower() or None
+    if presented:
+        claimed = ident.get("machine_id") or ident.get("node_id") or ""
+        try:
+            ts = int((body.key_proof or {})["ts"])
+            sig = bytes.fromhex((body.key_proof or {})["sig"])
+            pub = Ed25519PublicKey.from_public_bytes(bytes.fromhex(presented))
+            if abs(time.time() - ts) > NODE_KEY_SKEW_S:
+                raise HTTPException(403, "node key proof is stale - check this node's clock")
+            pub.verify(sig, f"nodewatch-enroll:{claimed}:{ts}".encode())
+        except HTTPException:
+            raise
+        except (KeyError, ValueError, TypeError, InvalidSignature):
+            log.warning("enrolment rejected for %s: node key proof does not verify", node_id)
+            raise HTTPException(403, "node key proof is not valid")
+
+    row = conn.execute("select node_key from agents where instance_id = %s", (node_id,)).fetchone()
+    stored = row[0] if row else None
+    if stored:
+        if presented != stored:
+            log.warning("enrolment rejected for %s: not signed by its registered key", node_id)
+            raise HTTPException(403, "this node is not signed by the key it enrolled with; "
+                                     "remove it from the dashboard and add it again if it was rebuilt")
+        return None
+    if REQUIRE_NODE_KEY and not presented:
+        raise HTTPException(403, "this master requires nodewatch-agent 0.5 or later (signed enrolment)")
+    return presented
 
 
 def issue_token(agent_id: str, instance_id: str) -> str:
@@ -638,7 +705,19 @@ def enroll(body: EnrollBody, request: Request):
             if known is not None:
                 tenant_id = known[0]
 
+        new_key = check_node_key(conn, str(node_id), body, ident)
+
         if first_contact:
+            if ENROLL_CLOSED:
+                raise HTTPException(403, ENROLL_CLOSED)
+            if MAX_NODES:
+                # Serialises first-contact enrolments so two hosts arriving
+                # together cannot both take the last licensed slot.
+                conn.execute("select pg_advisory_xact_lock(hashtext('nodewatch-enrol-limit'))")
+                enrolled = conn.execute("select count(*) from agents").fetchone()[0]
+                if enrolled >= MAX_NODES:
+                    log.warning("enrolment refused for %s: licence allows %d nodes", node_id, MAX_NODES)
+                    raise HTTPException(403, f"the licence allows {MAX_NODES} nodes and all are in use")
             # The only source of tenant_id for a genuinely new host: which
             # tenant issued the token it showed up with.
             tenant_id = consume_token(conn, body.enroll_token, node_id)
@@ -649,8 +728,8 @@ def enroll(body: EnrollBody, request: Request):
             insert into agents (instance_id, provider, platform, account_id, account,
                                 region, instance_type, hostname, os, agent_version,
                                 machine_id, fingerprint, identity_proof, last_seen,
-                                tenant_id)
-            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), %s)
+                                tenant_id, node_key)
+            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), %s, %s)
             on conflict (tenant_id, instance_id) do update set
                 hostname       = excluded.hostname,
                 os             = excluded.os,
@@ -661,7 +740,10 @@ def enroll(body: EnrollBody, request: Request):
                 platform       = excluded.platform,
                 account        = excluded.account,
                 machine_id     = coalesce(excluded.machine_id, agents.machine_id),
-                fingerprint    = excluded.fingerprint,
+                -- A missing fingerprint must not erase the recorded one,
+                -- or omitting it would wipe the evidence it is checked against.
+                fingerprint    = coalesce(excluded.fingerprint, agents.fingerprint),
+                node_key       = coalesce(agents.node_key, excluded.node_key),
                 identity_proof = excluded.identity_proof,
                 enrolled_at    = now(),
                 enroll_count   = agents.enroll_count + 1
@@ -674,7 +756,7 @@ def enroll(body: EnrollBody, request: Request):
              body.hostname, body.os, body.agent_version,
              ident.get("machine_id"),
              json.dumps(ident.get("fingerprint")) if ident.get("fingerprint") else None,
-             proof, tenant_id),
+             proof, tenant_id, new_key),
         ).fetchone()
 
     log.info("enrolled %s [%s, proof=%s] (%s)", node_id, provider, proof, body.hostname)

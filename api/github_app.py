@@ -30,7 +30,7 @@ from fastapi.responses import RedirectResponse
 
 router = APIRouter()
 
-JWT_SECRET = os.environ.get("NW_JWT_SECRET", "dev-secret-change-me")
+JWT_SECRET = os.environ.get("NW_JWT_SECRET", "")   # app.py refuses to start without one
 # Supabase signs dashboard-session tokens with its own project secret, a
 # different value from the one above (which is this service's own, used
 # only for agent enrolment tokens and the state token below). A dashboard
@@ -99,9 +99,21 @@ def require_admin(conn, authorization: str | None) -> str:
     return claims["sub"]
 
 
-def _state_token() -> str:
+def tenant_of(conn, user_id: str) -> str:
+    """The admin's tenant. Every tenant-scoped insert needs it explicitly:
+    this connection is not a signed-in session, so the column default
+    (current_tenant()) has no user to resolve."""
+    row = conn.execute("select tenant_id from profiles where id = %s", (user_id,)).fetchone()
+    if not row or not row[0]:
+        raise HTTPException(403, "this account does not belong to a tenant")
+    return str(row[0])
+
+
+def _state_token(tenant_id: str) -> str:
+    # Carries the tenant: the callback arrives from the provider with no
+    # session, so this signed state is the only record of whose it is.
     now = datetime.now(timezone.utc)
-    return jwt.encode({"typ": "github_oauth_state", "iat": now,
+    return jwt.encode({"typ": "github_oauth_state", "tid": tenant_id, "iat": now,
                         "exp": now + timedelta(minutes=10)},
                        JWT_SECRET, algorithm="HS256")
 
@@ -113,8 +125,9 @@ def _verify_state(state: str | None):
         claims = jwt.decode(state, JWT_SECRET, algorithms=["HS256"])
     except jwt.InvalidTokenError:
         raise HTTPException(400, "invalid or expired state - start the connection again")
-    if claims.get("typ") != "github_oauth_state":
+    if claims.get("typ") != "github_oauth_state" or not claims.get("tid"):
         raise HTTPException(400, "invalid state")
+    return claims["tid"]
 
 
 def install(app, pool):
@@ -123,16 +136,16 @@ def install(app, pool):
     @router.get("/oauth/github/start")
     def start(authorization: str | None = Header(default=None)):
         with pool.connection() as conn:
-            require_admin(conn, authorization)
+            tid = tenant_of(conn, require_admin(conn, authorization))
         if not GITHUB_APP_SLUG:
             raise HTTPException(500, "NW_GITHUB_APP_SLUG is not configured")
         return {"url": f"https://github.com/apps/{GITHUB_APP_SLUG}"
-                        f"/installations/new?state={_state_token()}"}
+                        f"/installations/new?state={_state_token(tid)}"}
 
     @router.get("/oauth/github/callback")
     def callback(installation_id: int | None = None, setup_action: str | None = None,
                  state: str | None = None):
-        _verify_state(state)
+        tid = _verify_state(state)
         if setup_action != "install" or not installation_id:
             return RedirectResponse(f"{DASHBOARD_URL}#/settings?github=cancelled")
 
@@ -142,12 +155,12 @@ def install(app, pool):
         with pool.connection() as conn:
             conn.execute(
                 """insert into github_installations
-                       (installation_id, account_login, account_type)
-                   values (%s, %s, %s)
+                       (installation_id, account_login, account_type, tenant_id)
+                   values (%s, %s, %s, %s)
                    on conflict (installation_id) do update set
                        account_login = excluded.account_login,
                        account_type  = excluded.account_type""",
-                (installation_id, account.get("login"), account.get("type")),
+                (installation_id, account.get("login"), account.get("type"), tid),
             )
         return RedirectResponse(f"{DASHBOARD_URL}#/settings?github=connected")
 
