@@ -113,7 +113,9 @@ def dispatch(make_master) -> None:
             try:
                 self.master = make_master()
                 self.master.run(open_browser=False)
-            except Exception as e:
+            except BaseException as e:
+                # BaseException: uvicorn exits with SystemExit when it cannot
+                # bind its port, which Exception would let through unlogged.
                 log.exception("master stopped with an error")
                 servicemanager.LogErrorMsg(f"{DISPLAY} stopped: {e}")
                 raise

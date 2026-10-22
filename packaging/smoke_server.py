@@ -78,7 +78,12 @@ def main(binary: str) -> int:
     finally:
         if proc.poll() is None:
             if sys.platform == "win32":
-                proc.terminate()
+                # The one-file executable is a launcher plus a child process
+                # that does the work; terminate() would kill only the
+                # launcher and leave the child holding port 8443. /T takes
+                # the whole tree.
+                subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             else:
                 proc.send_signal(signal.SIGTERM)
             try:

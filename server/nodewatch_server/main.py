@@ -168,11 +168,11 @@ class Master:
         servers = [uvicorn.Server(uvicorn.Config(
             app, host="0.0.0.0", port=self.cfg.https_port,
             ssl_certfile=str(self.pki.server_cert), ssl_keyfile=str(self.pki.server_key),
-            proxy_headers=False, server_header=False, log_level="warning"))]
+            proxy_headers=False, server_header=False, log_level="warning", log_config=None))]
         if internal_app is not None:
             servers.append(uvicorn.Server(uvicorn.Config(
                 internal_app, host="127.0.0.1", port=self.cfg.internal_port,
-                proxy_headers=False, server_header=False, log_level="warning")))
+                proxy_headers=False, server_header=False, log_level="warning", log_config=None)))
         return servers
 
     def _run_servers(self, servers) -> None:
@@ -183,6 +183,11 @@ class Master:
         async def main():
             await asyncio.gather(*(s.serve() for s in servers))
         asyncio.run(main())
+        if not self.stopping and any(not s.started for s in servers):
+            # uvicorn logs why (now into server.log) and returns; make it a
+            # failure so a service manager restarts the master.
+            raise RuntimeError(f"the web server could not start - is port {self.cfg.https_port} "
+                               "already in use by another program?")
 
     def request_stop(self) -> None:
         """From another thread (the Windows service's stop handler): shut the
