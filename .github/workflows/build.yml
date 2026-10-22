@@ -16,7 +16,7 @@ on:
   push:
     tags: ["agent-v*", "server-v*"]
   pull_request:
-    paths: ["agent/**", "api/**", "probe/**", "db/**", "server/**", "docs/**", "packaging/**",
+    paths: ["agent/**", "api/**", "probe/**", "db/**", "server/**", "dashboard/**", "packaging/**",
             ".github/workflows/build.yml"]
   workflow_dispatch:
 

@@ -2,10 +2,16 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "nodewatch-dashboard",
+      "name": "nodewatch-pages",
       "runtimeExecutable": "python3",
       "runtimeArgs": ["-m", "http.server", "8765", "--directory", "docs"],
       "port": 8765
+    },
+    {
+      "name": "nodewatch-dashboard",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "8766", "--directory", "dashboard"],
+      "port": 8766
     }
   ]
 }
