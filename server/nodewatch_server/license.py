@@ -9,8 +9,8 @@ private key; tools/license_tool.py issues keys with it.
 
     NW1-<base64url(payload json)>.<base64url(signature)>
 
-Online activation and node-count enforcement are phase 4; this module
-answers "is this key genuine, and what does it allow".
+This module answers "is this key genuine, and what does it allow";
+activation.py binds it to one machine through the licence server.
 """
 
 import base64
