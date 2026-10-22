@@ -21,7 +21,7 @@ def default_data_dir() -> Path:
     if sys.platform == "win32":
         return Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "nodewatch-server"
     if sys.platform == "darwin":
-        return Path("/usr/local/var/nodewatch-server")
+        return Path("/Library/Application Support/nodewatch-server")
     return Path("/var/lib/nodewatch-server")
 
 

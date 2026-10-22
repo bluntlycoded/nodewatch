@@ -538,11 +538,15 @@ def main() -> None:
     lp = sub.add_parser("licence", help="install a new or renewed licence key")
     lp.add_argument("key")
     sub.add_parser("status")
-    sub.add_parser("install", help="install as a service (Linux systemd, Windows service)")
+    ip = sub.add_parser("install", help="install as a service (Linux systemd, Windows service, macOS launchd)")
+    ip.add_argument("--user", help="macOS: the account the master runs as (default: the one using sudo)")
     sub.add_parser("uninstall", help="remove the service; keeps the data directory")
+    sub.add_parser("restart", help="macOS: restart the service")
+    sub.add_parser("gui", help="macOS: the nodewatch Master window")
     sub.add_parser("service-run", help=argparse.SUPPRESS)
     sub.add_parser("selfcheck", help="check this build's bundled components run on this OS")
-    args = ap.parse_args()
+    # Finder on older macOS passes a process serial number to apps it opens.
+    args = ap.parse_args([a for a in sys.argv[1:] if not a.startswith("-psn_")])
 
     if args.version:
         print(f"nodewatch-server {VERSION}")
@@ -551,6 +555,23 @@ def main() -> None:
     data_dir = args.data or default_data_dir()
     if args.data:
         os.environ["NW_SERVER_DATA"] = str(args.data)
+
+    if sys.platform == "darwin":
+        from . import macservice
+        if args.cmd is None and macservice.app_bundle() is not None:
+            args.cmd = "gui"                    # double-clicked nodewatch Master.app
+        if args.cmd == "gui":
+            from . import gui
+            sys.exit(gui.main(data_dir, VERSION, macservice.installed))
+        if args.cmd == "install":
+            macservice.install(data_dir, args.user or os.environ.get("SUDO_USER") or "")
+            return
+        if args.cmd == "uninstall":
+            macservice.uninstall()
+            return
+        if args.cmd == "restart":
+            macservice.restart()
+            return
 
     if args.cmd == "install":
         if sys.platform == "win32":

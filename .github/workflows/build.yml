@@ -200,7 +200,7 @@ jobs:
       - name: Self-check and smoke test
         shell: bash
         run: |
-          bin=$(ls dist/nodewatch-server-*-${{ matrix.target.os }}-${{ matrix.target.arch }}* | grep -v -e sha256 -e setup)
+          bin=$(ls dist/nodewatch-server-*-${{ matrix.target.os }}-${{ matrix.target.arch }}* | grep -v -e sha256 -e setup -e dmg)
           "$bin" --data "$RUNNER_TEMP/selfcheck" selfcheck
           PY=$(command -v python3 || command -v python)
           "$PY" packaging/smoke_server.py "$bin"
@@ -217,9 +217,26 @@ jobs:
         if: matrix.target.os == 'linux'
         shell: bash
         run: |
-          bin=$(ls dist/nodewatch-server-*-${{ matrix.target.os }}-${{ matrix.target.arch }}* | grep -v -e sha256 -e setup)
+          bin=$(ls dist/nodewatch-server-*-${{ matrix.target.os }}-${{ matrix.target.arch }}* | grep -v -e sha256 -e setup -e dmg)
           PY=$(command -v python3 || command -v python)
           "$PY" packaging/smoke_server.py --service "$PWD/$bin"
+
+      # The Master app DMG mounts, and the app inside is signed and starts.
+      - name: Test DMG (macOS)
+        if: matrix.target.os == 'macos'
+        run: |
+          dmg=$(ls dist/nodewatch-server-*-macos-${{ matrix.target.arch }}.dmg)
+          for i in 1 2 3 4 5; do
+            out=$(hdiutil attach -nobrowse -readonly "$dmg") && break
+            echo "attach attempt $i failed; retrying"; sleep $((i * 10))
+          done
+          mnt=$(echo "$out" | tail -1 | awk -F'\t' '{print $NF}')
+          test -d "$mnt"
+          codesign --verify --deep --strict "$mnt/nodewatch Master.app"
+          "$mnt/nodewatch Master.app/Contents/MacOS/nodewatch-server" --version
+          "$mnt/nodewatch Master.app/Contents/MacOS/nodewatch-server" --data "$RUNNER_TEMP/appcheck" selfcheck
+          test -L "$mnt/Applications"
+          hdiutil detach "$mnt" || hdiutil detach -force "$mnt"
 
       - uses: actions/upload-artifact@v4
         with:
