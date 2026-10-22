@@ -236,7 +236,9 @@ def main() -> None:
     print(f"\nbuilt {binary}  ({binary.stat().st_size / 1e6:.1f} MB)")
     print(f"sha256 {digest}")
 
-    out = subprocess.run([str(binary), "--version"], capture_output=True, text=True, check=True)
+    out = subprocess.run([str(binary), "--version"], capture_output=True, text=True)
+    if out.returncode != 0:
+        sys.exit(f"{binary.name} --version exited {out.returncode}\n{out.stdout}{out.stderr}")
     if version not in out.stdout:
         sys.exit(f"--version printed {out.stdout!r}, expected {version}")
     print(out.stdout.strip())

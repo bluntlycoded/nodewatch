@@ -134,7 +134,10 @@ def main() -> None:
     print(f"sha256 {digest}")
 
     # Smoke test: the binary starts and reports the version it was built from.
-    out = subprocess.run([str(binary), "--version"], capture_output=True, text=True, check=True)
+    out = subprocess.run([str(binary), "--version"], capture_output=True, text=True)
+    if out.returncode != 0:
+        # Show why: a frozen binary that cannot start says so on stderr.
+        sys.exit(f"{binary.name} --version exited {out.returncode}\n{out.stdout}{out.stderr}")
     if version not in out.stdout:
         sys.exit(f"--version printed {out.stdout!r}, expected {version}")
     print(out.stdout.strip())
