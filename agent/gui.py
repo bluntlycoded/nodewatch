@@ -34,15 +34,16 @@ def self_command() -> list[str]:
     return [sys.executable, str(Path(__file__).resolve().parent / "agent.py")]
 
 
-def run_elevated(args: list[str], why: str = "make this change") -> tuple[bool, str]:
+def run_elevated(args: list[str], why: str = "make this change", owner: int = 0) -> tuple[bool, str]:
     """Run `nodewatch-agent <args>` as admin; returns (ok, message). `why`
-    finishes the sentence on macOS's password dialog."""
+    finishes the sentence on macOS's password dialog; `owner` is the
+    window asking, on Windows."""
     fd, result = tempfile.mkstemp(prefix="nw-result-", suffix=".json")
     os.close(fd)
     cmd = self_command() + args + ["--result-file", result]
     try:
         if sys.platform == "win32":
-            rc = _shell_execute_runas(cmd)
+            rc = _shell_execute_runas(cmd, owner)
         elif sys.platform == "darwin":
             def quoted(s: str) -> str:
                 return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
@@ -79,7 +80,7 @@ def _which(name):
     return which(name)
 
 
-def _shell_execute_runas(cmd: list[str]) -> int:
+def _shell_execute_runas(cmd: list[str], owner: int = 0) -> int:
     import ctypes
     from ctypes import wintypes
 
@@ -96,6 +97,9 @@ def _shell_execute_runas(cmd: list[str]) -> int:
     sei = SHELLEXECUTEINFOW()
     sei.cbSize = ctypes.sizeof(sei)
     sei.fMask = 0x00000040          # SEE_MASK_NOCLOSEPROCESS
+    # The window asking for elevation. Without one, Windows may show the
+    # UAC prompt only as a flashing taskbar button rather than on screen.
+    sei.hwnd = owner or None
     sei.lpVerb = "runas"
     sei.lpFile = cmd[0]
     sei.lpParameters = subprocess.list2cmdline(cmd[1:])
@@ -226,6 +230,12 @@ class App:
         for b in (self.join_btn, self.url_btn, self.restart_btn):
             b.state(["disabled"])
         self.msg.set(f"{label}… enter your administrator password when asked.")
+        owner = 0
+        if sys.platform == "win32":
+            try:
+                owner = int(self.root.wm_frame(), 16)   # the top-level window, read on the Tk thread
+            except (tk.TclError, ValueError):
+                pass
 
         def still_waiting():
             if self.busy and self.op == op:
@@ -242,7 +252,7 @@ class App:
                     with os.fdopen(fd, "w") as f:
                         f.write(code)
                     args.extend(["--code-file", code_file])
-                ok, message = run_elevated(args, why)
+                ok, message = run_elevated(args, why, owner)
             except Exception as e:
                 # Report it: a silent failure here left the window saying
                 # "Joining…" forever with every button disabled.
