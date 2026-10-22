@@ -19,6 +19,7 @@ import logging
 import secrets
 import threading
 import time
+import uuid
 from datetime import datetime
 
 import jwt
@@ -210,6 +211,10 @@ class Auth:
             tenant = me["tenant_id"]
 
             def target():
+                try:
+                    uuid.UUID(str(body.get("id")))
+                except ValueError:
+                    return None
                 t = conn.execute("select id from profiles where id = %s and tenant_id = %s",
                                  (body.get("id"), tenant)).fetchone()
                 return t["id"] if t else None

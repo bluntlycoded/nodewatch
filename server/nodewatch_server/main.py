@@ -33,6 +33,8 @@ from .config import Store, default_data_dir
 from .pg import EmbeddedPostgres, install_binaries
 
 VERSION = "0.2.0"
+# Renew the master's HTTPS certificate this long before it expires.
+CERT_RENEW_DAYS = 60
 USER_AGENT = f"nodewatch-server/{VERSION}"
 
 log = logging.getLogger("nodewatch")
@@ -70,6 +72,10 @@ class Master:
         self.pg: EmbeddedPostgres | None = None
         self.servers = []
         self.stopping = False
+        # Set by winservice: a Windows service restarts in this process,
+        # because a re-exec'd process is not one the SCM started.
+        self.in_service = False
+        self.restart_requested = False
 
     # ------------------------------------------------------------ database
 
@@ -96,11 +102,26 @@ class Master:
 
     # ------------------------------------------------------------ tls
 
-    def ensure_certificate(self) -> None:
+    def ensure_certificate(self, renew_days: int = CERT_RENEW_DAYS) -> bool:
+        """Issue the HTTPS certificate if it is missing, does not cover the
+        public address, or expires within renew_days. Returns True if it
+        issued one. Agents trust the CA, not this certificate, so renewing
+        it never needs anything done on the nodes."""
         self.pki.ensure_ca()
         wanted = [self.cfg.public_address] + pki.local_addresses()
-        if not self.pki.server_cert.exists() or self._cert_missing(self.cfg.public_address):
+        if (not self.pki.server_cert.exists() or self._cert_missing(self.cfg.public_address)
+                or self.pki.server_cert_days_left() < renew_days):
             self.pki.issue_server_cert(wanted)
+            log.info("issued a new HTTPS certificate, valid %d days", pki.SERVER_CERT_DAYS)
+            return True
+        return False
+
+    def _renew_certificate(self) -> None:
+        """Daily: a master that runs for years without a restart still gets
+        a fresh certificate before the old one expires; the restart loads it."""
+        if self.ensure_certificate(renew_days=CERT_RENEW_DAYS // 2):
+            log.info("restarting to load the renewed certificate")
+            threading.Timer(1.5, self.restart).start()
 
     def _cert_missing(self, address: str) -> bool:
         if not address:
@@ -136,6 +157,10 @@ class Master:
 
     def restart(self) -> None:
         """Re-exec in place so the new certificate and full app load cleanly."""
+        if self.in_service:
+            self.restart_requested = True
+            self.request_stop()
+            return
         self.stop_database()
         logging.shutdown()
         if hasattr(sys, "_MEIPASS"):
@@ -296,6 +321,7 @@ class Master:
         sender = AlertSender(db_url, self.cfg.smtp, USER_AGENT)
         sched.add_python_job("nodewatch-send-alerts", "* * * * *", sender.drain)
         sched.add_python_job("nodewatch-licence", "7 * * * *", lambda: self._apply_licence(api_module))
+        sched.add_python_job("nodewatch-certificate", "41 3 * * *", self._renew_certificate)
         sched.start()
 
         threading.Thread(target=self._probe_runner, name="probe-runner", daemon=True).start()
@@ -434,6 +460,18 @@ ReadWritePaths={data}
 [Install]
 WantedBy=multi-user.target
 """
+
+
+def _become_data_owner(data_dir: Path) -> None:
+    try:
+        st = data_dir.stat()
+    except OSError:
+        sys.exit(f"no master data directory at {data_dir} - install or run the master first")
+    if st.st_uid == 0:
+        sys.exit(f"{data_dir} belongs to root; run this as the account the master runs as")
+    os.setgroups([])
+    os.setgid(st.st_gid)
+    os.setuid(st.st_uid)
 
 
 def cmd_install(data_dir: Path) -> None:
@@ -609,8 +647,14 @@ def main() -> None:
         return
 
     if sys.platform != "win32" and os.geteuid() == 0:
-        sys.exit("PostgreSQL will not run as root. Use `nodewatch-server install` to run it as a "
-                 "service user, or run it as an ordinary user.")
+        if args.cmd in ("add-node", "licence", "status"):
+            # `sudo nodewatch-server licence <key>`: act as the account that
+            # owns the data directory (the service user), so the files
+            # written stay readable by the master.
+            _become_data_owner(data_dir)
+        else:
+            sys.exit("PostgreSQL will not run as root. Use `nodewatch-server install` to run it as a "
+                     "service user, or run it as an ordinary user.")
 
     _repo_paths()
     m = Master(data_dir)
