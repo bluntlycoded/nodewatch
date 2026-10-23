@@ -34,7 +34,9 @@ from . import migrate, ops, pki
 from .config import Store, default_data_dir
 from .pg import EmbeddedPostgres, install_binaries
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
+# How long the web server waits for open connections when it stops.
+SHUTDOWN_GRACE_S = 5
 # Renew the master's HTTPS certificate this long before it expires.
 CERT_RENEW_DAYS = 60
 USER_AGENT = f"nodewatch-server/{VERSION}"
@@ -79,6 +81,7 @@ class Master:
         # because a re-exec'd process is not one the SCM started.
         self.in_service = False
         self.restart_requested = False
+        self.servers_stopped = False
 
     # ------------------------------------------------------------ database
 
@@ -196,11 +199,13 @@ class Master:
         servers = [uvicorn.Server(uvicorn.Config(
             app, host="0.0.0.0", port=self.cfg.https_port,
             ssl_certfile=str(self.pki.server_cert), ssl_keyfile=str(self.pki.server_key),
-            proxy_headers=False, server_header=False, log_level="warning", log_config=None))]
+            proxy_headers=False, server_header=False, log_level="warning", log_config=None,
+            timeout_graceful_shutdown=SHUTDOWN_GRACE_S))]
         if internal_app is not None:
             servers.append(uvicorn.Server(uvicorn.Config(
                 internal_app, host="127.0.0.1", port=self.cfg.internal_port,
-                proxy_headers=False, server_header=False, log_level="warning", log_config=None)))
+                proxy_headers=False, server_header=False, log_level="warning", log_config=None,
+                timeout_graceful_shutdown=SHUTDOWN_GRACE_S)))
         return servers
 
     def _run_servers(self, servers) -> None:
@@ -211,6 +216,7 @@ class Master:
         async def main():
             await asyncio.gather(*(s.serve() for s in servers))
         asyncio.run(main())
+        self.servers_stopped = True
         if not self.stopping and any(not s.started for s in servers):
             # uvicorn logs why (now into server.log) and returns; make it a
             # failure so a service manager restarts the master.
@@ -221,8 +227,20 @@ class Master:
         """From another thread (the Windows service's stop handler): shut the
         web servers down; run()'s cleanup then stops PostgREST and Postgres."""
         self.stopping = True
+        log.info("stopping the web server")
         for s in self.servers:
             s.should_exit = True
+
+        # Without a limit, uvicorn waits for every open connection to close.
+        # On Windows a browser connection cut mid-request was never seen to
+        # close, so the master hung half-stopped: nothing listening, the
+        # service still "running", the restart after setup never happening.
+        def force():
+            if not self.servers_stopped:
+                log.warning("web server did not stop within %ds; forcing it", 2 * SHUTDOWN_GRACE_S)
+            for s in self.servers:
+                s.force_exit = True
+        threading.Timer(2 * SHUTDOWN_GRACE_S, force).start()
 
     def _serve_setup(self, open_browser: bool) -> None:
         from . import web
@@ -235,8 +253,9 @@ class Master:
                   f"  Open   {url}\n"
                   f"  Setup code: {self.cfg.setup_code}\n")
         print(banner, flush=True)
-        log.info("waiting for setup at %s (setup code is in the console and %s)",
-                 url, self.store.path)
+        # The log is readable only by administrators, like config.json; a
+        # service has no console, so this is where its owner finds the code.
+        log.info("waiting for setup at %s - setup code %s", url, self.cfg.setup_code)
         if open_browser:
             threading.Timer(1.5, lambda: webbrowser.open(f"https://localhost:{self.cfg.https_port}/setup")).start()
         self._run_servers(self._servers(app))
@@ -613,6 +632,16 @@ def cmd_selfcheck(data_dir: Path) -> int:
     bin_dir = install_binaries(data_dir)
     check("postgres", lambda: version(bin_dir / f"postgres{EXE}"))
     check("postgrest", lambda: version(bin_dir / f"postgrest{EXE}"))
+    if sys.platform == "win32":
+        # Shipped beside postgres.exe so a PC without the Visual C++
+        # redistributable can still run it (see build_server.py).
+        def runtime():
+            missing = [d for d in ("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")
+                       if not (bin_dir / d).exists()]
+            if missing:
+                raise RuntimeError(f"not bundled: {', '.join(missing)}")
+            return "bundled beside postgres.exe"
+        check("C++ runtime", runtime)
     check("dashboard", lambda: f"{(dashboard_dir() / 'index.html').stat().st_size} bytes, "
                                f"{len(list((dashboard_dir() / 'vendor').glob('*.js')))} vendored scripts")
     check("migrations", lambda: f"{len(migrate.migration_files())} files")
