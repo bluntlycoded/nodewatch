@@ -205,6 +205,13 @@ def windows_setup(setup_exe: str) -> int:
             print_logs(data)
             print(f"FAIL: the installed service did not serve the setup page within {TIMEOUT_S}s")
             return 1
+        rule = subprocess.run(["netsh", "advfirewall", "firewall", "show", "rule", "name=nodewatch master"],
+                              capture_output=True, text=True)
+        if rule.returncode != 0 or "8443" not in rule.stdout:
+            print(rule.stdout[-1500:])
+            print("FAIL: no Windows Firewall rule lets other machines reach port 8443")
+            return 1
+        print("ok: Windows Firewall allows other machines to reach the master on 8443")
     finally:
         unins = pf / "nodewatch-server" / "unins000.exe"
         if unins.exists():
@@ -214,7 +221,11 @@ def windows_setup(setup_exe: str) -> int:
     if q.returncode == 0:
         print("FAIL: the uninstaller left the service registered")
         return 1
-    print("ok: the uninstaller removed the service")
+    if subprocess.run(["netsh", "advfirewall", "firewall", "show", "rule", "name=nodewatch master"],
+                      capture_output=True).returncode == 0:
+        print("FAIL: the uninstaller left the firewall rule")
+        return 1
+    print("ok: the uninstaller removed the service and its firewall rule")
     return 0
 
 

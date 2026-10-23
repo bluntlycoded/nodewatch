@@ -24,6 +24,7 @@ DISPLAY = "nodewatch master"
 DESCRIPTION = "nodewatch master node: dashboard, ingest API, database, alerting and probes."
 ACCOUNT = r"NT AUTHORITY\NetworkService"
 NETWORK_SERVICE_SID = "S-1-5-20"
+FIREWALL_RULE = "nodewatch master"
 
 log = logging.getLogger("nodewatch.service")
 
@@ -73,15 +74,43 @@ def install(data_dir: Path) -> None:
     _sc("description", NAME, DESCRIPTION)
     # Restart 5 s, 5 s, then 30 s after a crash; reset the count after a day.
     _sc("failure", NAME, "reset=", "86400", "actions=", "restart/5000/restart/5000/restart/30000")
+    _open_firewall(exe, data_dir)
     _sc("start", NAME)
     print(f"installed and started the {DISPLAY} service.")
     print(f"The setup code is in {data_dir / 'server.log'} and {data_dir / 'config.json'}.")
+
+
+def _open_firewall(exe: Path, data_dir: Path) -> None:
+    """
+    Let nodes (and admins' browsers) reach the master. Windows asks about
+    a program that starts listening only when it runs in someone's
+    session; a service gets no prompt and is simply blocked, so without
+    this rule only the master's own machine could connect.
+    """
+    port = 8443
+    try:
+        import json
+        port = int(json.loads((data_dir / "config.json").read_text(encoding="utf-8")).get("https_port", port))
+    except (OSError, ValueError):
+        pass
+    subprocess.run(["netsh", "advfirewall", "firewall", "delete", "rule", f"name={FIREWALL_RULE}"],
+                   capture_output=True)
+    res = subprocess.run(["netsh", "advfirewall", "firewall", "add", "rule", f"name={FIREWALL_RULE}",
+                          "dir=in", "action=allow", "protocol=TCP", f"localport={port}",
+                          f"program={exe}", "profile=any",
+                          "description=nodewatch master: dashboard and agent connections (HTTPS)"],
+                         capture_output=True, text=True)
+    if res.returncode != 0:
+        print(f"warning: could not open port {port} in Windows Firewall: "
+              f"{(res.stdout or res.stderr).strip()[:200]}")
 
 
 def uninstall() -> None:
     _sc("stop", NAME, check=False)
     time.sleep(5)
     _sc("delete", NAME, check=False)
+    subprocess.run(["netsh", "advfirewall", "firewall", "delete", "rule", f"name={FIREWALL_RULE}"],
+                   capture_output=True)
     print("service removed; the data directory is kept.")
 
 
