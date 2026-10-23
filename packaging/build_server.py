@@ -134,6 +134,26 @@ def fix_macos_postgrest(data: bytes) -> bytes:
     return tmp.read_bytes()
 
 
+# The Windows Postgres build is linked against Microsoft's C++ runtime but
+# does not include it, and a fresh Windows PC often lacks it: initdb and
+# postgres then cannot start and the master never comes up. These are the
+# DLLs it imports, shipped next to postgres.exe ("app-local" deployment,
+# which the Visual C++ redistributable licence allows), taken from the
+# build machine's System32.
+WINDOWS_RUNTIME = ["vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"]
+
+
+def windows_runtime() -> dict[str, bytes]:
+    system32 = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
+    out = {}
+    for dll in WINDOWS_RUNTIME:
+        path = system32 / dll
+        if not path.exists():
+            sys.exit(f"{path} is missing: install the Visual C++ redistributable on the build machine")
+        out[f"bin/{dll}"] = path.read_bytes()
+    return out
+
+
 def repack(txz: bytes, out: Path, use_symlinks: bool, extra: dict[str, bytes] | None = None) -> None:
     """
     Drop what the runtime never loads and store byte-identical files once.
@@ -186,8 +206,11 @@ def main() -> None:
     pgrst_name, pgrst = fetch_postgrest(os_name, arch)
     if os_name == "macos":
         pgrst = fix_macos_postgrest(pgrst)
+    extra = {f"bin/{pgrst_name}": pgrst}
+    if os_name == "windows":
+        extra.update(windows_runtime())
     repack(fetch_postgres(os_name, arch), pgdist / f"postgres-{os_name}-{arch}.txz",
-           use_symlinks=os_name != "windows", extra={f"bin/{pgrst_name}": pgrst})
+           use_symlinks=os_name != "windows", extra=extra)
 
     sep = os.pathsep
     pkg = SERVER / "nodewatch_server"
